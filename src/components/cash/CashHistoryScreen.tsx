@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { History, Printer, Search, Download, Eye, Lock, Trash2 } from 'lucide-react';
+import { History, Printer, Search, Download, Eye, Lock, Trash2, Layers } from 'lucide-react';
 import { CashClosure, UserAccount, BranchConfig } from '../../types/pos';
 import { formatCurrency } from '../../utils/scaleParser';
 import { WindowsModal } from '../common/WindowsModal';
@@ -7,6 +7,7 @@ import { useDialog } from '../../context/DialogContext';
 import { useFirebase } from '../../context/FirebaseContext';
 import { printClosureTicket, formatCleanOperatorName } from '../../utils/closureTicketGenerator';
 import { formatSafeClosureDate } from '../../utils/scheduleHelper';
+import { ClosureMovementsModal } from './ClosureMovementsModal';
 
 interface CashHistoryScreenProps {
   closures: CashClosure[];
@@ -20,7 +21,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
   currentBranch,
 }) => {
   const { showAlert, showConfirm } = useDialog();
-  const { purgeAutoClosures } = useFirebase();
+  const { purgeAutoClosures, sales, cashMovements, electronicInvoices } = useFirebase();
   const isAdmin = currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN';
   const userBranch = currentUser?.branch || currentBranch?.id || 'NECO 1';
 
@@ -28,6 +29,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
   const [branchFilter, setBranchFilter] = useState<string>(() => (isAdmin ? 'TODAS' : userBranch));
   const [selectedClosure, setSelectedClosure] = useState<CashClosure | null>(closures[0] || null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
+  const [isMovementsModalOpen, setIsMovementsModalOpen] = useState<boolean>(false);
 
   // Asegurar que si el usuario no es admin, el filtro permanezca estrictamente en su sucursal
   useEffect(() => {
@@ -133,6 +135,19 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
         <div className="flex items-center gap-1">
           <button
             disabled={!selectedClosure}
+            onClick={() => {
+              if (selectedClosure) {
+                setIsMovementsModalOpen(true);
+              }
+            }}
+            className="h-[26px] px-3 bg-[#002046] hover:bg-[#1b365d] text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40 border border-[#aec7f7]/40 shadow-xs"
+            title="Abrir y ver todos los recibos, facturas, cta cte y movimientos que conforman este cierre"
+          >
+            <Layers className="w-3.5 h-3.5 text-[#aec7f7]" />
+            <span>Ver Movimientos / Comprobantes</span>
+          </button>
+          <button
+            disabled={!selectedClosure}
             onClick={() => selectedClosure && handlePrintClosure(selectedClosure)}
             className="h-[26px] px-3 bg-[#2e7d32] hover:bg-[#1b5e20] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40 shadow-sm"
             title="Imprimir el cierre seleccionado en la impresora térmica de 80mm"
@@ -143,7 +158,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
           <button
             disabled={!selectedClosure}
             onClick={() => setIsDetailModalOpen(true)}
-            className="h-[26px] px-3 bg-[#002046] hover:bg-[#1b365d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            className="h-[26px] px-3 bg-[#ebeef2] hover:bg-[#d6e3ff] border border-[#74777f] text-[#002046] text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
           >
             <Eye className="w-3.5 h-3.5" />
             <span>Ver Comprobante Z</span>
@@ -197,7 +212,10 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
                   <tr
                     key={c.id}
                     onClick={() => setSelectedClosure(c)}
-                    onDoubleClick={() => setIsDetailModalOpen(true)}
+                    onDoubleClick={() => {
+                      setSelectedClosure(c);
+                      setIsMovementsModalOpen(true);
+                    }}
                     className={`h-[28px] cursor-pointer whitespace-nowrap ${
                       isSelected
                         ? 'bg-[#002046] text-white font-bold'
@@ -267,22 +285,41 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
                       </span>
                     </td>
                     <td className="text-center px-2">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePrintClosure(c);
-                        }}
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 cursor-pointer mx-auto transition-colors ${
-                          isSelected
-                            ? 'bg-[#2e7d32] hover:bg-[#1b5e20] text-white'
-                            : 'bg-[#ebeef2] hover:bg-[#d6e3ff] text-[#002046] border border-[#74777f]'
-                        }`}
-                        title="Imprimir ticket térmico de 80mm"
-                      >
-                        <Printer className="w-3 h-3" />
-                        <span>Imprimir</span>
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedClosure(c);
+                            setIsMovementsModalOpen(true);
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-[#1b365d] hover:bg-[#254677] text-white border border-[#aec7f7]'
+                              : 'bg-[#002046] hover:bg-[#1b365d] text-white'
+                          }`}
+                          title="Abrir y ver todos los recibos, facturas, cta cte y movimientos de este cierre"
+                        >
+                          <Layers className="w-3 h-3 text-[#aec7f7]" />
+                          <span>Ver Movimientos</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePrintClosure(c);
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-[#2e7d32] hover:bg-[#1b5e20] text-white'
+                              : 'bg-[#ebeef2] hover:bg-[#d6e3ff] text-[#002046] border border-[#74777f]'
+                          }`}
+                          title="Imprimir ticket térmico de 80mm"
+                        >
+                          <Printer className="w-3 h-3" />
+                          <span>Imprimir</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -477,6 +514,18 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
             <div className="flex justify-end gap-2 pt-2 border-t border-[#c4c6cf]">
               <button
                 type="button"
+                onClick={() => {
+                  setIsDetailModalOpen(false);
+                  setIsMovementsModalOpen(true);
+                }}
+                className="h-[28px] px-3 bg-[#002046] hover:bg-[#1b365d] text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-sm border border-[#aec7f7]/40"
+                title="Abrir desglose completo de recibos, facturas, cta cte y movimientos"
+              >
+                <Layers className="w-3.5 h-3.5 text-[#aec7f7]" />
+                <span>Ver Todos los Movimientos</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => handlePrintClosure(selectedClosure)}
                 className="h-[28px] px-3 bg-[#2e7d32] hover:bg-[#1b5e20] text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
@@ -486,7 +535,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setIsDetailModalOpen(false)}
-                className="h-[28px] px-4 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[11px] cursor-pointer"
+                className="h-[28px] px-4 bg-[#74777f] hover:bg-[#5c5f66] text-white font-bold text-[11px] cursor-pointer"
               >
                 Cerrar
               </button>
@@ -494,6 +543,18 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
           </div>
         )}
       </WindowsModal>
+
+      {/* Modal: View All Receipts, Invoices, Cta Cte & Movements */}
+      <ClosureMovementsModal
+        isOpen={isMovementsModalOpen}
+        onClose={() => setIsMovementsModalOpen(false)}
+        closure={selectedClosure}
+        allClosures={closures}
+        allSales={sales || []}
+        allCashMovements={cashMovements || []}
+        allElectronicInvoices={electronicInvoices || []}
+        currentBranch={currentBranch}
+      />
     </div>
   );
 };

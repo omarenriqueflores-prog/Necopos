@@ -134,6 +134,33 @@ export interface CashClosure {
   status: 'CONCILIADO' | 'CON_DIFERENCIA';
   branchId?: string;
   createdAt?: number;
+  salesIds?: string[];
+  movementIds?: string[];
+  salesSummary?: Array<{
+    id?: string;
+    ticketNumber?: string;
+    date?: string;
+    time?: string;
+    customerName?: string;
+    customerDni?: string;
+    invoiceType?: string;
+    paymentMethod?: string;
+    total: number;
+    itemsCount?: number;
+    items?: any[];
+    combinedPayments?: any[];
+    cae?: string;
+  }>;
+  movementsSummary?: Array<{
+    id: string;
+    type: 'FONDO' | 'INGRESO' | 'RETIRO' | 'EGRESO';
+    concept: string;
+    amount: number;
+    time?: string;
+    date?: string;
+    user?: string;
+    voucher?: string;
+  }>;
 }
 
 export type RoleType = 'SUPERADMIN' | 'ADMIN' | 'ENCARGADO' | 'CAJERO' | 'CONSULTA';

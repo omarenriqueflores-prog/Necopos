@@ -365,6 +365,33 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
         currentAccountDetails,
         notes,
         status: Math.abs(cashDifference) < 1 ? 'CONCILIADO' : 'CON_DIFERENCIA',
+        salesIds: branchSales.map((s: any) => s.id || s.ticketNumber),
+        movementIds: shiftMovements.map((m: any) => m.id),
+        salesSummary: branchSales.map((s: any) => ({
+          id: s.id,
+          ticketNumber: s.ticketNumber,
+          date: s.date,
+          time: s.time,
+          customerName: s.customerName || (s.customer?.name) || 'Consumidor Final',
+          customerDni: s.customer?.dni || s.customer?.cuit,
+          invoiceType: s.invoiceType || 'RECIBO_COMUN',
+          paymentMethod: s.paymentMethod,
+          total: Number(s.total) || 0,
+          itemsCount: Array.isArray(s.items) ? s.items.length : 0,
+          items: s.items || [],
+          combinedPayments: s.combinedPayments || [],
+          cae: s.cae,
+        })),
+        movementsSummary: shiftMovements.map((m: any) => ({
+          id: m.id,
+          type: m.type,
+          concept: m.concept,
+          amount: Number(m.amount) || 0,
+          time: m.time,
+          date: m.date,
+          user: m.user,
+          voucher: m.voucher,
+        })),
       };
 
       // Impresión de ticket de cierre fiscal Z en impresora térmica 80mm
