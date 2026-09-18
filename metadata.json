@@ -1,0 +1,6 @@
+{
+  "name": "NECO POS",
+  "description": "Sistema de gestión comercial y punto de venta de escritorio para carnicerías Neco con soporte de balanzas, facturación y cuentas corrientes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

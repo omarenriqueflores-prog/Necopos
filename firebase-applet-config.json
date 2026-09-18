@@ -1,0 +1,12 @@
+{
+  "projectId": "necopos",
+  "appId": "1:146848172889:web:af16c5f036455744c55a48",
+  "apiKey": "AIzaSyD9S-NZOIbQTBRmBKcw4EzdT05suRsKJlE",
+  "authDomain": "necopos.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-necopos-1af90faf-2bee-44ff-8358-0ab6350c10b3",
+  "storageBucket": "necopos.firebasestorage.app",
+  "messagingSenderId": "146848172889",
+  "measurementId": "",
+  "oAuthClientId": "146848172889-7hangproc0bcucg594oakls774epm80k.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}

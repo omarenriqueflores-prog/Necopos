@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\s\\-]+$');
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /products/{productId} {
+      allow read, delete: if isValidId(productId);
+      allow create, update: if isValidId(productId) 
+        && !(productId in ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110', '111', '112'] 
+             && request.resource.data.description in [
+               'ASADO DE TIRA SUPERIOR',
+               'BIFE DE CHORIZO PREMIUM',
+               'VACÍO CORTE ESPECIAL',
+               'MILANESA DE NALGA PREPARADA',
+               'MILANESA DE POLLO REBOZADA',
+               'CHORIZO BOMBÓN DE CERDO',
+               'MORCILLA CRIOLLA ESPECIAL',
+               'CARNE PICADA ESPECIAL',
+               'MATAMBRE VACUNO SELECCIONADO',
+               'BOLA DE LOMO / NALGA ENTERA',
+               'PECHITO DE CERDO CON MANTA',
+               'POLLO ENTERO FRESCO'
+             ]);
+    }
+
+    match /sales/{saleId} {
+      allow read, write: if isValidId(saleId);
+    }
+
+    match /customers/{customerId} {
+      allow read, write: if isValidId(customerId);
+    }
+
+    match /employees/{employeeId} {
+      allow read, write: if isValidId(employeeId);
+    }
+
+    match /branches/{branchId} {
+      allow read, write: if isValidId(branchId);
+    }
+
+    match /users/{userId} {
+      allow read, write: if isValidId(userId);
+    }
+
+    match /accountMovements/{movId} {
+      allow read, write: if isValidId(movId);
+    }
+
+    match /cashMovements/{movId} {
+      allow read, write: if isValidId(movId);
+    }
+
+    match /cashClosures/{closureId} {
+      allow read, write: if isValidId(closureId);
+    }
+
+    match /electronicInvoices/{invId} {
+      allow read, write: if isValidId(invId);
+    }
+
+    match /arcaConfig/{cfgId} {
+      allow read, write: if isValidId(cfgId);
+    }
+  }
+}

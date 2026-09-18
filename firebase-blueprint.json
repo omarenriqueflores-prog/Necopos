@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Butcher shop product cut item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "pricePerKg": { "type": "number" },
+        "category": { "type": "string" },
+        "unit": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "code", "name", "pricePerKg", "category"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Completed POS sale transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ticketNumber": { "type": "string" },
+        "date": { "type": "string" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "operator": { "type": "string" },
+        "subtotal": { "type": "number" },
+        "vat": { "type": "number" },
+        "total": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "invoiceType": { "type": "string" }
+      },
+      "required": ["id", "ticketNumber", "date", "total", "paymentMethod"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Cuenta Corriente habitual customer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "cuit": { "type": "string" },
+        "vatCondition": { "type": "string" },
+        "phone": { "type": "string" },
+        "currentBalance": { "type": "number" },
+        "creditLimit": { "type": "number" }
+      },
+      "required": ["id", "name", "currentBalance"]
+    },
+    "ElectronicInvoice": {
+      "title": "ElectronicInvoice",
+      "description": "ARCA / AFIP Electronic invoice or credit note (WSFEv1)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "branchId": { "type": "string" },
+        "pointOfSale": { "type": "string" },
+        "cbteTipo": { "type": "number" },
+        "cbteLetra": { "type": "string" },
+        "cbteNumero": { "type": "number" },
+        "formattedNumber": { "type": "string" },
+        "date": { "type": "string" },
+        "cae": { "type": "string" },
+        "caeVto": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "branchId", "pointOfSale", "cbteTipo", "cbteNumero", "totalAmount", "status"]
+    },
+    "ArcaConfig": {
+      "title": "ArcaConfig",
+      "description": "ARCA global configuration and credentials state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cuit": { "type": "string" },
+        "companyName": { "type": "string" },
+        "environment": { "type": "string" }
+      },
+      "required": ["id", "cuit", "companyName", "environment"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Catalog of butcher shop products"
+    },
+    "/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Completed sales transactions"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Customers with credit accounts"
+    },
+    "/electronicInvoices/{invId}": {
+      "schema": "ElectronicInvoice",
+      "description": "ARCA electronic invoices and credit notes"
+    },
+    "/arcaConfig/{cfgId}": {
+      "schema": "ArcaConfig",
+      "description": "Global ARCA settings"
+    }
+  }
+}
