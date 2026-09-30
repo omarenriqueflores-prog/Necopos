@@ -346,4 +346,116 @@ export type ActiveScreen =
   | 'REPORTES'
   | 'RANKING_PRODUCTOS'
   | 'USUARIOS_ROLES'
-  | 'CONFIGURACION';
+  | 'CONFIGURACION'
+  | 'STOCK';
+
+// ==========================================
+// MÓDULO DE STOCK E INVENTARIO - NECO POS
+// ==========================================
+
+export interface BranchStock {
+  id: string; // `${branchId}_${productCode}`
+  branchId: 'NECO 1' | 'NECO 2';
+  productCode: string;
+  currentStock: number; // en Kg (3 decimales) o Unid
+  minStock: number; // Alerta de stock mínimo
+  lastUpdated: string; // ISO date
+  chamberName?: string; // Ej: 'Cámara Frigorífica NECO 1'
+}
+
+export type StockMovementType =
+  | 'ENTRADA'
+  | 'VENTA'
+  | 'TRANSFERENCIA_SALIDA'
+  | 'TRANSFERENCIA_ENTRADA'
+  | 'AJUSTE_POSITIVO'
+  | 'AJUSTE_NEGATIVO'
+  | 'MERMA'
+  | 'DEVOLUCION'
+  | 'STOCK_INICIAL';
+
+export interface StockMovement {
+  id: string;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm:ss
+  timestamp: number;
+  branchId: 'NECO 1' | 'NECO 2';
+  chamber?: string;
+  productCode: string;
+  productDescription: string;
+  category: string;
+  unitType: UnitType;
+  type: StockMovementType;
+  quantity: number; // Siempre valor absoluto positivo
+  factor: 1 | -1; // 1 para sumas, -1 para restas
+  previousStock: number;
+  newStock: number;
+  unitPrice: number; // Precio de venta vigente al momento del movimiento
+  totalValue: number; // quantity * unitPrice
+  referenceDoc?: string; // Nro Ticket, Factura, Transferencia, Remito
+  saleId?: string; // Identificador único de venta para idempotencia
+  transferId?: string;
+  reason?: string; // Motivo de merma o ajuste
+  operator: string;
+  notes?: string;
+}
+
+export type StockTransferStatus = 'BORRADOR' | 'EN_TRANSITO' | 'RECIBIDA' | 'CANCELADA';
+
+export interface StockTransferItem {
+  productCode: string;
+  description: string;
+  category: string;
+  unitType: UnitType;
+  quantity: number;
+  price: number;
+  totalValue: number;
+}
+
+export interface StockTransfer {
+  id: string;
+  transferNumber: string; // Ej: TR-0001
+  originBranch: 'NECO 1' | 'NECO 2';
+  destinationBranch: 'NECO 1' | 'NECO 2';
+  status: StockTransferStatus;
+  createdAt: string;
+  sentAt?: string;
+  receivedAt?: string;
+  createdByUser: string;
+  receivedByUser?: string;
+  items: StockTransferItem[];
+  totalKilos: number;
+  totalUnits: number;
+  totalCommercialValue: number;
+  notes?: string;
+  vehiclePlate?: string;
+  driverName?: string;
+}
+
+export interface PhysicalInventoryItem {
+  productCode: string;
+  description: string;
+  category: string;
+  unitType: UnitType;
+  systemStock: number;
+  physicalCount: number;
+  difference: number;
+  unitPrice: number;
+  differenceValue: number;
+}
+
+export interface PhysicalInventory {
+  id: string;
+  inventoryNumber: string;
+  branchId: 'NECO 1' | 'NECO 2';
+  chamber: string;
+  date: string;
+  time: string;
+  operator: string;
+  status: 'BORRADOR' | 'APLICADO';
+  items: PhysicalInventoryItem[];
+  totalDifferencesKg: number;
+  totalDifferencesValue: number;
+  appliedAt?: string;
+  notes?: string;
+}

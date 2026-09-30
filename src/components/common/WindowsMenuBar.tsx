@@ -79,6 +79,18 @@ export const WindowsMenuBar: React.FC<WindowsMenuBarProps> = ({
         { label: 'Ranking de Productos Más Vendidos (Kg/Un)', accessKey: 'R', screen: 'RANKING_PRODUCTOS' },
       ],
     },
+    stock: {
+      label: 'Stock & Cámaras',
+      accessChar: 'S',
+      items: [
+        { label: 'Cámaras Frigoríficas & Existencias', accessKey: 'C', screen: 'STOCK', hotkey: 'F5' },
+        { label: 'Kardex de Movimientos Inmutable', accessKey: 'K', screen: 'STOCK' },
+        { label: 'Traslados Inter-Sucursal (NECO 1 ⇄ NECO 2)', accessKey: 'T', screen: 'STOCK' },
+        { label: 'Registro de Mermas y Ajustes', accessKey: 'M', screen: 'STOCK' },
+        { label: 'Arqueo Físico de Cámara & Conciliación', accessKey: 'A', screen: 'STOCK' },
+        { label: 'Valorización Comercial Cárnica Vigente', accessKey: 'V', screen: 'STOCK' },
+      ],
+    },
     clientes: {
       label: 'Clientes',
       accessChar: 'C',

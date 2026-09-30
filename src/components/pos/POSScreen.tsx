@@ -89,6 +89,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     branchConfigs,
     addAccountMovement,
     addAuditLog,
+    branchStock,
   } = useFirebase();
 
   const allEmployees = useMemo(() => {
@@ -123,6 +124,22 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   const [lastNotification, setLastNotification] = useState<string | null>(null);
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+
+  const formatQuantity = useCallback((val: number, unitType: string = 'Kg') => {
+    return unitType === 'Kg'
+      ? `${new Intl.NumberFormat('es-AR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(val)} Kg`
+      : `${Math.round(val)} Unid.`;
+  }, []);
+
+  const getAvailableChamberStock = useCallback(
+    (productCode: string): number => {
+      const stockDoc = (branchStock || []).find(
+        (s) => s.branchId === currentBranch.id && s.productCode === productCode
+      );
+      return stockDoc ? Number(stockDoc.currentStock) || 0 : 0;
+    },
+    [branchStock, currentBranch.id]
+  );
 
   const getNextTicketNumber = useCallback(() => {
     // Dedicated internal POS ticket prefix (independent from ARCA fiscal point of sale)
@@ -170,7 +187,27 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   }, [barcodeInput, products]);
 
   const handleSelectProductFromSearch = (product: Product) => {
-    const defaultAmount = 1;
+    const availableStock = getAvailableChamberStock(product.code);
+    if (availableStock <= 0) {
+      showAlert(
+        `⛔ SIN STOCK EN CÁMARA:\n\nEl artículo "${product.description}" (Cód. ${product.code}) no tiene stock disponible en la cámara de ${currentBranch.name || currentBranch.id} (Stock actual: 0,000 ${product.unitType}).\n\nNo se puede registrar la venta sin stock físico disponible en cámara.`
+      );
+      return;
+    }
+
+    const currentInTicket = saleItems
+      .filter((it) => it.code === product.code)
+      .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+
+    const remaining = Math.max(0, availableStock - currentInTicket);
+    if (remaining <= 0) {
+      showAlert(
+        `⛔ LÍMITE DE STOCK ALCANZADO:\n\nYa ha asignado al ticket todo el stock disponible en cámara para "${product.description}" (${formatQuantity(availableStock, product.unitType)}) en ${currentBranch.id}.`
+      );
+      return;
+    }
+
+    const defaultAmount = product.unitType === 'Kg' ? Math.min(1, remaining) : 1;
     const subtotal = Math.round(product.price * defaultAmount * 100) / 100;
 
     const newItem: SaleItem = {
@@ -190,7 +227,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     setBarcodeInput('');
     setHighlightedSearchIndex(-1);
     setIsSearchFocused(false);
-    showNotification(`Producto agregado: ${product.description} -> ${formatCurrency(subtotal)}`);
+    showNotification(`Producto agregado: ${product.description} (${formatQuantity(defaultAmount, product.unitType)}) -> ${formatCurrency(subtotal)}`);
     setTimeout(() => barcodeInputRef.current?.focus(), 10);
   };
 
@@ -298,6 +335,28 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     const parsed = parseBarcodeInput(raw, products, currentBranch.scaleEanPrefix);
 
     if (parsed && parsed.product) {
+      const availableStock = getAvailableChamberStock(parsed.product.code);
+      const requested = parsed.product.unitType === 'Kg' ? (parsed.weight || 1) : (parsed.quantity || 1);
+
+      if (availableStock <= 0) {
+        showAlert(
+          `⛔ SIN STOCK EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${parsed.product.description}" (Cód. ${parsed.product.code}) figura con 0,000 ${parsed.product.unitType} en cámara frigorífica.\n\nNo es posible ingresar este artículo.`
+        );
+        return;
+      }
+
+      const currentInTicket = saleItems
+        .filter((it) => it.code === parsed.product.code)
+        .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+
+      if (currentInTicket + requested > availableStock) {
+        const remaining = Math.max(0, availableStock - currentInTicket);
+        showAlert(
+          `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${parsed.product.description}" (Cód. ${parsed.product.code}):\n• Cantidad solicitada: ${formatQuantity(requested, parsed.product.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, parsed.product.unitType)}\n• Restante libre: ${formatQuantity(remaining, parsed.product.unitType)}\n\nNo es posible vender más kilos de los que existen físicamente en la cámara.`
+        );
+        return;
+      }
+
       const newItem: SaleItem = {
         id: `item-${Date.now()}`,
         code: parsed.product.code,
@@ -305,7 +364,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         unitType: parsed.product.unitType,
         weight: parsed.weight,
         quantity: parsed.quantity,
- unitPrice: parsed.unitPrice,
+        unitPrice: parsed.unitPrice,
         discountPercent: 0,
         subtotal: parsed.subtotal,
         scaleLabelCode: parsed.isScaleLabel ? raw : undefined,
@@ -522,6 +581,25 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       }
     }
 
+    // 4. VALIDACIÓN ESTRICTA DE STOCK EN CÁMARA FRIGORÍFICA: No permitir ventas con stock insuficiente
+    const productTotals = new Map<string, { desc: string; unitType: string; requested: number }>();
+    for (const it of saleItems) {
+      const existing = productTotals.get(it.code) || { desc: it.description, unitType: it.unitType, requested: 0 };
+      const qty = it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0);
+      existing.requested += qty;
+      productTotals.set(it.code, existing);
+    }
+
+    for (const [code, info] of productTotals.entries()) {
+      const availableStock = getAvailableChamberStock(code);
+      if (info.requested > availableStock) {
+        await showAlert(
+          `⛔ VENTA BLOQUEADA POR FALTA DE STOCK EN CÁMARA:\n\nSucursal: ${currentBranch.name || currentBranch.id}\nCorte: ${info.desc} (Cód. ${code})\n• Cantidad en ticket a vender: ${formatQuantity(info.requested, info.unitType)}\n• Stock físico real en cámara: ${formatQuantity(availableStock, info.unitType)}\n\nNo es posible facturar una cantidad superior al stock disponible en la cámara frigorífica de esta sucursal.`
+        );
+        return;
+      }
+    }
+
     setTicketInvoiceType(type);
 
     if (type === 'FACTURA_A' || type === 'FACTURA_B') {
@@ -732,6 +810,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         invoiceType: inv.cbteTipo === 1 ? 'FACTURA_A' : 'FACTURA_B',
         cashGiven: selectedPayment === 'PAGO_COMBINADO' ? v1 + v2 : paidNum,
         change: selectedPayment === 'PAGO_COMBINADO' ? Math.max(0, (v1 + v2) - totalAmount) : changeAmount,
+        ticketNumber: inv.formattedNumber,
+        branchId: currentBranch.id,
       });
 
       setIsTicketModalOpen(false);
@@ -754,9 +834,29 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
   const handleApplyEdit = () => {
     if (selectedItemIndex >= 0 && selectedItemIndex < saleItems.length) {
-      const val = parseFloat(editQtyOrWeight) || 1;
-      const price = parseFloat(editPrice) || saleItems[selectedItemIndex].unitPrice;
+      const val = parseFloat(editQtyOrWeight) || 0;
+      if (val <= 0) {
+        showAlert('La cantidad o peso debe ser un valor numérico mayor a 0.');
+        return;
+      }
+
       const current = saleItems[selectedItemIndex];
+      const availableStock = getAvailableChamberStock(current.code);
+
+      // Sum other items with same code on the ticket
+      const otherItemsWeight = saleItems
+        .filter((it, idx) => it.code === current.code && idx !== selectedItemIndex)
+        .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+
+      if (val + otherItemsWeight > availableStock) {
+        const maxPossible = Math.max(0, availableStock - otherItemsWeight);
+        showAlert(
+          `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${current.description}" tiene un stock disponible de ${formatQuantity(availableStock, current.unitType)} en la cámara.\n\nNo se puede establecer una cantidad de ${formatQuantity(val, current.unitType)} porque superaría las existencias reales en cámara.\n\nEl máximo disponible para esta línea es de ${formatQuantity(maxPossible, current.unitType)}.`
+        );
+        return;
+      }
+
+      const price = parseFloat(editPrice) || saleItems[selectedItemIndex].unitPrice;
 
       const isSuperOrAdmin = currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN';
       const canModifyPrices = isSuperOrAdmin || currentUser?.permissions?.canModifyPrices !== false;
@@ -783,7 +883,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       });
 
       setIsEditModalOpen(false);
-      showNotification('Línea modificada correctamente.');
+      showNotification('Línea modificada y stock validado correctamente.');
     }
   };
 
@@ -803,15 +903,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   return (
     <div className="flex flex-col w-full h-[calc(100vh-80px)] select-none bg-[#ebeef2] text-[#181c1f] font-sans p-1">
       {/* 1. TOP BAR: SCANNER INPUT & QUICK ACTIONS (WINFORMS DOCKED DENSITY) */}
-      <div className="bg-white p-2 border border-[#c4c6cf] shadow-sm mb-1">
+      <div className="bg-white p-2 border border-[#c4c6cf] shadow-sm mb-1 text-black">
         <form onSubmit={handleBarcodeSubmit} className="flex flex-wrap lg:flex-nowrap items-center gap-2 relative">
           {/* Main Barcode / PLU / Article Search input */}
           <div className="flex items-center gap-1.5 flex-1 min-w-[340px]">
             <label
               htmlFor="barcodeInput"
-              className="text-[11px] font-bold text-[#002046] whitespace-nowrap flex items-center gap-1 uppercase"
+              className="text-[11px] font-bold text-black whitespace-nowrap flex items-center gap-1 uppercase"
             >
-              <span className="bg-[#002046] text-white px-1 font-mono text-[10px]">F4</span>
+              <span className="bg-black text-white px-1 font-mono text-[10px]">F4</span>
               <span>BUSCAR ARTÍCULO / CÓDIGO:</span>
             </label>
             <div className="relative flex-1 flex items-center">
@@ -830,7 +930,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                   setIsSearchFocused(true);
                 }}
                 placeholder="Escriba nombre del corte, PLU o escanee código (ej. Asado, Vacío, 00125)..."
-                className="w-full h-[30px] pl-2.5 pr-14 bg-[#f7fafe] text-[#002046] font-mono text-[13px] font-bold border-2 border-[#002046] focus:bg-white focus:outline-none shadow-inner"
+                className="w-full h-[30px] pl-2.5 pr-14 bg-[#f7fafe] text-black font-mono text-[13px] font-bold border-2 border-black focus:bg-white focus:outline-none shadow-inner placeholder:text-[#555555]"
                 autoComplete="off"
               />
               <div className="absolute right-2 flex items-center gap-1">
@@ -842,30 +942,33 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                       setHighlightedSearchIndex(-1);
                       barcodeInputRef.current?.focus();
                     }}
-                    className="text-[#aa3531] hover:text-[#002046] font-bold px-1 text-[11px] cursor-pointer"
+                    className="text-[#aa3531] hover:text-black font-bold px-1 text-[11px] cursor-pointer"
                     title="Limpiar búsqueda"
                   >
                     ✕
                   </button>
                 )}
-                <Search className="w-3.5 h-3.5 text-[#002046]" />
+                <Search className="w-3.5 h-3.5 text-black" />
               </div>
 
               {/* LIVE MATCHING PRODUCTS DROPDOWN POPOVER */}
               {isSearchFocused && matchingProducts.length > 0 && (
-                <div className="absolute top-[34px] left-0 right-0 z-50 bg-white border-2 border-[#002046] shadow-xl overflow-hidden font-sans">
-                  <div className="bg-[#002046] text-white px-2 py-1 text-[11px] font-bold flex items-center justify-between">
+                <div className="absolute top-[34px] left-0 right-0 z-50 bg-white border-2 border-black shadow-xl overflow-hidden font-sans">
+                  <div className="bg-black text-white px-2 py-1 text-[11px] font-bold flex items-center justify-between">
                     <span className="flex items-center gap-1">
                       <Search className="w-3 h-3 text-[#aec7f7]" />
                       Coincidencias de búsqueda ({matchingProducts.length})
                     </span>
-                    <span className="text-[10px] text-[#aec7f7] font-normal">
+                    <span className="text-[10px] text-gray-300 font-normal">
                       [↑ ↓ Navegar | ENTER Seleccionar]
                     </span>
                   </div>
                   <div className="max-h-[280px] overflow-y-auto divide-y divide-[#ebeef2]">
                     {matchingProducts.map((p, idx) => {
                       const isHighlighted = idx === highlightedSearchIndex;
+                      const stockInChamber = getAvailableChamberStock(p.code);
+                      const isOutOfStock = stockInChamber <= 0;
+
                       return (
                         <div
                           key={p.code}
@@ -876,8 +979,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                           onMouseEnter={() => setHighlightedSearchIndex(idx)}
                           className={`px-3 py-2 cursor-pointer flex items-center justify-between transition-colors ${
                             isHighlighted
-                              ? 'bg-[#002046] text-white font-bold'
-                              : 'bg-white text-[#181c1f] hover:bg-[#d6e3ff]/40'
+                              ? 'bg-black text-white font-bold'
+                              : 'bg-white text-black hover:bg-[#d6e3ff]/40'
                           }`}
                         >
                           <div className="flex flex-col">
@@ -885,23 +988,34 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                               <span
                                 className={`font-mono text-[11px] px-1 font-bold ${
                                   isHighlighted
-                                    ? 'bg-[#1b365d] text-[#d4e3ff]'
-                                    : 'bg-[#e0e3e7] text-[#002046]'
+                                    ? 'bg-[#333333] text-white'
+                                    : 'bg-[#e0e3e7] text-black'
                                 }`}
                               >
                                 CÓD: {p.code} {p.scalePlu ? `| PLU: ${p.scalePlu}` : ''}
                               </span>
-                              <span className="text-[13px] uppercase font-bold tracking-tight">
+                              <span className="text-[13px] uppercase font-bold tracking-tight text-black">
                                 {p.description}
                               </span>
                             </div>
                             <div className="flex items-center gap-2 mt-0.5 text-[10px]">
                               <span
                                 className={`${
-                                  isHighlighted ? 'text-[#aec7f7]' : 'text-[#74777f]'
+                                  isHighlighted ? 'text-gray-300' : 'text-black'
                                 }`}
                               >
-                                Categoría: <strong>{p.category}</strong>
+                                Categoría: <strong className="text-black">{p.category}</strong>
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.2 rounded font-mono font-bold text-[10px] ${
+                                  isOutOfStock
+                                    ? 'bg-red-100 text-red-800 border border-red-300'
+                                    : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                }`}
+                              >
+                                {isOutOfStock
+                                  ? `⛔ SIN STOCK (${currentBranch.id})`
+                                  : `Cámara ${currentBranch.id}: ${formatQuantity(stockInChamber, p.unitType)}`}
                               </span>
                             </div>
                           </div>
@@ -909,7 +1023,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                           <div className="flex items-center gap-3">
                             <span
                               className={`font-mono text-[14px] font-bold ${
-                                isHighlighted ? 'text-[#a8c7ff]' : 'text-[#002046]'
+                                isHighlighted ? 'text-white' : 'text-black'
                               }`}
                             >
                               {formatCurrency(p.price)}
@@ -919,14 +1033,17 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                             </span>
                             <button
                               type="button"
-                              className={`h-[22px] px-2 text-[10px] font-bold uppercase rounded flex items-center gap-1 cursor-pointer ${
+                              disabled={isOutOfStock}
+                              className={`h-[22px] px-2 text-[10px] font-bold uppercase rounded flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                                 isHighlighted
                                   ? 'bg-[#00639b] text-white hover:bg-[#004a77]'
-                                  : 'bg-[#002046] text-white hover:bg-[#1b365d]'
+                                  : isOutOfStock
+                                  ? 'bg-gray-300 text-gray-600'
+                                  : 'bg-black text-white hover:bg-[#333333]'
                               }`}
                             >
                               <Plus className="w-3 h-3" />
-                              <span>Agregar</span>
+                              <span>{isOutOfStock ? 'Sin Stock' : 'Agregar'}</span>
                             </button>
                           </div>
                         </div>
@@ -939,21 +1056,21 @@ export const POSScreen: React.FC<POSScreenProps> = ({
           </div>
 
           {/* Customer / Employee info & Selector button */}
-          <div className="flex items-center gap-1">
-            <label className="text-[11px] font-bold text-[#44474e] whitespace-nowrap">
+          <div className="flex items-center gap-1 text-black">
+            <label className="text-[11px] font-bold text-black whitespace-nowrap">
               {selectedParty?.type === 'EMPLEADO' ? 'EMPLEADO:' : 'CLIENTE:'}
             </label>
             <div
-              className={`flex items-center border px-2 h-[26px] text-[12px] ${
+              className={`flex items-center border px-2 h-[26px] text-[12px] font-bold ${
                 selectedParty?.type === 'EMPLEADO'
-                  ? 'bg-[#e6f4ea] border-[#00522c] text-[#00522c]'
-                  : 'bg-[#e0e3e7] border-[#c4c6cf] text-[#002046]'
+                  ? 'bg-[#e6f4ea] border-[#00522c] text-black'
+                  : 'bg-[#e0e3e7] border-black text-black'
               }`}
             >
               {selectedParty?.type === 'EMPLEADO' && (
                 <UserCheck className="w-3.5 h-3.5 text-[#00522c] mr-1 shrink-0" />
               )}
-              <span className="font-bold truncate max-w-[190px]">
+              <span className="font-bold truncate max-w-[190px] text-black">
                 {selectedCustomer
                   ? `${selectedCustomer.code} - ${selectedCustomer.name}`
                   : '0001 - Consumidor Final'}
@@ -991,22 +1108,22 @@ export const POSScreen: React.FC<POSScreenProps> = ({
             <button
               type="button"
               onClick={() => setIsCustomerModalOpen(true)}
-              className="h-[26px] px-2 bg-[#ebeef2] hover:bg-[#d0d4dc] border border-[#74777f] text-[#002046] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+              className="h-[26px] px-2 bg-[#ebeef2] hover:bg-[#d0d4dc] border border-black text-black text-[11px] font-bold flex items-center gap-1 cursor-pointer"
             >
-              <span className="bg-[#1b365d] text-white px-1 font-mono text-[10px] font-bold">F3</span>
+              <span className="bg-black text-white px-1 font-mono text-[10px] font-bold">F3</span>
               <span>Cta Cte</span>
             </button>
           </div>
 
           {/* Real-time search status indicator */}
-          <div className="flex items-center gap-2 ml-auto text-[11px]">
+          <div className="flex items-center gap-2 ml-auto text-[11px] text-black">
             {matchingProducts.length > 0 && barcodeInput.trim() ? (
-              <span className="bg-[#d6e3ff] text-[#002046] px-2 py-0.5 font-bold border border-[#74777f]/40 flex items-center gap-1">
-                <Search className="w-3 h-3" />
+              <span className="bg-[#d6e3ff] text-black px-2 py-0.5 font-bold border border-black/40 flex items-center gap-1">
+                <Search className="w-3 h-3 text-black" />
                 {matchingProducts.length} producto(s) encontrado(s)
               </span>
             ) : (
-              <span className="text-[#44474e] font-semibold flex items-center gap-1">
+              <span className="text-black font-bold flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-[#008855]"></span>
                 Búsqueda en tiempo real activa
               </span>
@@ -1015,10 +1132,10 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         </form>
 
         {/* Sub-strip: Scanner Info & Toast Alert */}
-        <div className="flex items-center justify-between mt-1 px-1 bg-[#f1f4f8] text-[11px] text-[#44474e] border-t border-[#ebeef2] pt-1">
-          <div className="flex items-center gap-3">
-            <span className="text-[#002046] font-semibold">Modo Lector / EAN-13:</span>
-            <span>Prefijo Carnicería: <strong className="text-[#181c1f] font-mono">{currentBranch.scaleEanPrefix} (Pesables)</strong></span>
+        <div className="flex items-center justify-between mt-1 px-1 bg-[#f1f4f8] text-[11px] text-black border-t border-[#c4c6cf] pt-1">
+          <div className="flex items-center gap-3 text-black">
+            <span className="text-black font-bold">Modo Lector / EAN-13:</span>
+            <span className="text-black font-medium">Prefijo Carnicería: <strong className="text-black font-mono font-bold">{currentBranch.scaleEanPrefix} (Pesables)</strong></span>
           </div>
 
           {lastNotification && (
@@ -1072,6 +1189,11 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                   saleItems.map((item, idx) => {
                     const isSelected = idx === selectedItemIndex;
                     const isKg = item.unitType === 'Kg';
+                    const availableStock = getAvailableChamberStock(item.code);
+                    const totalReqForCode = saleItems
+                      .filter((x) => x.code === item.code)
+                      .reduce((s, x) => s + (x.unitType === 'Kg' ? (x.weight || 0) : (x.quantity || 0)), 0);
+                    const isExceeded = totalReqForCode > availableStock;
 
                     return (
                       <tr
@@ -1084,7 +1206,9 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         }}
                         className={`h-[24px] cursor-pointer ${
                           isSelected
-                            ? 'bg-[#002046] text-white font-bold'
+                            ? isExceeded ? 'bg-red-900 text-white font-bold' : 'bg-[#002046] text-white font-bold'
+                            : isExceeded
+                            ? 'bg-red-50 text-red-950 hover:bg-red-100 font-medium'
                             : idx % 2 === 0
                             ? 'bg-white hover:bg-[#e5e8ec]'
                             : 'bg-[#f1f4f8] hover:bg-[#e5e8ec]'
@@ -1111,6 +1235,11 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                               [Bal. #{item.scaleLabelCode}]
                             </span>
                           )}
+                          {isExceeded && (
+                            <span className="ml-1.5 px-1.5 py-0.2 rounded bg-red-600 text-white font-bold text-[9px] uppercase tracking-tight inline-block shadow-xs">
+                              ⛔ Excede Stock (Disp: {formatQuantity(availableStock, item.unitType)})
+                            </span>
+                          )}
                         </td>
                         <td
                           className={`text-center text-[10px] font-bold border-r border-[#c4c6cf] ${
@@ -1119,7 +1248,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         >
                           {item.unitType}
                         </td>
-                        <td className="text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf]">
+                        <td className={`text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf] ${isExceeded && !isSelected ? 'text-red-700 font-bold' : ''}`}>
                           {isKg ? formatWeight(item.weight || 0) : `${item.quantity || 1} un`}
                         </td>
                         <td className="text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf]">
@@ -1839,85 +1968,110 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         title="MODIFICAR LÍNEA DE VENTA SELECCIONADA - [F6]"
         maxWidth="max-w-md"
       >
-        {saleItems[selectedItemIndex] && (
-          <div className="flex flex-col gap-2.5 p-2 text-[12px]">
-            <div className="bg-white p-2 border border-[#c4c6cf]">
-              <span className="font-bold text-[#002046] block">
-                {saleItems[selectedItemIndex].description}
-              </span>
-              <span className="text-[11px] text-[#44474e]">
-                Código: {saleItems[selectedItemIndex].code} | Unidad:{' '}
-                {saleItems[selectedItemIndex].unitType}
-              </span>
-            </div>
+        {saleItems[selectedItemIndex] && (() => {
+          const current = saleItems[selectedItemIndex];
+          const chamberStock = getAvailableChamberStock(current.code);
+          const otherItemsWeight = saleItems
+            .filter((it, idx) => it.code === current.code && idx !== selectedItemIndex)
+            .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+          const maxAllowed = Math.max(0, chamberStock - otherItemsWeight);
 
-            <div className="flex flex-col gap-1">
-              <label className="font-bold text-[#181c1f]">
-                {saleItems[selectedItemIndex].unitType === 'Kg'
-                  ? 'Peso en Kilogramos (Kg):'
-                  : 'Cantidad (Unidades):'}
-              </label>
-              <input
-                type="number"
-                step={saleItems[selectedItemIndex].unitType === 'Kg' ? '0.005' : '1'}
-                value={editQtyOrWeight}
-                onChange={(e) => setEditQtyOrWeight(e.target.value)}
-                className="h-[28px] px-2 bg-white font-mono text-[14px] font-bold border border-[#74777f] focus:outline-none"
-                autoFocus
-              />
-            </div>
+          return (
+            <div className="flex flex-col gap-2.5 p-2 text-[12px]">
+              <div className="bg-white p-2 border border-[#c4c6cf]">
+                <span className="font-bold text-[#002046] block">
+                  {current.description}
+                </span>
+                <div className="text-[11px] text-[#44474e] flex items-center justify-between mt-1">
+                  <span>
+                    Código: {current.code} | Unidad: {current.unitType}
+                  </span>
+                  <span
+                    className={`font-mono font-bold px-1.5 py-0.5 rounded text-[10px] ${
+                      chamberStock <= 0
+                        ? 'bg-red-100 text-red-800 border border-red-300'
+                        : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    }`}
+                  >
+                    Stock Cámara {currentBranch.id}: {formatQuantity(chamberStock, current.unitType)}
+                  </span>
+                </div>
+              </div>
 
-            <div className="flex flex-col gap-1">
-              <label className="font-bold text-[#181c1f] flex items-center justify-between">
-                <span>Precio Unitario ($):</span>
-                {!(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false) && (
-                  <span className="text-[10px] text-amber-700 font-normal">(Solo lectura)</span>
-                )}
-              </label>
-              <input
-                type="number"
-                disabled={!(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false)}
-                value={editPrice}
-                onChange={(e) => setEditPrice(e.target.value)}
-                className={`h-[28px] px-2 font-mono text-[14px] font-bold border border-[#74777f] focus:outline-none ${
-                  !(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false)
-                    ? 'bg-[#f1f4f8] text-[#74777f] cursor-not-allowed'
-                    : 'bg-white'
-                }`}
-              />
-            </div>
+              <div className="flex flex-col gap-1">
+                <label className="font-bold text-[#181c1f] flex items-center justify-between">
+                  <span>
+                    {current.unitType === 'Kg'
+                      ? 'Peso en Kilogramos (Kg):'
+                      : 'Cantidad (Unidades):'}
+                  </span>
+                  <span className="text-[10px] font-bold text-[#00639b]">
+                    Máx. permitido: {formatQuantity(maxAllowed, current.unitType)}
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  step={current.unitType === 'Kg' ? '0.005' : '1'}
+                  max={maxAllowed > 0 ? maxAllowed : undefined}
+                  value={editQtyOrWeight}
+                  onChange={(e) => setEditQtyOrWeight(e.target.value)}
+                  className="h-[28px] px-2 bg-white font-mono text-[14px] font-bold border border-[#74777f] focus:outline-none"
+                  autoFocus
+                />
+              </div>
 
-            <div className="flex items-center justify-between pt-2 border-t border-[#c4c6cf]">
-              <button
-                type="button"
-                onClick={() => {
-                  handleDeleteItem(selectedItemIndex);
-                  setIsEditModalOpen(false);
-                }}
-                className="h-[26px] px-3 bg-[#aa3531] hover:bg-[#8b2b28] text-white font-bold text-[11px] cursor-pointer flex items-center gap-1.5"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Eliminar Producto</span>
-              </button>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="font-bold text-[#181c1f] flex items-center justify-between">
+                  <span>Precio Unitario ($):</span>
+                  {!(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false) && (
+                    <span className="text-[10px] text-amber-700 font-normal">(Solo lectura)</span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  disabled={!(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false)}
+                  value={editPrice}
+                  onChange={(e) => setEditPrice(e.target.value)}
+                  className={`h-[28px] px-2 font-mono text-[14px] font-bold border border-[#74777f] focus:outline-none ${
+                    !(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false)
+                      ? 'bg-[#f1f4f8] text-[#74777f] cursor-not-allowed'
+                      : 'bg-white'
+                  }`}
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-[#c4c6cf]">
                 <button
                   type="button"
-                  onClick={() => setIsEditModalOpen(false)}
-                  className="h-[26px] px-3 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] text-[11px] cursor-pointer"
+                  onClick={() => {
+                    handleDeleteItem(selectedItemIndex);
+                    setIsEditModalOpen(false);
+                  }}
+                  className="h-[26px] px-3 bg-[#aa3531] hover:bg-[#8b2b28] text-white font-bold text-[11px] cursor-pointer flex items-center gap-1.5"
                 >
-                  Cancelar
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Eliminar Producto</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={handleApplyEdit}
-                  className="h-[26px] px-4 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[11px] cursor-pointer"
-                >
-                  Guardar Cambios
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditModalOpen(false)}
+                    className="h-[26px] px-3 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] text-[11px] cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApplyEdit}
+                    className="h-[26px] px-4 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[11px] cursor-pointer"
+                  >
+                    Guardar Cambios
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </WindowsModal>
 
       {/* MODAL 3: Thermal Ticket Preview & POS Receipt */}

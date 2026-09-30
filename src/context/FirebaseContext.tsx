@@ -33,6 +33,10 @@ import {
   ElectronicInvoice,
   ArcaConfig,
   AuditLog,
+  BranchStock,
+  StockMovement,
+  StockTransfer,
+  PhysicalInventory,
 } from '../types/pos';
 import { INITIAL_BRANCH_CONFIGS, INITIAL_USERS } from '../data/mockData';
 
@@ -87,6 +91,10 @@ interface FirebaseContextType {
   electronicInvoices: ElectronicInvoice[];
   arcaConfig: ArcaConfig;
   auditLogs: AuditLog[];
+  branchStock: BranchStock[];
+  stockMovements: StockMovement[];
+  stockTransfers: StockTransfer[];
+  physicalInventories: PhysicalInventory[];
   saveProduct: (p: Product) => Promise<void>;
   saveProductsBatch: (items: Product[]) => Promise<void>;
   deleteProduct: (code: string, docId?: string) => Promise<void>;
@@ -108,6 +116,30 @@ interface FirebaseContextType {
   saveElectronicInvoice: (inv: ElectronicInvoice) => Promise<void>;
   saveArcaConfig: (cfg: ArcaConfig) => Promise<void>;
   addAuditLog: (log: AuditLog) => Promise<void>;
+  recordStockMovement: (movement: StockMovement) => Promise<void>;
+  recordStockMovementsBatch: (movements: StockMovement[]) => Promise<void>;
+  deductSaleStock: (saleData: any, branchId: 'NECO 1' | 'NECO 2', operator: string) => Promise<void>;
+  saveStockTransfer: (transfer: StockTransfer) => Promise<void>;
+  dispatchStockTransfer: (transfer: StockTransfer, operator: string) => Promise<void>;
+  receiveStockTransfer: (transfer: StockTransfer, operator: string) => Promise<void>;
+  cancelStockTransfer: (transfer: StockTransfer, operator: string, reason?: string) => Promise<void>;
+  applyPhysicalInventory: (inventory: PhysicalInventory, operator: string) => Promise<void>;
+  initializeChamberStock: (
+    branchId: 'NECO 1' | 'NECO 2',
+    items: Array<{ productCode: string; stock: number; minStock?: number }>,
+    operator: string
+  ) => Promise<void>;
+  revertCreditNoteStock: (
+    items: any[],
+    branchId: 'NECO 1' | 'NECO 2',
+    operator: string,
+    referenceDoc: string
+  ) => Promise<void>;
+  updateProductMinStock: (
+    branchId: 'NECO 1' | 'NECO 2',
+    productCode: string,
+    minStock: number
+  ) => Promise<void>;
   purgeDatabase: () => Promise<void>;
   purgeProductsCollection: () => Promise<void>;
 }
@@ -142,6 +174,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [electronicInvoices, setElectronicInvoices] = useState<ElectronicInvoice[]>([]);
   const [arcaConfig, setArcaConfig] = useState<ArcaConfig>(DEFAULT_ARCA_CONFIG);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [branchStock, setBranchStock] = useState<BranchStock[]>([]);
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
+  const [stockTransfers, setStockTransfers] = useState<StockTransfer[]>([]);
+  const [physicalInventories, setPhysicalInventories] = useState<PhysicalInventory[]>([]);
 
   // Auth Listener
   useEffect(() => {
@@ -502,6 +538,78 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
+  // Sync BranchStock
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'branchStock'),
+      (snapshot) => {
+        const loaded = snapshot.docs.map((docItem) => docItem.data() as BranchStock);
+        setBranchStock(loaded);
+      },
+      (error) => {
+        console.warn('Firestore BranchStock sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // Sync Stock Movements
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'stockMovements'),
+      (snapshot) => {
+        const loaded: StockMovement[] = [];
+        snapshot.docs.forEach((docItem) => {
+          const data = docItem.data() as StockMovement;
+          // Depurar y limpiar movimientos ruidosos con variación 0 de aperturas masivas
+          if (data.type === 'STOCK_INICIAL' && (!data.quantity || data.quantity <= 0)) {
+            deleteDoc(docItem.ref).catch(() => {});
+            return;
+          }
+          loaded.push(data);
+        });
+        loaded.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setStockMovements(loaded);
+      },
+      (error) => {
+        console.warn('Firestore StockMovements sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // Sync Stock Transfers
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'stockTransfers'),
+      (snapshot) => {
+        const loaded = snapshot.docs.map((docItem) => docItem.data() as StockTransfer);
+        loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setStockTransfers(loaded);
+      },
+      (error) => {
+        console.warn('Firestore StockTransfers sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // Sync Physical Inventories
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'physicalInventories'),
+      (snapshot) => {
+        const loaded = snapshot.docs.map((docItem) => docItem.data() as PhysicalInventory);
+        loaded.sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+        setPhysicalInventories(loaded);
+      },
+      (error) => {
+        console.warn('Firestore PhysicalInventories sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
@@ -856,6 +964,518 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  // ==========================================
+  // INVENTORY OPERATIONS
+  // ==========================================
+
+  const recordStockMovement = async (movement: StockMovement) => {
+    const path = `stockMovements/${movement.id}`;
+    try {
+      const batch = writeBatch(db);
+      // 1. Guardar movimiento inmutable
+      batch.set(doc(db, 'stockMovements', movement.id), sanitizeForFirestore(movement));
+
+      // 2. Actualizar stock de la sucursal
+      const stockDocId = `${movement.branchId}_${movement.productCode}`;
+      const stockRef = doc(db, 'branchStock', stockDocId);
+      const existing = branchStock.find((s) => s.id === stockDocId);
+
+      batch.set(
+        stockRef,
+        sanitizeForFirestore({
+          id: stockDocId,
+          branchId: movement.branchId,
+          productCode: movement.productCode,
+          currentStock: movement.newStock,
+          minStock: existing?.minStock ?? 20,
+          lastUpdated: new Date().toISOString(),
+          chamberName: movement.chamber || (movement.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2'),
+        }),
+        { merge: true }
+      );
+
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
+  const recordStockMovementsBatch = async (movements: StockMovement[]) => {
+    if (movements.length === 0) return;
+    try {
+      // Chunk batches by 250 items (each movement updates 2 documents)
+      const chunkSize = 200;
+      for (let i = 0; i < movements.length; i += chunkSize) {
+        const chunk = movements.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+
+        for (const mov of chunk) {
+          batch.set(doc(db, 'stockMovements', mov.id), sanitizeForFirestore(mov));
+          const stockDocId = `${mov.branchId}_${mov.productCode}`;
+          const stockRef = doc(db, 'branchStock', stockDocId);
+          const existing = branchStock.find((s) => s.id === stockDocId);
+
+          batch.set(
+            stockRef,
+            sanitizeForFirestore({
+              id: stockDocId,
+              branchId: mov.branchId,
+              productCode: mov.productCode,
+              currentStock: mov.newStock,
+              minStock: existing?.minStock ?? 20,
+              lastUpdated: new Date().toISOString(),
+              chamberName: mov.chamber || (mov.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2'),
+            }),
+            { merge: true }
+          );
+        }
+
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('Error in recordStockMovementsBatch:', error);
+      throw error;
+    }
+  };
+
+  const deductSaleStock = async (saleData: any, branchId: 'NECO 1' | 'NECO 2', operator: string) => {
+    if (!saleData || !saleData.items || saleData.items.length === 0) return;
+
+    // Idempotencia: Verificar si ya se procesó este descuento de venta
+    const saleId = saleData.id || saleData.ticketNumber;
+    const isAlreadyProcessed = stockMovements.some(
+      (m) => m.type === 'VENTA' && (m.saleId === saleId || (saleData.ticketNumber && m.referenceDoc === saleData.ticketNumber))
+    );
+    if (isAlreadyProcessed) {
+      console.log('Stock ya descontado para esta venta (idempotencia verificada):', saleId);
+      return;
+    }
+
+    const movementsToRecord: StockMovement[] = [];
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+    const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    for (const item of saleData.items) {
+      const productCode = item.code || item.productCode;
+      if (!productCode) continue;
+
+      const qty = Number(item.unitType === 'Kg' ? (item.weight || item.quantity || 0) : (item.quantity || 1));
+      if (qty <= 0) continue;
+
+      const stockDocId = `${branchId}_${productCode}`;
+      const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+      const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+      const newStock = Math.max(0, Number((prevStock - qty).toFixed(3)));
+
+      const mov: StockMovement = {
+        id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+        date: dateStr,
+        time: timeStr,
+        timestamp: Date.now(),
+        branchId,
+        chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+        productCode,
+        productDescription: item.description || '',
+        category: item.category || 'Carnes Vacunas',
+        unitType: item.unitType || 'Kg',
+        type: 'VENTA',
+        quantity: qty,
+        factor: -1,
+        previousStock: prevStock,
+        newStock,
+        unitPrice: Number(item.unitPrice) || 0,
+        totalValue: Number((qty * (Number(item.unitPrice) || 0)).toFixed(2)),
+        referenceDoc: saleData.ticketNumber || `Venta ${saleData.id}`,
+        saleId: String(saleId),
+        operator: operator || 'Cajero POS',
+        notes: `Venta POS - ${saleData.customerName || 'Consumidor Final'} (${saleData.invoiceType || 'Ticket'})`,
+      };
+
+      movementsToRecord.push(mov);
+    }
+
+    if (movementsToRecord.length > 0) {
+      await recordStockMovementsBatch(movementsToRecord);
+    }
+  };
+
+  const saveStockTransfer = async (transfer: StockTransfer) => {
+    const path = `stockTransfers/${transfer.id}`;
+    try {
+      await setDoc(doc(db, 'stockTransfers', transfer.id), sanitizeForFirestore(transfer));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
+  const dispatchStockTransfer = async (transfer: StockTransfer, operator: string) => {
+    try {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (const item of transfer.items) {
+        const stockDocId = `${transfer.originBranch}_${item.productCode}`;
+        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+        const newStock = Number((prevStock - item.quantity).toFixed(3));
+
+        movements.push({
+          id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now(),
+          branchId: transfer.originBranch,
+          chamber: transfer.originBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          productCode: item.productCode,
+          productDescription: item.description,
+          category: item.category,
+          unitType: item.unitType,
+          type: 'TRANSFERENCIA_SALIDA',
+          quantity: item.quantity,
+          factor: -1,
+          previousStock: prevStock,
+          newStock,
+          unitPrice: item.price,
+          totalValue: item.totalValue,
+          referenceDoc: transfer.transferNumber,
+          transferId: transfer.id,
+          operator,
+          notes: `Despacho hacia ${transfer.destinationBranch}`,
+        });
+      }
+
+      await recordStockMovementsBatch(movements);
+
+      // Actualizar estado del remito a EN_TRANSITO
+      const updatedTransfer: StockTransfer = {
+        ...transfer,
+        status: 'EN_TRANSITO',
+        sentAt: `${dateStr} ${timeStr}`,
+      };
+      await saveStockTransfer(updatedTransfer);
+    } catch (error) {
+      console.error('Error dispatching stock transfer:', error);
+      throw error;
+    }
+  };
+
+  const receiveStockTransfer = async (transfer: StockTransfer, operator: string) => {
+    try {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (const item of transfer.items) {
+        const stockDocId = `${transfer.destinationBranch}_${item.productCode}`;
+        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+        const newStock = Number((prevStock + item.quantity).toFixed(3));
+
+        movements.push({
+          id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now(),
+          branchId: transfer.destinationBranch,
+          chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          productCode: item.productCode,
+          productDescription: item.description,
+          category: item.category,
+          unitType: item.unitType,
+          type: 'TRANSFERENCIA_ENTRADA',
+          quantity: item.quantity,
+          factor: 1,
+          previousStock: prevStock,
+          newStock,
+          unitPrice: item.price,
+          totalValue: item.totalValue,
+          referenceDoc: transfer.transferNumber,
+          transferId: transfer.id,
+          operator,
+          notes: `Recepción desde ${transfer.originBranch}`,
+        });
+      }
+
+      await recordStockMovementsBatch(movements);
+
+      // Actualizar estado del remito a RECIBIDA
+      const updatedTransfer: StockTransfer = {
+        ...transfer,
+        status: 'RECIBIDA',
+        receivedAt: `${dateStr} ${timeStr}`,
+        receivedByUser: operator,
+      };
+      await saveStockTransfer(updatedTransfer);
+    } catch (error) {
+      console.error('Error receiving stock transfer:', error);
+      throw error;
+    }
+  };
+
+  const cancelStockTransfer = async (transfer: StockTransfer, operator: string, reason?: string) => {
+    try {
+      // Si la transferencia ya estaba despachada (EN_TRANSITO), debemos reintegrar el stock a la sucursal de origen
+      if (transfer.status === 'EN_TRANSITO') {
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+        const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const movements: StockMovement[] = [];
+
+        for (const item of transfer.items) {
+          const stockDocId = `${transfer.originBranch}_${item.productCode}`;
+          const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+          const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+          const newStock = Number((prevStock + item.quantity).toFixed(3));
+
+          movements.push({
+            id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+            date: dateStr,
+            time: timeStr,
+            timestamp: Date.now(),
+            branchId: transfer.originBranch,
+            chamber: transfer.originBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+            productCode: item.productCode,
+            productDescription: item.description,
+            category: item.category,
+            unitType: item.unitType,
+            type: 'DEVOLUCION',
+            quantity: item.quantity,
+            factor: 1,
+            previousStock: prevStock,
+            newStock,
+            unitPrice: item.price,
+            totalValue: item.totalValue,
+            referenceDoc: transfer.transferNumber,
+            transferId: transfer.id,
+            operator,
+            notes: `Reversión por cancelación de transferencia: ${reason || 'Cancelada'}`,
+          });
+        }
+
+        await recordStockMovementsBatch(movements);
+      }
+
+      const updatedTransfer: StockTransfer = {
+        ...transfer,
+        status: 'CANCELADA',
+        notes: (transfer.notes ? `${transfer.notes} | ` : '') + `Cancelada por ${operator}: ${reason || 'Sin motivo'}`,
+      };
+      await saveStockTransfer(updatedTransfer);
+    } catch (error) {
+      console.error('Error canceling stock transfer:', error);
+      throw error;
+    }
+  };
+
+  const applyPhysicalInventory = async (inventory: PhysicalInventory, operator: string) => {
+    try {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (const item of inventory.items) {
+        if (item.difference === 0) continue;
+
+        const isPositive = item.difference > 0;
+        const absDiff = Math.abs(item.difference);
+
+        movements.push({
+          id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now(),
+          branchId: inventory.branchId,
+          chamber: inventory.chamber,
+          productCode: item.productCode,
+          productDescription: item.description,
+          category: item.category,
+          unitType: item.unitType,
+          type: isPositive ? 'AJUSTE_POSITIVO' : 'AJUSTE_NEGATIVO',
+          quantity: absDiff,
+          factor: isPositive ? 1 : -1,
+          previousStock: item.systemStock,
+          newStock: item.physicalCount,
+          unitPrice: item.unitPrice,
+          totalValue: Math.abs(item.differenceValue),
+          referenceDoc: inventory.inventoryNumber,
+          operator,
+          reason: 'Ajuste de inventario físico en cámara',
+          notes: `Conteo Físico Real: ${item.physicalCount} | Teórico: ${item.systemStock}`,
+        });
+      }
+
+      if (movements.length > 0) {
+        await recordStockMovementsBatch(movements);
+      }
+
+      const updatedInventory: PhysicalInventory = {
+        ...inventory,
+        status: 'APLICADO',
+        appliedAt: new Date().toISOString(),
+      };
+      await setDoc(doc(db, 'physicalInventories', inventory.id), sanitizeForFirestore(updatedInventory));
+    } catch (error) {
+      console.error('Error applying physical inventory:', error);
+      throw error;
+    }
+  };
+
+  const initializeChamberStock = async (
+    branchId: 'NECO 1' | 'NECO 2',
+    items: Array<{ productCode: string; stock: number; minStock?: number }>,
+    operator: string
+  ) => {
+    try {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (let idx = 0; idx < items.length; idx++) {
+        const it = items[idx];
+        const prod = products.find((p) => p.code === it.productCode);
+        const desc = prod?.description || it.productCode;
+        const cat = prod?.category || 'Carnes Vacunas';
+        const unitType = prod?.unitType || 'Kg';
+        const price = prod?.price || 10000;
+
+        const stockDocId = `${branchId}_${it.productCode}`;
+        const existing = branchStock.find((s) => s.id === stockDocId);
+        const prevStock = existing ? Number(existing.currentStock) || 0 : 0;
+        const newStock = Number(Number(it.stock).toFixed(3)) || 0;
+        const diff = Number((newStock - prevStock).toFixed(3));
+
+        // Si no hay variación y el stock es 0, no creamos movimiento de auditoría vacío
+        if (Math.abs(diff) < 0.0001 && newStock === 0 && prevStock === 0) {
+          continue;
+        }
+
+        // Si no hay variación pero ya tiene stock establecido y coincide, omitir
+        if (Math.abs(diff) < 0.0001 && existing) {
+          continue;
+        }
+
+        const qty = Math.abs(diff) > 0 ? Math.abs(diff) : newStock;
+
+        movements.push({
+          id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now() + idx,
+          branchId,
+          chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          productCode: it.productCode,
+          productDescription: desc,
+          category: cat,
+          unitType,
+          type: 'STOCK_INICIAL',
+          quantity: qty,
+          factor: diff >= 0 ? 1 : -1,
+          previousStock: prevStock,
+          newStock,
+          unitPrice: price,
+          totalValue: Number((qty * price).toFixed(2)),
+          referenceDoc: 'INICIO-CAMARA',
+          operator,
+          notes: 'Carga inicial o balance de apertura de cámara frigorífica',
+        });
+      }
+
+      if (movements.length > 0) {
+        await recordStockMovementsBatch(movements);
+      }
+    } catch (error) {
+      console.error('Error initializing chamber stock:', error);
+      throw error;
+    }
+  };
+
+  const revertCreditNoteStock = async (
+    items: any[],
+    branchId: 'NECO 1' | 'NECO 2',
+    operator: string,
+    referenceDoc: string
+  ) => {
+    if (!items || items.length === 0) return;
+    try {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (const item of items) {
+        const productCode = item.code || item.productCode;
+        if (!productCode) continue;
+
+        const qty = Number(item.quantity || item.weight || 0);
+        if (qty <= 0) continue;
+
+        const stockDocId = `${branchId}_${productCode}`;
+        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+        const newStock = Number((prevStock + qty).toFixed(3));
+
+        movements.push({
+          id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now(),
+          branchId,
+          chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          productCode,
+          productDescription: item.description || '',
+          category: item.category || 'Carnes Vacunas',
+          unitType: item.unitType || 'Kg',
+          type: 'DEVOLUCION',
+          quantity: qty,
+          factor: 1,
+          previousStock: prevStock,
+          newStock,
+          unitPrice: Number(item.unitPrice) || 0,
+          totalValue: Number((qty * (Number(item.unitPrice) || 0)).toFixed(2)),
+          referenceDoc,
+          operator,
+          notes: `Reingreso a cámara por Nota de Crédito / Devolución (${referenceDoc})`,
+        });
+      }
+
+      if (movements.length > 0) {
+        await recordStockMovementsBatch(movements);
+      }
+    } catch (error) {
+      console.error('Error reverting credit note stock:', error);
+      throw error;
+    }
+  };
+
+  const updateProductMinStock = async (
+    branchId: 'NECO 1' | 'NECO 2',
+    productCode: string,
+    minStock: number
+  ) => {
+    const stockDocId = `${branchId}_${productCode}`;
+    try {
+      await setDoc(
+        doc(db, 'branchStock', stockDocId),
+        sanitizeForFirestore({
+          id: stockDocId,
+          branchId,
+          productCode,
+          minStock,
+          lastUpdated: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+    } catch (error) {
+      console.error('Error updating product minStock:', error);
+    }
+  };
+
   const purgeDatabase = async () => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('neco_pos_purged', 'true');
@@ -870,6 +1490,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       'cashClosures',
       'electronicInvoices',
       'auditLogs',
+      'branchStock',
+      'stockMovements',
+      'stockTransfers',
+      'physicalInventories',
     ];
     for (const colName of collectionsToPurge) {
       try {
@@ -928,6 +1552,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         electronicInvoices,
         arcaConfig,
         auditLogs,
+        branchStock,
+        stockMovements,
+        stockTransfers,
+        physicalInventories,
         saveProduct,
         saveProductsBatch,
         deleteProduct,
@@ -949,6 +1577,17 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveElectronicInvoice,
         saveArcaConfig,
         addAuditLog,
+        recordStockMovement,
+        recordStockMovementsBatch,
+        deductSaleStock,
+        saveStockTransfer,
+        dispatchStockTransfer,
+        receiveStockTransfer,
+        cancelStockTransfer,
+        applyPhysicalInventory,
+        initializeChamberStock,
+        revertCreditNoteStock,
+        updateProductMinStock,
         purgeDatabase,
         purgeProductsCollection,
       }}

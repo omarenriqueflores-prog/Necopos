@@ -50,6 +50,7 @@ import { ReportsScreen } from './components/reports/ReportsScreen';
 import { RankingProductsScreen } from './components/reports/RankingProductsScreen';
 import { UsersRolesScreen } from './components/users/UsersRolesScreen';
 import { BranchConfigScreen } from './components/config/BranchConfigScreen';
+import { StockScreen } from './components/stock/StockScreen';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { OwnerMobileDashboard } from './components/reports/OwnerMobileDashboard';
 import { evaluateAutoClosures } from './utils/scheduleHelper';
@@ -82,6 +83,7 @@ export default function App() {
     addCashMovement,
     addCashClosure,
     addSaleRecord,
+    deductSaleStock,
     purgeDatabase,
   } = useFirebase();
 
@@ -268,6 +270,10 @@ export default function App() {
         case 'F3':
           e.preventDefault();
           setIsCustomerSearchModalOpen(true);
+          break;
+        case 'F5':
+          e.preventDefault();
+          handleNavigateScreen('STOCK');
           break;
         case 'F6':
           e.preventDefault();
@@ -490,6 +496,22 @@ export default function App() {
           balance: newBalance,
         };
         await addAccountMovement(accMov);
+      }
+    }
+
+    // 3. Descuento automático de existencias en cámara frigorífica (Idempotente y atómico)
+    if (saleData.items && saleData.items.length > 0) {
+      const branchForStock = (saleData.branchId as 'NECO 1' | 'NECO 2') || currentBranch.id;
+      const operatorForStock = activeUser?.fullName || activeUser?.username || 'Cajero';
+      try {
+        await deductSaleStock(
+          saleData.items,
+          branchForStock,
+          saleData.ticketNumber || `TC-${Date.now()}`,
+          operatorForStock
+        );
+      } catch (stockErr) {
+        console.error('Error al descontar stock de venta en cámara:', stockErr);
       }
     }
   };
@@ -728,6 +750,8 @@ export default function App() {
             onUpdateBranch={handleUpdateBranch}
           />
         )}
+
+        {activeScreen === 'STOCK' && <StockScreen />}
       </main>
 
       {/* 5. Windows Status Bar */}
@@ -781,7 +805,7 @@ export default function App() {
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F5</strong> :
-                Exportar / Sincronizar Balanzas
+                Stock y Cámaras Frigoríficas
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F6</strong> :

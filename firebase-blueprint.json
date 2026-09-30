@@ -80,6 +80,71 @@
         "environment": { "type": "string" }
       },
       "required": ["id", "cuit", "companyName", "environment"]
+    },
+    "BranchStock": {
+      "title": "BranchStock",
+      "description": "Stock balance per product and branch chamber",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "branchId": { "type": "string" },
+        "productCode": { "type": "string" },
+        "currentStock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["id", "branchId", "productCode", "currentStock"]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Immutable ledger of stock movements",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "branchId": { "type": "string" },
+        "productCode": { "type": "string" },
+        "type": { "type": "string" },
+        "quantity": { "type": "number" },
+        "factor": { "type": "number" },
+        "previousStock": { "type": "number" },
+        "newStock": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "operator": { "type": "string" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "branchId", "productCode", "type", "quantity", "newStock", "operator"]
+    },
+    "StockTransfer": {
+      "title": "StockTransfer",
+      "description": "Inter-branch meat stock transfers with traceability",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "transferNumber": { "type": "string" },
+        "originBranch": { "type": "string" },
+        "destinationBranch": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "createdByUser": { "type": "string" },
+        "totalKilos": { "type": "number" },
+        "totalCommercialValue": { "type": "number" }
+      },
+      "required": ["id", "transferNumber", "originBranch", "destinationBranch", "status"]
+    },
+    "PhysicalInventory": {
+      "title": "PhysicalInventory",
+      "description": "Physical chamber count audits and reconcile adjustments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "inventoryNumber": { "type": "string" },
+        "branchId": { "type": "string" },
+        "chamber": { "type": "string" },
+        "date": { "type": "string" },
+        "operator": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "inventoryNumber", "branchId", "date", "status"]
     }
   },
   "firestore": {
@@ -102,6 +167,22 @@
     "/arcaConfig/{cfgId}": {
       "schema": "ArcaConfig",
       "description": "Global ARCA settings"
+    },
+    "/branchStock/{stockId}": {
+      "schema": "BranchStock",
+      "description": "Branch chamber stock balances"
+    },
+    "/stockMovements/{movementId}": {
+      "schema": "StockMovement",
+      "description": "Stock movements ledger"
+    },
+    "/stockTransfers/{transferId}": {
+      "schema": "StockTransfer",
+      "description": "Inter-branch stock transfers"
+    },
+    "/physicalInventories/{invId}": {
+      "schema": "PhysicalInventory",
+      "description": "Physical counts and chamber audits"
     }
   }
 }

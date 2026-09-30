@@ -11,6 +11,9 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
+        workbox: {
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MiB limit for PWA cache
+        },
         manifest: {
           name: 'Neco POS',
           short_name: 'Neco POS',

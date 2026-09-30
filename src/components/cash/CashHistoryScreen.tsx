@@ -248,7 +248,11 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
                     </td>
                     <td className="px-3 text-[11px] border-r border-[#c4c6cf] whitespace-nowrap">{c.shift}</td>
                     <td className="px-3 text-right font-mono font-bold text-[12px] border-r border-[#c4c6cf] whitespace-nowrap">
-                      {formatCurrency(c.totalSales)}
+                      {formatCurrency(
+                        c.totalSales > 0
+                          ? c.totalSales
+                          : (c.commonReceipts || 0) + (c.invoicesA || 0) + (c.invoicesB || 0)
+                      )}
                     </td>
                     <td className="px-3 text-right font-mono text-[11px] border-r border-[#c4c6cf] whitespace-nowrap">
                       <span className={isSelected ? 'text-white' : 'text-[#44474e]'}>
@@ -382,7 +386,13 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
               </div>
               <div className="flex justify-between font-bold text-[13px] py-0.5 border-y border-dashed border-[#181c1f]">
                 <span>TOTAL FACTURADO:</span>
-                <span>{formatCurrency(selectedClosure.totalSales || 0)}</span>
+                <span>
+                  {formatCurrency(
+                    selectedClosure.totalSales > 0
+                      ? selectedClosure.totalSales
+                      : (selectedClosure.commonReceipts || 0) + (selectedClosure.invoicesA || 0) + (selectedClosure.invoicesB || 0)
+                  )}
+                </span>
               </div>
 
               {/* MEDIOS DE PAGO */}

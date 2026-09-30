@@ -79,9 +79,6 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
         hours += 12;
       } else if (isAM && hours === 12) {
         hours = 0;
-      } else if (!isPM && !isAM && hours > 0 && hours < 8) {
-        // Heuristic for retail closures: 1:00-7:00 without AM/PM is PM (13:00-19:00)
-        hours += 12;
       }
 
       return new Date(year, month, day, hours, minutes, seconds);

@@ -68,5 +68,25 @@ service cloud.firestore {
     match /arcaConfig/{cfgId} {
       allow read, write: if isValidId(cfgId);
     }
+
+    match /auditLogs/{logId} {
+      allow read, write: if isValidId(logId);
+    }
+
+    match /branchStock/{stockId} {
+      allow read, write: if isValidId(stockId);
+    }
+
+    match /stockMovements/{movementId} {
+      allow read, write: if isValidId(movementId);
+    }
+
+    match /stockTransfers/{transferId} {
+      allow read, write: if isValidId(transferId);
+    }
+
+    match /physicalInventories/{invId} {
+      allow read, write: if isValidId(invId);
+    }
   }
 }

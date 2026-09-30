@@ -121,8 +121,6 @@ export function parseLocalesDate(dateStr: string | any): Date {
       hours += 12;
     } else if (isAM && hours === 12) {
       hours = 0;
-    } else if (!isPM && !isAM && hours > 0 && hours < 8) {
-      hours += 12;
     }
 
     return new Date(year, month, day, hours, minutes, seconds);
