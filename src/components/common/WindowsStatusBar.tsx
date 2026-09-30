@@ -54,7 +54,9 @@ export const WindowsStatusBar: React.FC<WindowsStatusBarProps> = ({
       {/* Branch */}
       <div className="px-3 flex items-center gap-1 truncate">
         <span className="text-[#44474e]">Sucursal:</span>
-        <span className="font-bold text-[#002046]">{currentBranch.id} - {currentBranch.name.includes('Central') || currentBranch.name.includes('24 de Septiembre') ? 'Central' : 'Villa Saavedra'}</span>
+        <span className="font-bold text-[#002046]">
+          {currentBranch.id === 'NECO 1' ? 'NECO 1 - Central' : 'NECO 2 - Villa Saavedra'}
+        </span>
       </div>
 
       {/* Register */}

@@ -333,6 +333,10 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
         netAmount,
         vatAmount,
         totalAmount,
+        certificate: fb?.arcaConfig?.certificate,
+        privateKey: fb?.arcaConfig?.privateKey,
+        cuit: fb?.arcaConfig?.cuit,
+        environment: fb?.arcaConfig?.environment,
       });
 
       if (!authRes.success && authRes.status === 'RECHAZADO') {

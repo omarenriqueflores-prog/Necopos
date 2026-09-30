@@ -68,7 +68,34 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
       );
 
       if (res && res.vouchers) {
-        setVouchersData(res.vouchers);
+        const localInvoices = fb?.electronicInvoices || [];
+        const syncedVouchers = res.vouchers.map((v) => {
+          const matchingLocalInvoices = localInvoices.filter((inv) => {
+            const invPv = inv.pointOfSale ? String(inv.pointOfSale).padStart(4, '0') : '';
+            const targetPv = String(pvToQuery).padStart(4, '0');
+            return invPv === targetPv && inv.cbteTipo === v.cbteTipo;
+          });
+
+          const maxLocalNumber =
+            matchingLocalInvoices.length > 0
+              ? Math.max(...matchingLocalInvoices.map((inv) => Number(inv.cbteNumero) || 0))
+              : 0;
+
+          const effectiveLast = Math.max(v.lastNumber || 0, maxLocalNumber);
+          const effectiveNext = effectiveLast + 1;
+          const formattedLast = arcaService.formatCbteNumber(pvToQuery, effectiveLast);
+          const formattedNext = arcaService.formatCbteNumber(pvToQuery, effectiveNext);
+
+          return {
+            ...v,
+            lastNumber: effectiveLast,
+            nextNumber: effectiveNext,
+            formattedLast,
+            formattedNext,
+          };
+        });
+
+        setVouchersData(syncedVouchers);
         setCheckedAt(res.checkedAt);
         setServerMessage(res.message || '');
         setHasCredentials(res.hasCredentials);

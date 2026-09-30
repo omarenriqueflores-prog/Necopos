@@ -12,8 +12,8 @@ import {
 export const INITIAL_BRANCH_CONFIGS: Record<'NECO 1' | 'NECO 2', BranchConfig> = {
   'NECO 1': {
     id: 'NECO 1',
-    name: 'Carnicerías Neco',
-    fantasyName: 'Carnicerías Neco',
+    name: 'Carnicerías Neco - Central',
+    fantasyName: 'Carnicerías Neco Central',
     businessName: 'MOYA CARLOS HUGO',
     subtitle: 'Sucursal Central & Salón de Cortes',
     address: 'Av. 24 de Septiembre 681, Tartagal',
@@ -39,8 +39,8 @@ export const INITIAL_BRANCH_CONFIGS: Record<'NECO 1' | 'NECO 2', BranchConfig> =
   },
   'NECO 2': {
     id: 'NECO 2',
-    name: 'Carnicerías Neco - Neco 2',
-    fantasyName: 'Carnicerías Neco',
+    name: 'Carnicerías Neco - Villa Saavedra',
+    fantasyName: 'Carnicerías Neco Villa Saavedra',
     businessName: 'MOYA CARLOS HUGO',
     subtitle: 'Sucursal Villa Saavedra',
     address: 'San Martín 120, Villa Saavedra, Tartagal',

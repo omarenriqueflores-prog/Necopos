@@ -69,6 +69,39 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
   const [selectedSaleForDetail, setSelectedSaleForDetail] = useState<any | null>(null);
 
+  const handlePurgeCurrentShift = async () => {
+    const isAuthorized = await showAdminAuth(
+      `Vaciar ventas y movimientos activos en la caja actual (${selectedBranchFilter === 'TODAS' ? 'Todas las sucursales' : selectedBranchFilter}).\n\nSe eliminarán de la base de datos ${branchSales.length} ventas y ${branchMovements.length} movimientos de caja del turno actual.`,
+      'AUTORIZACIÓN REQUERIDA - VACIAR CAJA ACTUAL'
+    );
+
+    if (!isAuthorized) return;
+
+    try {
+      let salesCount = 0;
+      let movsCount = 0;
+
+      for (const s of branchSales) {
+        if (s.id) {
+          await deleteSaleRecord(s.id);
+          salesCount++;
+        }
+      }
+
+      for (const m of branchMovements) {
+        if (m.id) {
+          await deleteCashMovement(m.id);
+          movsCount++;
+        }
+      }
+
+      await showAlert(`Caja actual vaciada correctamente. Se eliminaron ${salesCount} ventas y ${movsCount} movimientos de caja.`);
+    } catch (err: any) {
+      console.error('Error vaciando caja actual:', err);
+      await showAlert(`Error al vaciar la caja actual: ${err?.message || 'Error en la base de datos'}`);
+    }
+  };
+
   const handlePrintTicket = (sale: any) => {
     const operatorName = sale.operatorEmail || currentUser.fullName;
     
@@ -175,7 +208,9 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
 
     const newMov: CashMovement = {
       id: `CM-${Date.now()}`,
+      date: new Date().toLocaleDateString('es-AR'),
       time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toISOString(),
       type: movementType,
       concept: movementConcept,
       voucher: movementVoucher,
@@ -281,6 +316,18 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
             <History className="w-3 h-3 text-[#44474e]" />
             <span>Historial</span>
           </button>
+
+          {isAdminOrSuperadmin && (
+            <button
+              onClick={handlePurgeCurrentShift}
+              disabled={branchSales.length === 0 && branchMovements.length === 0}
+              className="h-[26px] px-2.5 bg-[#ffdad6] hover:bg-[#ffb4ab] border border-[#ba1a1a] text-[#aa3531] text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40 shadow-2xs"
+              title="Eliminar de la base de datos todas las ventas y movimientos registrados en el turno activo (Requiere clave de Administrador)"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-[#aa3531]" />
+              <span>Limpiar Ventas / Caja Actual</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -384,7 +431,7 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
               <table className="w-full min-w-max text-left border-collapse select-none text-[12px] whitespace-nowrap">
                 <thead className="sticky top-0 bg-[#e5e8ec] text-[#181c1f] font-bold text-[11px] border-b border-[#74777f]">
                   <tr className="h-[28px] whitespace-nowrap">
-                    <th className="px-3 border-r border-[#c4c6cf] whitespace-nowrap">HORA</th>
+                    <th className="px-3 border-r border-[#c4c6cf] whitespace-nowrap">FECHA / HORA</th>
                     <th className="px-3 border-r border-[#c4c6cf] text-center whitespace-nowrap">TIPO</th>
                     <th className="px-3 border-r border-[#c4c6cf] whitespace-nowrap">CONCEPTO / DESTINO</th>
                     <th className="px-3 border-r border-[#c4c6cf] whitespace-nowrap">COMPROBANTE</th>
@@ -400,16 +447,22 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    branchMovements.map((m, idx) => (
-                      <tr
-                        key={m.id}
-                        className={`h-[28px] whitespace-nowrap ${
-                          idx % 2 === 0 ? 'bg-white hover:bg-[#e5e8ec]' : 'bg-[#f1f4f8] hover:bg-[#e5e8ec]'
-                        }`}
-                      >
-                        <td className="px-3 font-mono text-[11px] border-r border-[#c4c6cf] text-[#44474e] whitespace-nowrap">
-                          {m.time}
-                        </td>
+                    branchMovements.map((m, idx) => {
+                      const movDateStr = m.date
+                        ? `${m.date} ${m.time || ''}`
+                        : m.createdAt
+                        ? `${new Date(m.createdAt).toLocaleDateString('es-AR')} ${m.time || ''}`
+                        : `${new Date().toLocaleDateString('es-AR')} ${m.time || ''}`;
+                      return (
+                        <tr
+                          key={m.id}
+                          className={`h-[28px] whitespace-nowrap ${
+                            idx % 2 === 0 ? 'bg-white hover:bg-[#e5e8ec]' : 'bg-[#f1f4f8] hover:bg-[#e5e8ec]'
+                          }`}
+                        >
+                          <td className="px-3 font-mono text-[11px] border-r border-[#c4c6cf] text-[#44474e] whitespace-nowrap">
+                            {movDateStr}
+                          </td>
                         <td className="px-3 border-r border-[#c4c6cf] text-center whitespace-nowrap">
                           <span
                             className={`text-[9px] px-1.5 py-0.5 font-bold whitespace-nowrap ${
@@ -483,7 +536,8 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                           </button>
                         </td>
                       </tr>
-                    ))
+                    );
+                  })
                   )}
                 </tbody>
               </table>
@@ -529,10 +583,12 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                   ) : (
                     branchSales.map((s: any, idx: number) => {
                       const dateStr = s.createdAt
-                        ? new Date(s.createdAt).toLocaleTimeString('es-AR', {
+                        ? `${new Date(s.createdAt).toLocaleDateString('es-AR')} ${new Date(s.createdAt).toLocaleTimeString('es-AR', {
                             hour: '2-digit',
                             minute: '2-digit',
-                          })
+                          })}`
+                        : s.date
+                        ? `${s.date} ${s.time || ''}`
                         : '--:--';
                       const sBranch = s.branchId || (s.pointOfSale === '0018' || s.ticketNumber?.startsWith('0018') ? 'NECO 2' : 'NECO 1');
                       return (

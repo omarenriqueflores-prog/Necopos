@@ -512,7 +512,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             console.error('Error bootstrapping arcaConfig:', err);
           }
         } else {
-          setArcaConfig(docSnap.data() as ArcaConfig);
+          const data = docSnap.data() as ArcaConfig;
+          setArcaConfig(data);
+          if (typeof window !== 'undefined' && data) {
+            try {
+              localStorage.setItem('necopos_arca_config', JSON.stringify(data));
+              if (data.privateKey) {
+                localStorage.setItem('necopos_arca_private_key', data.privateKey);
+              }
+              if (data.certificate) {
+                localStorage.setItem('necopos_arca_certificate', data.certificate);
+              }
+            } catch (_) {}
+          }
         }
       },
       (error) => {
@@ -940,6 +952,17 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const path = `arcaConfig/main`;
     try {
       await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(cfg));
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('necopos_arca_config', JSON.stringify(cfg));
+          if (cfg.privateKey) {
+            localStorage.setItem('necopos_arca_private_key', cfg.privateKey);
+          }
+          if (cfg.certificate) {
+            localStorage.setItem('necopos_arca_certificate', cfg.certificate);
+          }
+        } catch (_) {}
+      }
       
       // Sync points of sale back to branches if they were updated in arcaConfig
       if (cfg.pointsOfSale) {

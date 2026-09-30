@@ -119,11 +119,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
   const [editQtyOrWeight, setEditQtyOrWeight] = useState<string>('1.0');
   const [editPrice, setEditPrice] = useState<string>('0');
+  const [isAddAmountModalOpen, setIsAddAmountModalOpen] = useState<boolean>(false);
+  const [productToAmount, setProductToAmount] = useState<Product | null>(null);
+  const [amountInput, setAmountInput] = useState<string>('1.000');
   const [liveScaleWeight, setLiveScaleWeight] = useState<number>(2.35);
   const [scaleStatus, setScaleStatus] = useState<'ESTABLE' | 'PESANDO'>('ESTABLE');
   const [lastNotification, setLastNotification] = useState<string | null>(null);
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
   const formatQuantity = useCallback((val: number, unitType: string = 'Kg') => {
     return unitType === 'Kg'
@@ -207,17 +211,45 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       return;
     }
 
-    const defaultAmount = product.unitType === 'Kg' ? Math.min(1, remaining) : 1;
-    const subtotal = Math.round(product.price * defaultAmount * 100) / 100;
+    setProductToAmount(product);
+    const initialVal = product.unitType === 'Kg' ? (remaining < 1 ? remaining.toFixed(3) : '1.000') : '1';
+    setAmountInput(initialVal);
+    setIsAddAmountModalOpen(true);
+    setIsSearchFocused(false);
+  };
+
+  const handleConfirmAddAmount = () => {
+    if (!productToAmount) return;
+
+    const val = parseFloat(amountInput.replace(',', '.')) || 0;
+    if (val <= 0) {
+      showAlert('Ingrese un peso o cantidad mayor a cero.');
+      return;
+    }
+
+    const availableStock = getAvailableChamberStock(productToAmount.code);
+    const currentInTicket = saleItems
+      .filter((it) => it.code === productToAmount.code)
+      .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+
+    if (val + currentInTicket > availableStock) {
+      const maxAllowed = Math.max(0, availableStock - currentInTicket);
+      showAlert(
+        `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${productToAmount.description}" (Cód. ${productToAmount.code}):\n• Cantidad solicitada: ${formatQuantity(val, productToAmount.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, productToAmount.unitType)}\n• Restante libre: ${formatQuantity(maxAllowed, productToAmount.unitType)}\n\nNo es posible vender más de lo que existe físicamente en cámara.`
+      );
+      return;
+    }
+
+    const subtotal = Math.round(productToAmount.price * val * 100) / 100;
 
     const newItem: SaleItem = {
       id: `item-${Date.now()}`,
-      code: product.code,
-      description: product.description,
-      unitType: product.unitType,
-      weight: product.unitType === 'Kg' ? defaultAmount : undefined,
-      quantity: product.unitType === 'Unid' ? defaultAmount : undefined,
-      unitPrice: product.price,
+      code: productToAmount.code,
+      description: productToAmount.description,
+      unitType: productToAmount.unitType,
+      weight: productToAmount.unitType === 'Kg' ? val : undefined,
+      quantity: productToAmount.unitType === 'Unid' ? Math.max(1, Math.round(val)) : undefined,
+      unitPrice: productToAmount.price,
       discountPercent: 0,
       subtotal: subtotal,
     };
@@ -227,8 +259,26 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     setBarcodeInput('');
     setHighlightedSearchIndex(-1);
     setIsSearchFocused(false);
-    showNotification(`Producto agregado: ${product.description} (${formatQuantity(defaultAmount, product.unitType)}) -> ${formatCurrency(subtotal)}`);
+    setIsAddAmountModalOpen(false);
+    setProductToAmount(null);
+
+    showNotification(
+      `Producto agregado: ${productToAmount.description} (${formatQuantity(val, productToAmount.unitType)}) -> ${formatCurrency(subtotal)}`
+    );
+
     setTimeout(() => barcodeInputRef.current?.focus(), 10);
+  };
+
+  const handleCaptureScaleInModal = () => {
+    setScaleStatus('PESANDO');
+    setTimeout(() => {
+      const randomWeights = [1.25, 2.15, 0.85, 3.42, 1.95, 2.35];
+      const newWeight = randomWeights[Math.floor(Math.random() * randomWeights.length)];
+      setLiveScaleWeight(newWeight);
+      setAmountInput(newWeight.toFixed(3));
+      setScaleStatus('ESTABLE');
+      showNotification(`Balanza COM1 capturada: ${formatWeight(newWeight)}`);
+    }, 200);
   };
 
   // Auto focus barcode input on mount and keep it focused
@@ -335,63 +385,75 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     const parsed = parseBarcodeInput(raw, products, currentBranch.scaleEanPrefix);
 
     if (parsed && parsed.product) {
-      const availableStock = getAvailableChamberStock(parsed.product.code);
-      const requested = parsed.product.unitType === 'Kg' ? (parsed.weight || 1) : (parsed.quantity || 1);
+      if (parsed.isScaleLabel) {
+        const availableStock = getAvailableChamberStock(parsed.product.code);
+        const requested = parsed.weight || 1;
 
-      if (availableStock <= 0) {
-        showAlert(
-          `⛔ SIN STOCK EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${parsed.product.description}" (Cód. ${parsed.product.code}) figura con 0,000 ${parsed.product.unitType} en cámara frigorífica.\n\nNo es posible ingresar este artículo.`
+        if (availableStock <= 0) {
+          showAlert(
+            `⛔ SIN STOCK EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${parsed.product.description}" (Cód. ${parsed.product.code}) figura con 0,000 ${parsed.product.unitType} en cámara frigorífica.\n\nNo es posible ingresar este artículo.`
+          );
+          return;
+        }
+
+        const currentInTicket = saleItems
+          .filter((it) => it.code === parsed.product.code)
+          .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+
+        if (currentInTicket + requested > availableStock) {
+          const remaining = Math.max(0, availableStock - currentInTicket);
+          showAlert(
+            `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${parsed.product.description}" (Cód. ${parsed.product.code}):\n• Cantidad solicitada: ${formatQuantity(requested, parsed.product.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, parsed.product.unitType)}\n• Restante libre: ${formatQuantity(remaining, parsed.product.unitType)}\n\nNo es posible vender más kilos de los que existen físicamente en la cámara.`
+          );
+          return;
+        }
+
+        const newItem: SaleItem = {
+          id: `item-${Date.now()}`,
+          code: parsed.product.code,
+          description: parsed.product.description,
+          unitType: parsed.product.unitType,
+          weight: parsed.weight,
+          quantity: parsed.quantity,
+          unitPrice: parsed.unitPrice,
+          discountPercent: 0,
+          subtotal: parsed.subtotal,
+          scaleLabelCode: raw,
+        };
+
+        setSaleItems((prev) => [newItem, ...prev]);
+        setSelectedItemIndex(0);
+        setBarcodeInput('');
+        setHighlightedSearchIndex(-1);
+        setIsSearchFocused(false);
+        showNotification(
+          `Balanza detectada: ${parsed.product.description} (${formatWeight(parsed.weight || 0)}) -> ${formatCurrency(parsed.subtotal)}`
         );
-        return;
+        barcodeInputRef.current?.focus();
+      } else {
+        handleSelectProductFromSearch(parsed.product);
       }
-
-      const currentInTicket = saleItems
-        .filter((it) => it.code === parsed.product.code)
-        .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-
-      if (currentInTicket + requested > availableStock) {
-        const remaining = Math.max(0, availableStock - currentInTicket);
-        showAlert(
-          `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${parsed.product.description}" (Cód. ${parsed.product.code}):\n• Cantidad solicitada: ${formatQuantity(requested, parsed.product.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, parsed.product.unitType)}\n• Restante libre: ${formatQuantity(remaining, parsed.product.unitType)}\n\nNo es posible vender más kilos de los que existen físicamente en la cámara.`
-        );
-        return;
-      }
-
-      const newItem: SaleItem = {
-        id: `item-${Date.now()}`,
-        code: parsed.product.code,
-        description: parsed.product.description,
-        unitType: parsed.product.unitType,
-        weight: parsed.weight,
-        quantity: parsed.quantity,
-        unitPrice: parsed.unitPrice,
-        discountPercent: 0,
-        subtotal: parsed.subtotal,
-        scaleLabelCode: parsed.isScaleLabel ? raw : undefined,
-      };
-
-      setSaleItems((prev) => [newItem, ...prev]);
-      setSelectedItemIndex(0);
-      setBarcodeInput('');
-      setHighlightedSearchIndex(-1);
-      setIsSearchFocused(false);
-      showNotification(
-        parsed.isScaleLabel
-          ? `Balanza detectada: ${parsed.product.description} (${formatWeight(parsed.weight || 0)}) -> ${formatCurrency(parsed.subtotal)}`
-          : `Producto agregado: ${parsed.product.description} -> ${formatCurrency(parsed.subtotal)}`
-      );
     } else {
       showNotification(`Código o artículo no encontrado: "${raw}"`);
+      barcodeInputRef.current?.focus();
     }
-
-    barcodeInputRef.current?.focus();
   };
+
+  // Auto focus modal amount input when prompt opens
+  useEffect(() => {
+    if (isAddAmountModalOpen) {
+      setTimeout(() => {
+        amountInputRef.current?.focus();
+        amountInputRef.current?.select();
+      }, 50);
+    }
+  }, [isAddAmountModalOpen]);
 
   // Keyboard hotkeys for fast POS operations
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // If modal is open, don't trigger global POS shortcuts
-      if (isCustomerModalOpen || isTicketModalOpen || isEditModalOpen) return;
+      if (isCustomerModalOpen || isTicketModalOpen || isEditModalOpen || isAddAmountModalOpen) return;
 
       // Search dropdown keyboard navigation
       if (document.activeElement === barcodeInputRef.current && matchingProducts.length > 0) {
@@ -979,8 +1041,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                           onMouseEnter={() => setHighlightedSearchIndex(idx)}
                           className={`px-3 py-2 cursor-pointer flex items-center justify-between transition-colors ${
                             isHighlighted
-                              ? 'bg-black text-white font-bold'
-                              : 'bg-white text-black hover:bg-[#d6e3ff]/40'
+                              ? 'bg-[#002046] text-white font-bold'
+                              : 'bg-white text-[#181c1f] hover:bg-[#e8f0fe]'
                           }`}
                         >
                           <div className="flex flex-col">
@@ -988,34 +1050,52 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                               <span
                                 className={`font-mono text-[11px] px-1 font-bold ${
                                   isHighlighted
-                                    ? 'bg-[#333333] text-white'
-                                    : 'bg-[#e0e3e7] text-black'
+                                    ? 'bg-[#1b365d] text-[#aec7f7]'
+                                    : 'bg-[#e0e3e7] text-[#002046]'
                                 }`}
                               >
                                 CÓD: {p.code} {p.scalePlu ? `| PLU: ${p.scalePlu}` : ''}
                               </span>
-                              <span className="text-[13px] uppercase font-bold tracking-tight text-black">
+                              <span
+                                className={`text-[13px] uppercase font-bold tracking-tight ${
+                                  isHighlighted ? 'text-white' : 'text-[#181c1f]'
+                                }`}
+                              >
                                 {p.description}
                               </span>
                             </div>
                             <div className="flex items-center gap-2 mt-0.5 text-[10px]">
                               <span
-                                className={`${
-                                  isHighlighted ? 'text-gray-300' : 'text-black'
-                                }`}
+                                className={
+                                  isHighlighted ? 'text-[#d4e3ff]' : 'text-[#44474e]'
+                                }
                               >
-                                Categoría: <strong className="text-black">{p.category}</strong>
+                                Categoría:{' '}
+                                <strong
+                                  className={
+                                    isHighlighted ? 'text-white' : 'text-black'
+                                  }
+                                >
+                                  {p.category}
+                                </strong>
                               </span>
                               <span
                                 className={`px-1.5 py-0.2 rounded font-mono font-bold text-[10px] ${
                                   isOutOfStock
-                                    ? 'bg-red-100 text-red-800 border border-red-300'
+                                    ? isHighlighted
+                                      ? 'bg-[#ba1a1a] text-white border border-[#ffb4ab]'
+                                      : 'bg-red-100 text-red-800 border border-red-300'
+                                    : isHighlighted
+                                    ? 'bg-[#00522c] text-white border border-[#a8dab5]'
                                     : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                                 }`}
                               >
                                 {isOutOfStock
                                   ? `⛔ SIN STOCK (${currentBranch.id})`
-                                  : `Cámara ${currentBranch.id}: ${formatQuantity(stockInChamber, p.unitType)}`}
+                                  : `Cámara ${currentBranch.id}: ${formatQuantity(
+                                      stockInChamber,
+                                      p.unitType
+                                    )}`}
                               </span>
                             </div>
                           </div>
@@ -1023,11 +1103,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                           <div className="flex items-center gap-3">
                             <span
                               className={`font-mono text-[14px] font-bold ${
-                                isHighlighted ? 'text-white' : 'text-black'
+                                isHighlighted ? 'text-[#d4e3ff]' : 'text-[#002046]'
                               }`}
                             >
                               {formatCurrency(p.price)}
-                              <span className="text-[10px] font-normal font-sans ml-0.5">
+                              <span
+                                className={`text-[10px] font-normal font-sans ml-0.5 ${
+                                  isHighlighted ? 'text-[#aec7f7]' : 'text-gray-600'
+                                }`}
+                              >
                                 /{p.unitType}
                               </span>
                             </span>
@@ -1036,10 +1120,10 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                               disabled={isOutOfStock}
                               className={`h-[22px] px-2 text-[10px] font-bold uppercase rounded flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                                 isHighlighted
-                                  ? 'bg-[#00639b] text-white hover:bg-[#004a77]'
+                                  ? 'bg-[#00522c] text-white hover:bg-[#003822]'
                                   : isOutOfStock
                                   ? 'bg-gray-300 text-gray-600'
-                                  : 'bg-black text-white hover:bg-[#333333]'
+                                  : 'bg-[#002046] text-white hover:bg-[#1b365d]'
                               }`}
                             >
                               <Plus className="w-3 h-3" />
@@ -1960,6 +2044,200 @@ export const POSScreen: React.FC<POSScreenProps> = ({
           if (onOpenCustomerManagement) onOpenCustomerManagement();
         }}
       />
+
+      {/* MODAL INGRESAR PESO / CANTIDAD AL AGREGAR PRODUCTO */}
+      <WindowsModal
+        isOpen={isAddAmountModalOpen}
+        onClose={() => {
+          setIsAddAmountModalOpen(false);
+          setProductToAmount(null);
+          setTimeout(() => barcodeInputRef.current?.focus(), 10);
+        }}
+        title={
+          productToAmount?.unitType === 'Kg'
+            ? 'INGRESAR PESO DE CORTE CÁRNICO (KG) - PUNTO DE VENTA'
+            : 'INGRESAR CANTIDAD DE UNIDADES - PUNTO DE VENTA'
+        }
+        icon={<Scale className="w-4 h-4 text-[#aec7f7]" />}
+        maxWidth="max-w-md"
+      >
+        {productToAmount && (() => {
+          const chamberStock = getAvailableChamberStock(productToAmount.code);
+          const currentInTicket = saleItems
+            .filter((it) => it.code === productToAmount.code)
+            .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
+          const maxAllowed = Math.max(0, chamberStock - currentInTicket);
+          const val = parseFloat(amountInput.replace(',', '.')) || 0;
+          const isKg = productToAmount.unitType === 'Kg';
+          const calculatedSubtotal = Math.round(val * productToAmount.price * 100) / 100;
+          const isExceeded = val > maxAllowed;
+
+          return (
+            <div className="flex flex-col gap-3 p-2 text-[12px]">
+              {/* Header Info Banner */}
+              <div className="bg-[#002046] text-white p-2.5 border border-[#001b3d] shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] bg-[#1b365d] text-[#aec7f7] px-1.5 py-0.5 font-bold">
+                    CÓD: {productToAmount.code} {productToAmount.scalePlu ? `| PLU: ${productToAmount.scalePlu}` : ''}
+                  </span>
+                  <span className="text-[10px] font-sans text-gray-300 uppercase">
+                    Rubro: {productToAmount.category}
+                  </span>
+                </div>
+                <h3 className="text-[15px] font-bold uppercase tracking-tight text-white mt-1">
+                  {productToAmount.description}
+                </h3>
+                <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-[#1b365d] text-[11px]">
+                  <span>Precio Lista Venta:</span>
+                  <span className="font-mono text-[14px] font-bold text-[#aec7f7]">
+                    {formatCurrency(productToAmount.price)}{' '}
+                    <span className="text-[10px] font-normal font-sans">/{productToAmount.unitType}</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Chamber Stock Status */}
+              <div className="flex items-center justify-between bg-white p-2 border border-[#c4c6cf] text-[11px]">
+                <span className="text-[#44474e] font-semibold">Stock Físico en Cámara ({currentBranch.id}):</span>
+                <span
+                  className={`font-mono font-bold px-2 py-0.5 rounded text-[10px] ${
+                    maxAllowed <= 0
+                      ? 'bg-red-100 text-red-800 border border-red-300'
+                      : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                  }`}
+                >
+                  {formatQuantity(chamberStock, productToAmount.unitType)} (Disp: {formatQuantity(maxAllowed, productToAmount.unitType)})
+                </span>
+              </div>
+
+              {/* Input Form */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleConfirmAddAmount();
+                }}
+                className="flex flex-col gap-2 bg-[#f7fafe] p-3 border border-[#c4c6cf]"
+              >
+                <label htmlFor="amountModalInput" className="font-bold text-[#002046] text-[13px] flex items-center justify-between">
+                  <span>
+                    {isKg ? 'PESO A INGRESAR (KILOGRAMOS):' : 'CANTIDAD A INGRESAR (UNIDADES):'}
+                  </span>
+                  <span className="text-[11px] font-normal text-[#555555]">
+                    {isKg ? '[Ej: 2.350 ó 0.850]' : '[Ej: 1 ó 5]'}
+                  </span>
+                </label>
+
+                <div className="relative flex items-center">
+                  <input
+                    ref={amountInputRef}
+                    id="amountModalInput"
+                    type="number"
+                    step={isKg ? '0.001' : '1'}
+                    min="0.001"
+                    max={maxAllowed > 0 ? maxAllowed : undefined}
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        setIsAddAmountModalOpen(false);
+                        setProductToAmount(null);
+                        setTimeout(() => barcodeInputRef.current?.focus(), 10);
+                      }
+                    }}
+                    className="w-full h-[38px] px-3 bg-white font-mono text-[20px] font-bold text-black border-2 border-[#002046] focus:outline-none focus:ring-2 focus:ring-[#002046] shadow-inner text-right pr-12"
+                    autoFocus
+                  />
+                  <span className="absolute right-3 font-mono font-bold text-[13px] text-[#002046] pointer-events-none">
+                    {productToAmount.unitType}
+                  </span>
+                </div>
+
+                {/* Quick Increment / Balance Buttons */}
+                <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                  <span className="text-[10px] font-bold text-[#44474e] uppercase">Botones Rápidos:</span>
+                  {isKg ? (
+                    <>
+                      {[0.25, 0.5, 1.0, 2.0, 5.0].map((step) => (
+                        <button
+                          key={step}
+                          type="button"
+                          onClick={() => setAmountInput(step.toFixed(3))}
+                          className="h-[24px] px-2 bg-white hover:bg-[#002046] hover:text-white border border-[#74777f] font-mono font-bold text-[11px] cursor-pointer transition-colors shadow-2xs"
+                        >
+                          {step.toFixed(3)} Kg
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={handleCaptureScaleInModal}
+                        className="h-[24px] px-2 bg-[#00522c] hover:bg-[#003822] text-white font-bold text-[10px] flex items-center gap-1 cursor-pointer ml-auto shadow-xs"
+                        title="Tomar pesaje directo de balanza electrónica COM1"
+                      >
+                        <Scale className="w-3 h-3" />
+                        <span>Balanza COM1 ({formatWeight(liveScaleWeight)})</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {[1, 2, 3, 5, 10, 20].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => setAmountInput(String(num))}
+                          className="h-[24px] px-2.5 bg-white hover:bg-[#002046] hover:text-white border border-[#74777f] font-mono font-bold text-[11px] cursor-pointer transition-colors shadow-2xs"
+                        >
+                          +{num}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+
+                {/* Subtotal Calculation Display */}
+                <div className="mt-2 p-2 bg-white border border-[#c4c6cf] flex items-center justify-between">
+                  <span className="font-bold text-[#44474e] text-[11px]">
+                    Subtotal ({isKg ? `${val.toFixed(3)} Kg` : `${Math.round(val)} Unid.`} × {formatCurrency(productToAmount.price)}):
+                  </span>
+                  <span className="font-mono text-[18px] font-extrabold text-[#002046]">
+                    {formatCurrency(calculatedSubtotal)}
+                  </span>
+                </div>
+
+                {/* Warning if stock exceeded */}
+                {isExceeded && (
+                  <div className="bg-[#ffdad6] text-[#ba1a1a] p-1.5 border border-[#ba1a1a] text-[11px] font-bold flex items-center gap-1 mt-1">
+                    <span>⛔ El peso/cantidad ingresado ({formatQuantity(val, productToAmount.unitType)}) excede el stock disponible en cámara ({formatQuantity(maxAllowed, productToAmount.unitType)}).</span>
+                  </div>
+                )}
+              </form>
+
+              {/* Action buttons */}
+              <div className="flex items-center justify-between pt-2 border-t border-[#c4c6cf]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddAmountModalOpen(false);
+                    setProductToAmount(null);
+                    setTimeout(() => barcodeInputRef.current?.focus(), 10);
+                  }}
+                  className="h-[28px] px-3 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] text-[11px] font-semibold cursor-pointer"
+                >
+                  Cancelar [Esc]
+                </button>
+                <button
+                  type="button"
+                  disabled={val <= 0 || isExceeded}
+                  onClick={handleConfirmAddAmount}
+                  className="h-[30px] px-5 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[12px] flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Plus className="w-4 h-4 text-[#aec7f7]" />
+                  <span>AGREGAR AL TICKET [ENTER]</span>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      </WindowsModal>
 
       {/* MODAL 2: Modify Line (Qty/Weight & Price) */}
       <WindowsModal

@@ -437,7 +437,9 @@ export default function App() {
     // 1. Record cash movement for cash / electronic sales
     const saleMov: CashMovement = {
       id: `CM-${Date.now()}`,
+      date: new Date().toLocaleDateString('es-AR'),
       time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toISOString(),
       type: 'INGRESO',
       concept: `Venta POS (${saleData.paymentMethod}) - ${partyName}`,
       voucher: saleData.invoiceType,
@@ -520,7 +522,9 @@ export default function App() {
     setCashOpen(true);
     const openingMov: CashMovement = {
       id: `CM-${Date.now()}`,
+      date: new Date().toLocaleDateString('es-AR'),
       time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toISOString(),
       type: 'FONDO',
       concept: `Fondo inicial de cambio (${notes})`,
       voucher: 'APERTURA',

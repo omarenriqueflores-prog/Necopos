@@ -211,25 +211,37 @@ export const arcaService = {
       try {
         const saved = localStorage.getItem('necopos_arca_config');
         const savedKey = localStorage.getItem('necopos_arca_private_key');
+        const savedCert = localStorage.getItem('necopos_arca_certificate');
         if (saved) {
           const parsed = JSON.parse(saved);
           extraParams = {
-            certificate: parsed.certificate,
+            certificate: parsed.certificate || savedCert || '',
             privateKey: parsed.privateKey || savedKey || '',
-            cuit: parsed.cuit,
-            environment: parsed.environment,
+            cuit: parsed.cuit || '30714892019',
+            environment: parsed.environment || 'homologacion',
           };
-        } else if (savedKey) {
-          extraParams.privateKey = savedKey;
+        } else {
+          extraParams = {
+            certificate: savedCert || '',
+            privateKey: savedKey || '',
+            cuit: '30714892019',
+            environment: 'homologacion',
+          };
         }
       } catch (_) {}
 
-      const fullPayload = { ...extraParams, ...payload };
-      if (!fullPayload.privateKey) {
-        try {
-          const savedKey = localStorage.getItem('necopos_arca_private_key');
-          if (savedKey) fullPayload.privateKey = savedKey;
-        } catch (_) {}
+      const fullPayload = {
+        ...extraParams,
+        ...payload,
+      };
+
+      if (!fullPayload.privateKey && typeof window !== 'undefined') {
+        const savedKey = localStorage.getItem('necopos_arca_private_key');
+        if (savedKey) fullPayload.privateKey = savedKey;
+      }
+      if (!fullPayload.certificate && typeof window !== 'undefined') {
+        const savedCert = localStorage.getItem('necopos_arca_certificate');
+        if (savedCert) fullPayload.certificate = savedCert;
       }
 
       const res = await fetch('/api/arca/authorize', {

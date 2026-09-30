@@ -18,6 +18,7 @@ import { formatCurrency, formatWeight } from '../../utils/scaleParser';
 import { WindowsModal } from '../common/WindowsModal';
 import { arcaService } from '../../services/arcaService';
 import { useDialog } from '../../context/DialogContext';
+import { useFirebase } from '../../context/FirebaseContext';
 
 interface CreditNoteModalProps {
   isOpen: boolean;
@@ -39,6 +40,7 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
   onSuccess,
 }) => {
   const { showAlert } = useDialog();
+  const fb = useFirebase();
 
   const [creditType, setCreditType] = useState<'TOTAL' | 'PARCIAL'>('TOTAL');
   const [reason, setReason] = useState<
@@ -124,6 +126,10 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
         },
         creditNoteReason: reason,
         creditNoteType: creditType,
+        certificate: fb?.arcaConfig?.certificate,
+        privateKey: fb?.arcaConfig?.privateKey,
+        cuit: fb?.arcaConfig?.cuit,
+        environment: fb?.arcaConfig?.environment,
       });
 
       if (!arcaRes.success && arcaRes.status === 'RECHAZADO') {

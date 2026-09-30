@@ -291,6 +291,10 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
         netAmount: manualNetTotal,
         vatAmount: manualVat21 + manualVat105,
         totalAmount: manualTotal,
+        certificate: arcaConfig?.certificate,
+        privateKey: arcaConfig?.privateKey,
+        cuit: arcaConfig?.cuit,
+        environment: arcaConfig?.environment,
       });
 
       if (!authRes.success && authRes.status === 'RECHAZADO') {

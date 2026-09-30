@@ -20,8 +20,8 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
   currentUser,
   currentBranch,
 }) => {
-  const { showAlert, showConfirm } = useDialog();
-  const { purgeAutoClosures, sales, cashMovements, electronicInvoices } = useFirebase();
+  const { showAlert, showConfirm, showAdminAuth } = useDialog();
+  const { deleteCashClosure, deleteSaleRecord, deleteCashMovement, purgeAutoClosures, sales, cashMovements, electronicInvoices } = useFirebase();
   const isAdmin = currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN';
   const userBranch = currentUser?.branch || currentBranch?.id || 'NECO 1';
 
@@ -75,6 +75,58 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
 
   const handlePrintClosure = (closure: CashClosure) => {
     printClosureTicket(closure, currentBranch);
+  };
+
+  const handleDeleteClosure = async (closure: CashClosure) => {
+    const isAuthorized = await showAdminAuth(
+      `Eliminar cierre de caja Z: ${closure.id} (${formatSafeClosureDate(closure.date)} - ${closure.branch})\nCajero / Operador: ${formatCleanOperatorName(closure.operator)}`,
+      'AUTORIZACIÓN REQUERIDA - ELIMINAR CIERRE DE CAJA'
+    );
+
+    if (!isAuthorized) return;
+
+    try {
+      await deleteCashClosure(closure.id);
+      if (selectedClosure?.id === closure.id) {
+        setSelectedClosure(null);
+      }
+
+      const deleteAssociated = await showConfirm(
+        `¿Desea eliminar también todas las ventas y movimientos de caja pertenecientes al turno de este cierre Z (${closure.id}) para dejar la caja limpia?`
+      );
+
+      if (deleteAssociated) {
+        const cDate = closure.date;
+        const matchedSales = (sales || []).filter((s: any) => {
+          const sBranch = s.branchId || (s.pointOfSale === '0018' || s.ticketNumber?.startsWith('0018') ? 'NECO 2' : 'NECO 1');
+          if (sBranch !== closure.branch) return false;
+          const sDate = s.createdAt ? new Date(s.createdAt).toLocaleDateString('es-AR') : s.date;
+          return !sDate || sDate === cDate || sDate === closure.date;
+        });
+
+        for (const s of matchedSales) {
+          if (s.id) await deleteSaleRecord(s.id);
+        }
+
+        const matchedMovements = (cashMovements || []).filter((m: any) => {
+          const mBranch = m.branchId || (m.ticketNumber?.startsWith('0018') || m.concept?.includes('0018') || m.concept?.includes('NECO 2') ? 'NECO 2' : 'NECO 1');
+          if (mBranch !== closure.branch) return false;
+          const mDate = m.createdAt ? new Date(m.createdAt).toLocaleDateString('es-AR') : m.date;
+          return !mDate || mDate === cDate || mDate === closure.date;
+        });
+
+        for (const m of matchedMovements) {
+          if (m.id) await deleteCashMovement(m.id);
+        }
+
+        await showAlert(`Cierre ${closure.id} y sus ${matchedSales.length} ventas y ${matchedMovements.length} movimientos de caja asociados han sido eliminados correctamente.`);
+      } else {
+        await showAlert(`El cierre de caja Z "${closure.id}" ha sido eliminado correctamente de la base de datos.`);
+      }
+    } catch (err: any) {
+      console.error('Error al eliminar cierre:', err);
+      await showAlert(`Error al eliminar el cierre de caja: ${err?.message || 'Error de permisos o conexión'}`);
+    }
   };
 
   return (
@@ -162,6 +214,15 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
           >
             <Eye className="w-3.5 h-3.5" />
             <span>Ver Comprobante Z</span>
+          </button>
+          <button
+            disabled={!selectedClosure}
+            onClick={() => selectedClosure && handleDeleteClosure(selectedClosure)}
+            className="h-[26px] px-3 bg-[#aa3531] hover:bg-[#8b2b28] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40 shadow-xs"
+            title="Eliminar este cierre de caja de la base de datos (Requiere clave de administrador)"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-white" />
+            <span>Eliminar Cierre</span>
           </button>
           <button
             onClick={async () => await showAlert('Listado de cierres exportado a Excel.')}
@@ -322,6 +383,22 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
                         >
                           <Printer className="w-3 h-3" />
                           <span>Imprimir</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteClosure(c);
+                          }}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-[#aa3531] hover:bg-[#8b2926] text-white'
+                              : 'bg-[#ffdad6] hover:bg-[#ffb4ab] text-[#aa3531] border border-[#ba1a1a]/30'
+                          }`}
+                          title="Eliminar este cierre de caja de la base de datos (Requiere clave de administrador)"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Eliminar</span>
                         </button>
                       </div>
                     </td>

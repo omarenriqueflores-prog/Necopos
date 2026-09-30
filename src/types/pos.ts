@@ -78,6 +78,8 @@ export interface AccountMovement {
 export interface CashMovement {
   id: string;
   time: string;
+  date?: string;
+  createdAt?: string;
   type: 'FONDO' | 'EGRESO' | 'RETIRO' | 'INGRESO';
   concept: string;
   voucher: string;
