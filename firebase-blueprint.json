@@ -88,12 +88,13 @@
       "properties": {
         "id": { "type": "string" },
         "branchId": { "type": "string" },
+        "productId": { "type": "string" },
         "productCode": { "type": "string" },
         "currentStock": { "type": "number" },
         "minStock": { "type": "number" },
         "lastUpdated": { "type": "string" }
       },
-      "required": ["id", "branchId", "productCode", "currentStock"]
+      "required": ["id", "branchId", "productId", "productCode", "currentStock"]
     },
     "StockMovement": {
       "title": "StockMovement",

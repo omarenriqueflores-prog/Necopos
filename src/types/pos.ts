@@ -1,8 +1,10 @@
 export type UnitType = 'Kg' | 'Unid';
 
 export interface Product {
+  id?: string;
   code: string;
   docId?: string;
+  name?: string;
   description: string;
   category: string;
   unitType: UnitType;
@@ -358,6 +360,7 @@ export type ActiveScreen =
 export interface BranchStock {
   id: string; // `${branchId}_${productCode}`
   branchId: 'NECO 1' | 'NECO 2';
+  productId?: string;
   productCode: string;
   currentStock: number; // en Kg (3 decimales) o Unid
   minStock: number; // Alerta de stock mínimo
@@ -383,6 +386,7 @@ export interface StockMovement {
   timestamp: number;
   branchId: 'NECO 1' | 'NECO 2';
   chamber?: string;
+  productId?: string;
   productCode: string;
   productDescription: string;
   category: string;
@@ -405,6 +409,7 @@ export interface StockMovement {
 export type StockTransferStatus = 'BORRADOR' | 'EN_TRANSITO' | 'RECIBIDA' | 'CANCELADA';
 
 export interface StockTransferItem {
+  productId?: string;
   productCode: string;
   description: string;
   category: string;
@@ -434,7 +439,8 @@ export interface StockTransfer {
   driverName?: string;
 }
 
-export interface PhysicalInventoryItem {
+export interface InventoryAuditItem {
+  productId?: string;
   productCode: string;
   description: string;
   category: string;
@@ -446,7 +452,7 @@ export interface PhysicalInventoryItem {
   differenceValue: number;
 }
 
-export interface PhysicalInventory {
+export interface InventoryAudit {
   id: string;
   inventoryNumber: string;
   branchId: 'NECO 1' | 'NECO 2';
@@ -455,9 +461,12 @@ export interface PhysicalInventory {
   time: string;
   operator: string;
   status: 'BORRADOR' | 'APLICADO';
-  items: PhysicalInventoryItem[];
+  items: InventoryAuditItem[];
   totalDifferencesKg: number;
   totalDifferencesValue: number;
   appliedAt?: string;
   notes?: string;
 }
+
+export type PhysicalInventory = InventoryAudit;
+export type PhysicalInventoryItem = InventoryAuditItem;

@@ -13,7 +13,7 @@ service cloud.firestore {
       allow read, delete: if isValidId(productId);
       allow create, update: if isValidId(productId) 
         && !(productId in ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110', '111', '112'] 
-             && request.resource.data.description in [
+             && request.resource.data.name in [
                'ASADO DE TIRA SUPERIOR',
                'BIFE DE CHORIZO PREMIUM',
                'VACÍO CORTE ESPECIAL',
