@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Package,
@@ -14,7 +14,7 @@ import {
   Save,
   RefreshCw,
 } from 'lucide-react';
-import { Product, BranchConfig, UserAccount } from '../../types/pos';
+import { Product, BranchConfig, UserAccount, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatCurrency, formatWeight } from '../../utils/scaleParser';
 import { WindowsModal } from '../common/WindowsModal';
 import { useDialog } from '../../context/DialogContext';
@@ -59,7 +59,11 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [exportStatus, setExportStatus] = useState<'IDLE' | 'SENDING' | 'DONE'>('IDLE');
 
-  const categories = ['TODAS', ...Array.from(new Set(products.map((p) => p?.category || 'Carnes Vacunas').filter(Boolean)))];
+  const categories = useMemo(() => {
+    const existingCats = products.map((p) => p?.category).filter(Boolean);
+    const combined = Array.from(new Set([...ANIMAL_CATEGORIES, ...existingCats]));
+    return ['TODAS', ...combined];
+  }, [products]);
 
   const filteredProducts = products.filter((p) => {
     if (!p) return false;
@@ -87,7 +91,8 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     setEditingProduct({
       code: `00${products.length + 120}`,
       description: '',
-      category: 'Carnes Vacunas',
+      rubro: 'Carnes Vacunas',
+      category: 'Novillito',
       unitType: 'Kg',
       price: 10000,
       scalePlu: String(products.length + 120),
@@ -123,7 +128,8 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     const rows = products.map((p) => ({
       CODIGO: p.code,
       DESCRIPCION: p.description,
-      RUBRO: p.category,
+      RUBRO: p.rubro || 'Carnes Vacunas',
+      CATEGORIA_ESPECIE: p.category || 'Novillito',
       UNIDAD: p.unitType,
       PRECIO: p.price,
       PLU_BALANZA: p.scalePlu || '',
@@ -134,7 +140,8 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     ws['!cols'] = [
       { wch: 12 }, // CODIGO
       { wch: 35 }, // DESCRIPCION
-      { wch: 22 }, // RUBRO
+      { wch: 20 }, // RUBRO
+      { wch: 20 }, // CATEGORIA_ESPECIE
       { wch: 10 }, // UNIDAD
       { wch: 14 }, // PRECIO
       { wch: 14 }, // PLU_BALANZA
@@ -282,7 +289,8 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
               <tr className="h-[24px]">
                 <th className="w-[70px] px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
                 <th className="px-2 border-r border-[#c4c6cf]">DESCRIPCIÓN DEL PRODUCTO</th>
-                <th className="w-[140px] px-2 border-r border-[#c4c6cf]">RUBRO / CATEGORÍA</th>
+                <th className="w-[120px] px-2 border-r border-[#c4c6cf]">RUBRO</th>
+                <th className="w-[120px] px-2 border-r border-[#c4c6cf]">CATEGORÍA / ESPECIE</th>
                 <th className="w-[60px] px-1 text-center border-r border-[#c4c6cf]">UNIDAD</th>
                 <th className="w-[110px] px-2 text-right border-r border-[#c4c6cf]">PRECIO ($)</th>
                 <th className="w-[100px] px-1 text-center border-r border-[#c4c6cf] bg-[#e0e3e7]">
@@ -314,8 +322,11 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                     <td className="px-2 border-r border-[#c4c6cf] truncate max-w-[280px]">
                       {prod.description}
                     </td>
-                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[140px]">
-                      {prod.category}
+                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[120px]">
+                      {prod.rubro || 'Carnes Vacunas'}
+                    </td>
+                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[120px]">
+                      <span className="font-bold">{prod.category || 'Novillito'}</span>
                     </td>
                     <td className="text-center font-bold text-[10px] border-r border-[#c4c6cf]">
                       <span
@@ -442,21 +453,38 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="font-bold text-[#181c1f] block mb-0.5">Categoría / Rubro:</label>
+                <label className="font-bold text-[#181c1f] block mb-0.5">Rubro:</label>
                 <select
-                  value={editingProduct.category}
-                  onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
-                  className="w-full h-[26px] px-2 bg-white border border-[#74777f]"
+                  value={editingProduct.rubro || 'Carnes Vacunas'}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, rubro: e.target.value })}
+                  className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-semibold text-[#002046]"
                 >
                   <option value="Carnes Vacunas">Carnes Vacunas</option>
                   <option value="Embutidos Frescos">Embutidos Frescos</option>
                   <option value="Granja / Pollo">Granja / Pollo</option>
-                  <option value="Porcinos">Porcinos</option>
+                  <option value="Achuras / Menudencias">Achuras / Menudencias</option>
+                  <option value="Elaborados">Elaborados</option>
                   <option value="Bebidas">Bebidas</option>
                   <option value="Almacén">Almacén</option>
                   <option value="Fiambrería">Fiambrería</option>
                 </select>
               </div>
+              <div>
+                <label className="font-bold text-[#181c1f] block mb-0.5">Categoría / Especie:</label>
+                <select
+                  value={editingProduct.category || 'Novillito'}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
+                  className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-semibold text-[#002046]"
+                >
+                  {ANIMAL_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
               <div>
                 <label className="font-bold text-[#181c1f] block mb-0.5">Tipo de Venta:</label>
                 <div className="flex gap-4 items-center h-[26px]">

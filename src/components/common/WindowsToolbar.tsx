@@ -20,6 +20,7 @@ import {
   Edit2,
   Trash2,
   RefreshCw,
+  Beef,
 } from 'lucide-react';
 import { ActiveScreen } from '../../types/pos';
 
@@ -49,6 +50,7 @@ export const WindowsToolbar: React.FC<WindowsToolbarProps> = ({
   ];
 
   const secondaryTabs: { screen: ActiveScreen; label: string; icon: React.ReactNode }[] = [
+    { screen: 'STOCK', label: 'Desposte & Faena', icon: <Beef className="w-3 h-3 text-red-700" /> },
     { screen: 'CUENTAS_CORRIENTES', label: 'Cta Cte', icon: <FileText className="w-3 h-3" /> },
     { screen: 'EMPLEADOS', label: 'Personal', icon: <UserCheck className="w-3 h-3" /> },
     { screen: 'HISTORIAL_CIERRES', label: 'Hist. Cierres', icon: <History className="w-3 h-3" /> },

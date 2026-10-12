@@ -85,7 +85,21 @@ export default function App() {
     addSaleRecord,
     deductSaleStock,
     purgeDatabase,
+    purgeInventoryTransactions,
   } = useFirebase();
+
+  useEffect(() => {
+    const runPurgeOnce = async () => {
+      const hasPurged = localStorage.getItem('has_purged_inventory_once');
+      if (!hasPurged) {
+        await purgeInventoryTransactions();
+        localStorage.setItem('has_purged_inventory_once', 'true');
+        alert('Purga de inventario completada.');
+      }
+    };
+    runPurgeOnce();
+  }, []);
+
 
   const { showAlert, showConfirm, showAdminAuth } = useDialog();
 
@@ -507,9 +521,8 @@ export default function App() {
       const operatorForStock = activeUser?.fullName || activeUser?.username || 'Cajero';
       try {
         await deductSaleStock(
-          saleData.items,
+          saleData,
           branchForStock,
-          saleData.ticketNumber || `TC-${Date.now()}`,
           operatorForStock
         );
       } catch (stockErr) {

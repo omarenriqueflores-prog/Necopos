@@ -6,7 +6,9 @@ export interface Product {
   docId?: string;
   name?: string;
   description: string;
+  rubro?: string;
   category: string;
+  species?: string;
   unitType: UnitType;
   price: number;
   vatRate?: number; // 21, 10.5, etc.
@@ -377,7 +379,10 @@ export type StockMovementType =
   | 'AJUSTE_NEGATIVO'
   | 'MERMA'
   | 'DEVOLUCION'
-  | 'STOCK_INICIAL';
+  | 'STOCK_INICIAL'
+  | 'PRODUCCION'
+  | 'DESPOSTE_INGRESO'
+  | 'DESPOSTE_SALIDA';
 
 export interface StockMovement {
   id: string;
@@ -470,3 +475,131 @@ export interface InventoryAudit {
 
 export type PhysicalInventory = InventoryAudit;
 export type PhysicalInventoryItem = InventoryAuditItem;
+
+// ==========================================
+// MÓDULO DE DESPOSTE, RENDIMIENTOS Y TRAZABILIDAD
+// ==========================================
+
+export type DeboningCarcassType =
+  | 'MEDIA_RES'
+  | 'CUARTO_DELANTERO'
+  | 'CUARTO_TRASERO'
+  | 'RES_ENTERA'
+  | 'CERDO_ENTERO';
+
+export interface DeboningCutItem {
+  productId?: string;
+  productCode: string;
+  description: string;
+  category: string;
+  unitType: UnitType;
+  weightKg: number; // Kilos reales obtenidos en balanza
+  yieldPercent: number; // % sobre el peso inicial de la materia prima
+  currentSalePrice: number; // Precio de venta de mostrador vigente
+  totalSaleValue: number; // weightKg * currentSalePrice
+  allocatedCostPerKg: number; // Costo ponderado por valor relativo comercial
+  totalAllocatedCost: number; // weightKg * allocatedCostPerKg
+  projectedMarginPercent: number; // ((totalSaleValue - totalAllocatedCost) / totalSaleValue) * 100
+  cutType?: 'CORTE_UTIL' | 'PICADA_RECORTES' | 'GRASA' | 'HUESO';
+}
+
+// ==========================================
+// CATEGORÍAS ANIMALES OFICIALES PARA PRODUCTOS Y STOCK
+// ==========================================
+export const ANIMAL_CATEGORIES = [
+  'Vaca',
+  'Ternera',
+  'Novillito',
+  'Novillo Pesado',
+  'Vaquillona',
+  'Cerdo',
+] as const;
+
+export type AnimalCategory = (typeof ANIMAL_CATEGORIES)[number];
+
+export interface MeatDeboning {
+  id: string;
+  code: string; // Ej: DESP-0001
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm:ss
+  timestamp: number;
+  branchId: 'NECO 1' | 'NECO 2';
+  chamber: string;
+  status: 'BORRADOR' | 'FINALIZADO' | 'ANULADO';
+  operator: string;
+  butcherMaster?: string; // Responsable o maestro despostador
+  // Trazabilidad de faena y origen
+  tropaNumber: string; // Nro de tropa SENASA
+  supplier: string; // Frigorífico proveedor o matarife
+  carcassType: DeboningCarcassType;
+  animalCategory: AnimalCategory | string; // Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo
+  dteGuideNumber?: string; // DTE / Guía SENASA
+  initialWeightKg: number; // Peso bruto al gancho ingresado
+  costPerKgInitial: number; // Costo $/kg gancho de compra
+  totalInitialCost: number; // initialWeightKg * costPerKgInitial
+  sourceProductCode?: string; // Producto de cámara a descontar si existía
+  // Rendimiento físico y cortes obtenidos
+  cuts: DeboningCutItem[];
+  totalOutputWeightKg: number; // Suma de todos los cortes y subproductos
+  netMeatWeightKg: number; // Kilos de cortes limpios vendibles
+  boneWeightKg: number; // Hueso
+  fatWeightKg: number; // Grasa de pella
+  scrapWeightKg: number; // Recortes para picada
+  shrinkageWeightKg: number; // Merma de despiece / oreo (initial - output)
+  shrinkagePercent: number; // % merma
+  netMeatYieldPercent: number; // % carne limpia sobre inicial
+  totalYieldPercent: number; // % salida total sobre inicial
+  // Rendimiento económico y costos
+  totalCommercialValue: number; // Suma de valor venta de cortes
+  grossMarginTotal: number; // totalCommercialValue - totalInitialCost
+  grossMarginPercent: number; // Margen bruto proyectado %
+  multiplicationFactor: number; // totalCommercialValue / totalInitialCost
+  breakEvenPricePerKg: number; // totalInitialCost / netMeatWeightKg
+  notes?: string;
+  appliedAt?: string;
+}
+
+// ==========================================
+// MÓDULO DE INGRESO / RECEPCIÓN DE MEDIAS RESES
+// ==========================================
+
+export interface CarcassUnit {
+  id: string; // Identificador individual único (ej: MR-001)
+  tagNumber: string; // N° de Garfa / Caravana / Precinto SENASA
+  weightKg: number; // Peso real individual en balanza (Kg)
+  cost: number; // Costo individual calculado ($)
+  notes?: string;
+}
+
+export interface MeatReception {
+  id: string;
+  code: string; // Ej: REC-0001
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm:ss
+  timestamp: number;
+  branchId: 'NECO 1' | 'NECO 2';
+  chamber: string;
+  status: 'PENDIENTE' | 'CONFIRMADO' | 'ANULADO';
+  operator: string;
+  // Origen y Proveedor
+  supplier: string; // Frigorífico / Matarife
+  species: string; // Vacuno / Bovino, Porcino / Cerdo
+  category: AnimalCategory | string; // Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo
+  tropaNumber: string; // N° Tropa SENASA
+  invoiceNumber?: string; // N° Factura
+  deliveryNoteNumber?: string; // N° Remito
+  dteGuideNumber?: string; // DTE / Guía SENASA
+  // Costos y Cantidades
+  pricePerKg: number; // Precio de compra $/Kg al gancho
+  totalQuantity: number; // Cantidad de medias reses
+  totalWeightKg: number; // Kilos totales recibidos
+  totalCost: number; // Costo total compra ($)
+  carcasses: CarcassUnit[]; // Detalle individual de cada media res
+  // Stock
+  productCode?: string; // Código de producto para incrementar en stock de cámara
+  productDescription?: string;
+  notes?: string;
+  appliedAt?: string;
+  updatedAt?: string;
+}
+

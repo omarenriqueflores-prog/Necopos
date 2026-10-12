@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
-import { Product, UnitType } from '../../types/pos';
+import { Product, UnitType, ANIMAL_CATEGORIES } from '../../types/pos';
 import { isMeatCategory, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
 
 interface ChamberStockTabProps {
@@ -39,13 +39,13 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   const [editingMinStockCode, setEditingMinStockCode] = useState<string | null>(null);
   const [tempMinStock, setTempMinStock] = useState<number>(20);
 
-  // Categorías disponibles
+  // Categorías disponibles (con las categorías animales oficiales primero)
   const categories = useMemo(() => {
-    const set = new Set<string>();
+    const customCats = new Set<string>();
     products.forEach((p) => {
-      if (p.category) set.add(p.category);
+      if (p.category) customCats.add(p.category);
     });
-    return Array.from(set).sort();
+    return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
   }, [products]);
 
   // Map rápido de existencias: `${branchId}_${productCode}` -> currentStock

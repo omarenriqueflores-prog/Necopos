@@ -88,5 +88,15 @@ service cloud.firestore {
     match /physicalInventories/{invId} {
       allow read, write: if isValidId(invId);
     }
+
+    match /meatDebonings/{deboningId} {
+      allow read, write: if isValidId(deboningId);
+    }
+
+    match /meatReceptions/{receptionId} {
+      allow read, write: if isValidId(receptionId);
+    }
   }
 }
+
+

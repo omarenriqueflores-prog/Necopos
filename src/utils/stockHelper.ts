@@ -1,7 +1,10 @@
-import { UnitType, StockTransfer, BranchConfig } from '../types/pos';
+import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory } from '../types/pos';
+
+export { ANIMAL_CATEGORIES };
+export type { AnimalCategory };
 
 /**
- * Determina si una categoría pertenece al rubro cárnico (Vacuna, Cerdo, Pollo, Embutidos, Achuras).
+ * Determina si una categoría pertenece al rubro cárnico (Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo, etc.).
  * Las categorías de almacén, bebidas y fiambrería NO son consideradas para la valorización de stock cárnico.
  */
 export function isMeatCategory(category: string | undefined | null): boolean {
@@ -20,17 +23,20 @@ export function isMeatCategory(category: string | undefined | null): boolean {
     return false;
   }
 
-  // Inclusiones cárnicas
+  // Inclusiones cárnicas oficiales de Neco POS:
+  // Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo
   if (
+    cat.includes('vaca') ||
+    cat.includes('ternera') ||
+    cat.includes('novillito') ||
+    cat.includes('novillo') ||
+    cat.includes('vaquillona') ||
+    cat.includes('cerdo') ||
+    cat.includes('porcino') ||
     cat.includes('carne') ||
     cat.includes('vacun') ||
-    cat.includes('ternera') ||
-    cat.includes('novillo') ||
-    cat.includes('vaca') ||
     cat.includes('pollo') ||
     cat.includes('granja') ||
-    cat.includes('porcino') ||
-    cat.includes('cerdo') ||
     cat.includes('embutido') ||
     cat.includes('achura') ||
     cat.includes('menudencia')

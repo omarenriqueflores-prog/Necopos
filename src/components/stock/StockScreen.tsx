@@ -9,6 +9,8 @@ import {
   Truck,
   Printer,
   X,
+  Beef,
+  FileCheck,
 } from 'lucide-react';
 import { ChamberStockTab } from './ChamberStockTab';
 import { StockMovementsTab } from './StockMovementsTab';
@@ -16,6 +18,9 @@ import { StockTransfersTab } from './StockTransfersTab';
 import { StockAdjustmentsTab } from './StockAdjustmentsTab';
 import { PhysicalInventoryTab } from './PhysicalInventoryTab';
 import { StockValorizationTab } from './StockValorizationTab';
+import { MeatDeboningTab } from './MeatDeboningTab';
+import { MeatReconciliationTab } from './MeatReconciliationTab';
+import { MeatReceptionTab } from './MeatReceptionTab';
 import { NewTransferModal } from './NewTransferModal';
 import { ChamberInitModal } from './ChamberInitModal';
 import { Product, StockTransfer } from '../../types/pos';
@@ -24,6 +29,9 @@ import { useFirebase } from '../../context/FirebaseContext';
 
 type StockSubTab =
   | 'EXISTENCIAS'
+  | 'RECEPCION'
+  | 'DESPOSTE'
+  | 'CONCILIACION_VENTAS'
   | 'MOVIMIENTOS'
   | 'TRANSFERENCIAS'
   | 'AJUSTES_MERMAS'
@@ -97,6 +105,42 @@ export const StockScreen: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveTab('RECEPCION')}
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
+            activeTab === 'RECEPCION'
+              ? 'bg-white text-red-900 border-gray-400 -mb-px pb-2 shadow-sm'
+              : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
+          }`}
+        >
+          <Truck className="w-3.5 h-3.5 text-red-700" />
+          <span>Recepción de Medias Reses</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('DESPOSTE')}
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
+            activeTab === 'DESPOSTE'
+              ? 'bg-white text-red-900 border-gray-400 -mb-px pb-2 shadow-sm'
+              : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
+          }`}
+        >
+          <Beef className="w-3.5 h-3.5 text-amber-700" />
+          <span>Desposte & Rendimientos</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('CONCILIACION_VENTAS')}
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
+            activeTab === 'CONCILIACION_VENTAS'
+              ? 'bg-white text-emerald-900 border-gray-400 -mb-px pb-2 shadow-sm'
+              : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
+          }`}
+        >
+          <FileCheck className="w-3.5 h-3.5 text-emerald-700" />
+          <span>Conciliación Prod. vs Ventas</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('TRANSFERENCIAS')}
           className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
             activeTab === 'TRANSFERENCIAS'
@@ -155,7 +199,13 @@ export const StockScreen: React.FC = () => {
           />
         )}
 
+        {activeTab === 'RECEPCION' && <MeatReceptionTab />}
+
         {activeTab === 'MOVIMIENTOS' && <StockMovementsTab />}
+
+        {activeTab === 'DESPOSTE' && <MeatDeboningTab />}
+
+        {activeTab === 'CONCILIACION_VENTAS' && <MeatReconciliationTab />}
 
         {activeTab === 'TRANSFERENCIAS' && (
           <StockTransfersTab

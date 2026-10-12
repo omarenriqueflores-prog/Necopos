@@ -191,28 +191,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   }, [barcodeInput, products]);
 
   const handleSelectProductFromSearch = (product: Product) => {
-    const availableStock = getAvailableChamberStock(product.code);
-    if (availableStock <= 0) {
-      showAlert(
-        `⛔ SIN STOCK EN CÁMARA:\n\nEl artículo "${product.description}" (Cód. ${product.code}) no tiene stock disponible en la cámara de ${currentBranch.name || currentBranch.id} (Stock actual: 0,000 ${product.unitType}).\n\nNo se puede registrar la venta sin stock físico disponible en cámara.`
-      );
-      return;
-    }
-
-    const currentInTicket = saleItems
-      .filter((it) => it.code === product.code)
-      .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-
-    const remaining = Math.max(0, availableStock - currentInTicket);
-    if (remaining <= 0) {
-      showAlert(
-        `⛔ LÍMITE DE STOCK ALCANZADO:\n\nYa ha asignado al ticket todo el stock disponible en cámara para "${product.description}" (${formatQuantity(availableStock, product.unitType)}) en ${currentBranch.id}.`
-      );
-      return;
-    }
-
     setProductToAmount(product);
-    const initialVal = product.unitType === 'Kg' ? (remaining < 1 ? remaining.toFixed(3) : '1.000') : '1';
+    const initialVal = product.unitType === 'Kg' ? '1.000' : '1';
     setAmountInput(initialVal);
     setIsAddAmountModalOpen(true);
     setIsSearchFocused(false);
@@ -228,16 +208,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     }
 
     const availableStock = getAvailableChamberStock(productToAmount.code);
-    const currentInTicket = saleItems
-      .filter((it) => it.code === productToAmount.code)
-      .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-
-    if (val + currentInTicket > availableStock) {
-      const maxAllowed = Math.max(0, availableStock - currentInTicket);
-      showAlert(
-        `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${productToAmount.description}" (Cód. ${productToAmount.code}):\n• Cantidad solicitada: ${formatQuantity(val, productToAmount.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, productToAmount.unitType)}\n• Restante libre: ${formatQuantity(maxAllowed, productToAmount.unitType)}\n\nNo es posible vender más de lo que existe físicamente en cámara.`
-      );
-      return;
+    if (availableStock <= 0) {
+      showNotification(`Aviso: ${productToAmount.description} con stock 0/negativo (${formatQuantity(availableStock, productToAmount.unitType)}). Se ajustará en negativo.`);
     }
 
     const subtotal = Math.round(productToAmount.price * val * 100) / 100;
@@ -387,25 +359,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     if (parsed && parsed.product) {
       if (parsed.isScaleLabel) {
         const availableStock = getAvailableChamberStock(parsed.product.code);
-        const requested = parsed.weight || 1;
-
         if (availableStock <= 0) {
-          showAlert(
-            `⛔ SIN STOCK EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${parsed.product.description}" (Cód. ${parsed.product.code}) figura con 0,000 ${parsed.product.unitType} en cámara frigorífica.\n\nNo es posible ingresar este artículo.`
-          );
-          return;
-        }
-
-        const currentInTicket = saleItems
-          .filter((it) => it.code === parsed.product.code)
-          .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-
-        if (currentInTicket + requested > availableStock) {
-          const remaining = Math.max(0, availableStock - currentInTicket);
-          showAlert(
-            `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nPara "${parsed.product.description}" (Cód. ${parsed.product.code}):\n• Cantidad solicitada: ${formatQuantity(requested, parsed.product.unitType)}\n• Stock disponible en cámara: ${formatQuantity(availableStock, parsed.product.unitType)}\n• Restante libre: ${formatQuantity(remaining, parsed.product.unitType)}\n\nNo es posible vender más kilos de los que existen físicamente en la cámara.`
-          );
-          return;
+          showNotification(`Aviso: ${parsed.product.description} sin stock en cámara (${formatQuantity(availableStock, parsed.product.unitType)}). Se ajustará en negativo.`);
         }
 
         const newItem: SaleItem = {
@@ -643,24 +598,6 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       }
     }
 
-    // 4. VALIDACIÓN ESTRICTA DE STOCK EN CÁMARA FRIGORÍFICA: No permitir ventas con stock insuficiente
-    const productTotals = new Map<string, { desc: string; unitType: string; requested: number }>();
-    for (const it of saleItems) {
-      const existing = productTotals.get(it.code) || { desc: it.description, unitType: it.unitType, requested: 0 };
-      const qty = it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0);
-      existing.requested += qty;
-      productTotals.set(it.code, existing);
-    }
-
-    for (const [code, info] of productTotals.entries()) {
-      const availableStock = getAvailableChamberStock(code);
-      if (info.requested > availableStock) {
-        await showAlert(
-          `⛔ VENTA BLOQUEADA POR FALTA DE STOCK EN CÁMARA:\n\nSucursal: ${currentBranch.name || currentBranch.id}\nCorte: ${info.desc} (Cód. ${code})\n• Cantidad en ticket a vender: ${formatQuantity(info.requested, info.unitType)}\n• Stock físico real en cámara: ${formatQuantity(availableStock, info.unitType)}\n\nNo es posible facturar una cantidad superior al stock disponible en la cámara frigorífica de esta sucursal.`
-        );
-        return;
-      }
-    }
 
     setTicketInvoiceType(type);
 
@@ -903,20 +840,6 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       }
 
       const current = saleItems[selectedItemIndex];
-      const availableStock = getAvailableChamberStock(current.code);
-
-      // Sum other items with same code on the ticket
-      const otherItemsWeight = saleItems
-        .filter((it, idx) => it.code === current.code && idx !== selectedItemIndex)
-        .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-
-      if (val + otherItemsWeight > availableStock) {
-        const maxPossible = Math.max(0, availableStock - otherItemsWeight);
-        showAlert(
-          `⛔ STOCK INSUFICIENTE EN CÁMARA (${currentBranch.name || currentBranch.id}):\n\nEl corte "${current.description}" tiene un stock disponible de ${formatQuantity(availableStock, current.unitType)} en la cámara.\n\nNo se puede establecer una cantidad de ${formatQuantity(val, current.unitType)} porque superaría las existencias reales en cámara.\n\nEl máximo disponible para esta línea es de ${formatQuantity(maxPossible, current.unitType)}.`
-        );
-        return;
-      }
 
       const price = parseFloat(editPrice) || saleItems[selectedItemIndex].unitPrice;
 
@@ -945,7 +868,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       });
 
       setIsEditModalOpen(false);
-      showNotification('Línea modificada y stock validado correctamente.');
+      showNotification('Línea modificada correctamente.');
     }
   };
 
@@ -1083,15 +1006,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                                 className={`px-1.5 py-0.2 rounded font-mono font-bold text-[10px] ${
                                   isOutOfStock
                                     ? isHighlighted
-                                      ? 'bg-[#ba1a1a] text-white border border-[#ffb4ab]'
-                                      : 'bg-red-100 text-red-800 border border-red-300'
+                                      ? 'bg-amber-700 text-white border border-amber-300'
+                                      : 'bg-amber-100 text-amber-900 border border-amber-300'
                                     : isHighlighted
                                     ? 'bg-[#00522c] text-white border border-[#a8dab5]'
                                     : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                                 }`}
                               >
                                 {isOutOfStock
-                                  ? `⛔ SIN STOCK (${currentBranch.id})`
+                                  ? `Stock: ${formatQuantity(stockInChamber, p.unitType)} (Ajusta negativo)`
                                   : `Cámara ${currentBranch.id}: ${formatQuantity(
                                       stockInChamber,
                                       p.unitType
@@ -1117,17 +1040,14 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                             </span>
                             <button
                               type="button"
-                              disabled={isOutOfStock}
-                              className={`h-[22px] px-2 text-[10px] font-bold uppercase rounded flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                              className={`h-[22px] px-2 text-[10px] font-bold uppercase rounded flex items-center gap-1 cursor-pointer ${
                                 isHighlighted
                                   ? 'bg-[#00522c] text-white hover:bg-[#003822]'
-                                  : isOutOfStock
-                                  ? 'bg-gray-300 text-gray-600'
                                   : 'bg-[#002046] text-white hover:bg-[#1b365d]'
                               }`}
                             >
                               <Plus className="w-3 h-3" />
-                              <span>{isOutOfStock ? 'Sin Stock' : 'Agregar'}</span>
+                              <span>Agregar</span>
                             </button>
                           </div>
                         </div>
@@ -1290,9 +1210,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         }}
                         className={`h-[24px] cursor-pointer ${
                           isSelected
-                            ? isExceeded ? 'bg-red-900 text-white font-bold' : 'bg-[#002046] text-white font-bold'
-                            : isExceeded
-                            ? 'bg-red-50 text-red-950 hover:bg-red-100 font-medium'
+                            ? 'bg-[#002046] text-white font-bold'
                             : idx % 2 === 0
                             ? 'bg-white hover:bg-[#e5e8ec]'
                             : 'bg-[#f1f4f8] hover:bg-[#e5e8ec]'
@@ -1320,8 +1238,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                             </span>
                           )}
                           {isExceeded && (
-                            <span className="ml-1.5 px-1.5 py-0.2 rounded bg-red-600 text-white font-bold text-[9px] uppercase tracking-tight inline-block shadow-xs">
-                              ⛔ Excede Stock (Disp: {formatQuantity(availableStock, item.unitType)})
+                            <span className="ml-1.5 px-1.5 py-0.2 rounded bg-amber-600 text-white font-bold text-[9px] uppercase tracking-tight inline-block shadow-xs">
+                              ⚠️ Ajuste negativo (Cám: {formatQuantity(availableStock, item.unitType)})
                             </span>
                           )}
                         </td>
@@ -1332,7 +1250,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         >
                           {item.unitType}
                         </td>
-                        <td className={`text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf] ${isExceeded && !isSelected ? 'text-red-700 font-bold' : ''}`}>
+                        <td className="text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf]">
                           {isKg ? formatWeight(item.weight || 0) : `${item.quantity || 1} un`}
                         </td>
                         <td className="text-right font-mono text-[12px] px-1.5 border-r border-[#c4c6cf]">
@@ -2101,12 +2019,12 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                 <span className="text-[#44474e] font-semibold">Stock Físico en Cámara ({currentBranch.id}):</span>
                 <span
                   className={`font-mono font-bold px-2 py-0.5 rounded text-[10px] ${
-                    maxAllowed <= 0
-                      ? 'bg-red-100 text-red-800 border border-red-300'
+                    chamberStock <= 0
+                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
                       : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                   }`}
                 >
-                  {formatQuantity(chamberStock, productToAmount.unitType)} (Disp: {formatQuantity(maxAllowed, productToAmount.unitType)})
+                  {formatQuantity(chamberStock, productToAmount.unitType)} {chamberStock <= 0 ? '(Ajustará en negativo)' : ''}
                 </span>
               </div>
 
@@ -2134,7 +2052,6 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     type="number"
                     step={isKg ? '0.001' : '1'}
                     min="0.001"
-                    max={maxAllowed > 0 ? maxAllowed : undefined}
                     value={amountInput}
                     onChange={(e) => setAmountInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -2205,8 +2122,8 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
                 {/* Warning if stock exceeded */}
                 {isExceeded && (
-                  <div className="bg-[#ffdad6] text-[#ba1a1a] p-1.5 border border-[#ba1a1a] text-[11px] font-bold flex items-center gap-1 mt-1">
-                    <span>⛔ El peso/cantidad ingresado ({formatQuantity(val, productToAmount.unitType)}) excede el stock disponible en cámara ({formatQuantity(maxAllowed, productToAmount.unitType)}).</span>
+                  <div className="bg-amber-50 text-amber-900 p-1.5 border border-amber-300 text-[11px] font-semibold flex items-center gap-1 mt-1">
+                    <span>⚠️ Stock en cámara actual: {formatQuantity(chamberStock, productToAmount.unitType)}. Esta venta ajustará el stock en negativo.</span>
                   </div>
                 )}
               </form>
@@ -2226,7 +2143,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                 </button>
                 <button
                   type="button"
-                  disabled={val <= 0 || isExceeded}
+                  disabled={val <= 0}
                   onClick={handleConfirmAddAmount}
                   className="h-[30px] px-5 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[12px] flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -2284,13 +2201,12 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                       : 'Cantidad (Unidades):'}
                   </span>
                   <span className="text-[10px] font-bold text-[#00639b]">
-                    Máx. permitido: {formatQuantity(maxAllowed, current.unitType)}
+                    Stock en cámara: {formatQuantity(chamberStock, current.unitType)}
                   </span>
                 </label>
                 <input
                   type="number"
                   step={current.unitType === 'Kg' ? '0.005' : '1'}
-                  max={maxAllowed > 0 ? maxAllowed : undefined}
                   value={editQtyOrWeight}
                   onChange={(e) => setEditQtyOrWeight(e.target.value)}
                   className="h-[28px] px-2 bg-white font-mono text-[14px] font-bold border border-[#74777f] focus:outline-none"

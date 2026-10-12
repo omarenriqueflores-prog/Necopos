@@ -11,7 +11,7 @@ import {
   Scale,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
-import { PhysicalInventory, PhysicalInventoryItem } from '../../types/pos';
+import { PhysicalInventory, PhysicalInventoryItem, ANIMAL_CATEGORIES } from '../../types/pos';
 import { isMeatCategory, formatKg, formatCurrency } from '../../utils/stockHelper';
 
 export const PhysicalInventoryTab: React.FC = () => {
@@ -32,6 +32,15 @@ export const PhysicalInventoryTab: React.FC = () => {
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Auditor de Cámara';
   const counts = countsByBranch[branchId] || {};
+
+  // Categorías de productos cárnicos con las oficiales primero
+  const categories = useMemo(() => {
+    const customCats = new Set<string>();
+    products.forEach((p) => {
+      if (p.category) customCats.add(p.category);
+    });
+    return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
+  }, [products]);
 
   // Obtener items cárnicos y su stock del sistema
   const chamberItems = useMemo(() => {
@@ -325,6 +334,23 @@ export const PhysicalInventoryTab: React.FC = () => {
                 NECO 2 (Sucursal)
               </button>
             </div>
+          </div>
+
+          {/* Filtro Categoría Animal */}
+          <div className="flex items-center space-x-1">
+            <span className="font-bold text-gray-800 text-[11px]">Categoría:</span>
+            <select
+              value={filterCategory}
+              onChange={(e) => setFilterCategory(e.target.value)}
+              className="bg-white border border-gray-400 px-2 py-1 text-xs font-semibold text-blue-900 shadow-sm"
+            >
+              <option value="ALL">Todas las Categorías</option>
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Búsqueda */}

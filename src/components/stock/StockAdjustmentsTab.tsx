@@ -22,13 +22,13 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
   initialProduct,
   initialBranch = 'NECO 1',
 }) => {
-  const { products, branchStock, recordStockMovement, stockMovements, localUser, user } = useFirebase();
+  const { products, branchStock, recordStockMovement, stockMovements, localUser, user, meatReceptions, meatDebonings } = useFirebase();
 
   const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(initialBranch);
-  const [selectedProductCode, setSelectedProductCode] = useState<string>(initialProduct?.code || '');
+  const [selectedTargetCode, setSelectedTargetCode] = useState<string>(initialProduct?.code || '');
   const [type, setType] = useState<StockMovementType>('MERMA');
   const [quantity, setQuantity] = useState<string>('');
-  const [reason, setReason] = useState<string>('Desposte / Deshuese');
+  const [reason, setReason] = useState<string>('Evaporación natural en cámara de frío');
   const [customReason, setCustomReason] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [productSearch, setProductSearch] = useState<string>('');
@@ -38,34 +38,33 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
 
-  // Buscar producto seleccionado
-  const selectedProduct = useMemo(() => {
-    return products.find((p) => p.code === selectedProductCode) || null;
-  }, [products, selectedProductCode]);
+  // Recepciones disponibles (medias reses en gancho en cámara)
+  const availableReceptions = useMemo(() => {
+    if (!meatReceptions) return [];
+    const debonedTropas = new Set(meatDebonings?.map((d) => d.tropaNumber?.trim().toLowerCase()).filter(Boolean) || []);
+    const debonedCodes = new Set(meatDebonings?.map((d) => d.sourceProductCode?.trim()).filter(Boolean) || []);
 
-  // Stock actual del producto en la sucursal seleccionada
-  const currentBranchStock = useMemo(() => {
-    if (!selectedProductCode) return 0;
-    const found = branchStock.find((s) => s.branchId === branchId && s.productCode === selectedProductCode);
-    return found ? Number(found.currentStock) || 0 : 0;
-  }, [branchStock, branchId, selectedProductCode]);
+    return meatReceptions.filter((r) => {
+      if (r.status !== 'CONFIRMADO') return false;
+      if (r.branchId && r.branchId !== branchId) return false;
+      const tropaLower = r.tropaNumber?.trim().toLowerCase();
+      if (tropaLower && debonedTropas.has(tropaLower)) return false;
+      if (r.productCode && debonedCodes.has(r.productCode.trim())) return false;
+      return true;
+    });
+  }, [meatReceptions, meatDebonings, branchId]);
 
-  // Cálculo de stock resultante
-  const qtyNumber = Number(quantity) || 0;
-  const isPositive = type === 'AJUSTE_POSITIVO' || type === 'ENTRADA';
-  const newStockCalculated = Number((isPositive ? currentBranchStock + qtyNumber : currentBranchStock - qtyNumber).toFixed(3));
-
-  // Opciones de motivo predeterminadas
-  const reasonOptions = [
-    'Desposte / Deshuese',
-    'Exceso de grasa / Hueso no aprovechable',
-    'Evaporación natural en cámara de frío',
-    'Rotura de frío / Deterioro',
-    'Vencimiento de mercadería',
-    'Diferencia de pesaje en balanza',
-    'Ingreso directo de proveedor / Reses',
-    'Otro motivo (especificar)',
-  ];
+  const filteredReceptions = useMemo(() => {
+    if (!productSearch.trim()) return availableReceptions;
+    const q = productSearch.toLowerCase().trim();
+    return availableReceptions.filter(
+      (r) =>
+        r.tropaNumber.toLowerCase().includes(q) ||
+        r.supplier.toLowerCase().includes(q) ||
+        r.species.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q)
+    );
+  }, [availableReceptions, productSearch]);
 
   // Productos filtrados para el selector
   const filteredProducts = useMemo(() => {
@@ -79,6 +78,53 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
     );
   }, [products, productSearch]);
 
+  // Buscar elemento seleccionado (reception o product)
+  const selectedReception = useMemo(() => {
+    if (!selectedTargetCode.startsWith('REC:')) return null;
+    const recId = selectedTargetCode.replace('REC:', '');
+    return availableReceptions.find((r) => r.id === recId) || null;
+  }, [availableReceptions, selectedTargetCode]);
+
+  const selectedProduct = useMemo(() => {
+    if (selectedTargetCode.startsWith('REC:')) return null;
+    return products.find((p) => p.code === selectedTargetCode) || null;
+  }, [products, selectedTargetCode]);
+
+  // Stock actual o peso actual de la media res
+  const currentStockOrWeight = useMemo(() => {
+    if (selectedReception) return Number(selectedReception.totalWeightKg) || 0;
+    if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
+      const found = branchStock.find((s) => s.branchId === branchId && s.productCode === selectedTargetCode);
+      return found ? Number(found.currentStock) || 0 : 0;
+    }
+    return 0;
+  }, [selectedReception, selectedTargetCode, branchStock, branchId]);
+
+  // Cálculo de stock resultante
+  const qtyNumber = Number(quantity) || 0;
+  const isPositive = type === 'AJUSTE_POSITIVO' || type === 'ENTRADA';
+  const newStockCalculated = Number((isPositive ? currentStockOrWeight + qtyNumber : currentStockOrWeight - qtyNumber).toFixed(3));
+
+  const selectedItemName = selectedReception
+    ? `MEDIA RES - Tropa #${selectedReception.tropaNumber} (${selectedReception.species} ${selectedReception.category} - ${selectedReception.supplier})`
+    : selectedProduct?.description || '';
+
+  const selectedItemCategory = selectedReception ? selectedReception.category : selectedProduct?.category || 'Carnes Vacunas';
+  const selectedItemPrice = selectedReception ? selectedReception.pricePerKg : selectedProduct?.price || 0;
+  const selectedItemUnit = 'Kg';
+
+  // Opciones de motivo predeterminadas
+  const reasonOptions = [
+    'Evaporación natural en cámara de frío',
+    'Desposte / Deshuese',
+    'Exceso de grasa / Hueso no aprovechable',
+    'Rotura de frío / Deterioro',
+    'Vencimiento de mercadería',
+    'Diferencia de pesaje en balanza',
+    'Ingreso directo de proveedor / Reses',
+    'Otro motivo (especificar)',
+  ];
+
   // Movimientos recientes de ajuste/merma
   const recentAdjustments = useMemo(() => {
     return stockMovements
@@ -88,10 +134,12 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProduct) {
+    if (!selectedReception && !selectedProduct) {
+      setErrorMessage('Seleccione un artículo o media res en cámara.');
       return;
     }
     if (qtyNumber <= 0) {
+      setErrorMessage('Ingrese una cantidad válida mayor a 0.');
       return;
     }
 
@@ -110,27 +158,27 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
         timestamp: Date.now(),
         branchId,
         chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
-        productCode: selectedProduct.code,
-        productDescription: selectedProduct.description,
-        category: selectedProduct.category,
-        unitType: selectedProduct.unitType,
+        productCode: selectedReception ? `TROPA-${selectedReception.tropaNumber}` : selectedProduct!.code,
+        productDescription: selectedItemName,
+        category: selectedItemCategory,
+        unitType: selectedItemUnit,
         type,
         quantity: qtyNumber,
         factor: isPositive ? 1 : -1,
-        previousStock: currentBranchStock,
+        previousStock: currentStockOrWeight,
         newStock: newStockCalculated,
-        unitPrice: selectedProduct.price,
-        totalValue: Number((qtyNumber * selectedProduct.price).toFixed(2)),
+        unitPrice: selectedItemPrice,
+        totalValue: Number((qtyNumber * selectedItemPrice).toFixed(2)),
         referenceDoc: `AJUSTE-${Date.now().toString().slice(-6)}`,
         operator: operatorName,
         reason: finalReason,
-        notes: notes.trim() || undefined,
+        notes: notes.trim() || (selectedReception ? 'Merma natural / evaporación en gancho (Cámara)' : undefined),
       };
 
       await recordStockMovement(movement);
 
       setSuccessMessage(
-        `¡${type} registrado exitosamente! Stock de ${selectedProduct.description} actualizado a ${formatQuantity(newStockCalculated, selectedProduct.unitType)}.`
+        `¡${type} registrado exitosamente! Stock de ${selectedItemName} actualizado a ${formatQuantity(newStockCalculated, selectedItemUnit)}.`
       );
       setErrorMessage(null);
       setQuantity('');
@@ -269,42 +317,98 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
             </div>
           </div>
 
-          {/* Selector de Producto */}
+          {/* Selector de Producto o Media Res en Cámara */}
           <div>
-            <label className="block font-bold text-black mb-1">Artículo / Corte de Carne:</label>
+            <label className="block font-bold text-black mb-1">
+              Artículo, Corte de Carne o Media Res en Cámara:
+            </label>
             <div className="mb-1">
               <input
                 type="text"
                 className="win-input w-full p-1.5 text-xs text-black font-medium border border-gray-400 placeholder:text-gray-500"
-                placeholder="Filtrar cortes..."
+                placeholder="Buscar por descripción, tropa o proveedor..."
                 value={productSearch}
                 onChange={(e) => setProductSearch(e.target.value)}
               />
             </div>
-            <select
-              className="win-select w-full p-1.5 text-xs font-mono text-black font-bold border border-gray-400 bg-white"
-              value={selectedProductCode}
-              onChange={(e) => setSelectedProductCode(e.target.value)}
-              size={3}
-            >
-              <option value="" disabled className="text-gray-600">
-                -- Seleccioná un corte --
-              </option>
-              {filteredProducts.map((p) => (
-                <option key={p.code} value={p.code} className="text-black py-0.5">
-                  {p.code} - {p.description} ({p.category}) [${p.price}/{p.unitType}]
-                </option>
-              ))}
-            </select>
+            
+            <div className="max-h-[220px] overflow-y-auto border-2 border-gray-400 bg-white rounded shadow-inner divide-y divide-gray-200 text-xs font-mono">
+              {filteredReceptions.length > 0 && (
+                <div>
+                  <div className="bg-amber-100 text-amber-900 font-bold px-2 py-1.5 text-[11px] sticky top-0 border-b border-amber-300 flex items-center justify-between">
+                    <span>🥩 MEDIAS RESES / CANALES EN GANCHO (CÁMARA)</span>
+                    <span className="text-[10px] bg-amber-200 px-1.5 py-0.5 rounded text-amber-900">Merma Natural</span>
+                  </div>
+                  {filteredReceptions.map((r) => {
+                    const targetCode = `REC:${r.id}`;
+                    const isSel = selectedTargetCode === targetCode;
+                    return (
+                      <div
+                        key={r.id}
+                        onClick={() => setSelectedTargetCode(targetCode)}
+                        className={`p-2.5 cursor-pointer flex items-center justify-between transition-colors ${
+                          isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-gray-100 text-black'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-bold">Tropa #{r.tropaNumber} - {r.species} ({r.category})</div>
+                          <div className={`text-[10px] ${isSel ? 'text-gray-200' : 'text-gray-600'}`}>
+                            Proveedor: {r.supplier} | Fecha: {r.date}
+                          </div>
+                        </div>
+                        <div className="text-right font-bold text-amber-800 font-mono">
+                          <span className={isSel ? 'text-white' : ''}>{formatKg(r.totalWeightKg)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {filteredProducts.length > 0 && (
+                <div>
+                  <div className="bg-blue-100 text-blue-900 font-bold px-2 py-1.5 text-[11px] sticky top-0 border-b border-blue-300">
+                    📦 CORTES Y ARTÍCULOS DE STOCK
+                  </div>
+                  {filteredProducts.map((p) => {
+                    const isSel = selectedTargetCode === p.code;
+                    return (
+                      <div
+                        key={p.code}
+                        onClick={() => setSelectedTargetCode(p.code)}
+                        className={`p-2.5 cursor-pointer flex items-center justify-between transition-colors ${
+                          isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-gray-100 text-black'
+                        }`}
+                      >
+                        <div>
+                          <span className="font-mono font-bold">[{p.code}]</span> {p.description} ({p.category})
+                        </div>
+                        <div className="text-right">
+                          {formatCurrency(p.price)} / {p.unitType}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {filteredReceptions.length === 0 && filteredProducts.length === 0 && (
+                <div className="p-4 text-center text-gray-500 text-xs">
+                  No se encontraron resultados para la búsqueda.
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Visualizador de Stocks */}
-          {selectedProduct && (
+          {/* Visualizador de Stocks / Pesos */}
+          {(selectedReception || selectedProduct) && (
             <div className="p-2.5 bg-blue-50 border border-blue-200 rounded grid grid-cols-3 gap-2 text-center font-mono">
               <div>
-                <div className="text-[10px] font-bold text-gray-700">Stock Actual</div>
+                <div className="text-[10px] font-bold text-gray-700">
+                  {selectedReception ? 'Peso en Gancho' : 'Stock Actual'}
+                </div>
                 <div className="text-sm font-bold text-black">
-                  {formatQuantity(currentBranchStock, selectedProduct.unitType)}
+                  {formatQuantity(currentStockOrWeight, selectedItemUnit)}
                 </div>
               </div>
               <div>
@@ -315,17 +419,19 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                   }`}
                 >
                   {isPositive ? '+' : '-'}
-                  {formatQuantity(qtyNumber, selectedProduct.unitType)}
+                  {formatQuantity(qtyNumber, selectedItemUnit)}
                 </div>
               </div>
               <div>
-                <div className="text-[10px] font-bold text-gray-700">Stock Resultante</div>
+                <div className="text-[10px] font-bold text-gray-700">
+                  {selectedReception ? 'Peso Resultante' : 'Stock Resultante'}
+                </div>
                 <div
                   className={`text-sm font-bold ${
                     newStockCalculated < 0 ? 'text-red-700' : 'text-blue-900'
                   }`}
                 >
-                  {formatQuantity(newStockCalculated, selectedProduct.unitType)}
+                  {formatQuantity(newStockCalculated, selectedItemUnit)}
                 </div>
               </div>
             </div>

@@ -84,6 +84,9 @@ export const WindowsMenuBar: React.FC<WindowsMenuBarProps> = ({
       accessChar: 'S',
       items: [
         { label: 'Cámaras Frigoríficas & Existencias', accessKey: 'C', screen: 'STOCK', hotkey: 'F5' },
+        { label: 'Recepción & Ingreso de Medias Reses', accessKey: 'R', screen: 'STOCK' },
+        { label: 'Desposte & Rendimientos de Medias Reses', accessKey: 'D', screen: 'STOCK' },
+        { label: 'Conciliación Cárnica (Producción vs Ventas)', accessKey: 'P', screen: 'STOCK' },
         { label: 'Kardex de Movimientos Inmutable', accessKey: 'K', screen: 'STOCK' },
         { label: 'Traslados Inter-Sucursal (NECO 1 ⇄ NECO 2)', accessKey: 'T', screen: 'STOCK' },
         { label: 'Registro de Mermas y Ajustes', accessKey: 'M', screen: 'STOCK' },

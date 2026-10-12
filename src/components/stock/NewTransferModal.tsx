@@ -20,7 +20,7 @@ interface NewTransferModalProps {
 }
 
 export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, defaultProduct }) => {
-  const { products, branchStock, saveStockTransfer, dispatchStockTransfer, localUser, user } = useFirebase();
+  const { products, branchStock, saveStockTransfer, dispatchStockTransfer, localUser, user, meatReceptions, meatDebonings } = useFirebase();
 
   const [originBranch, setOriginBranch] = useState<'NECO 1' | 'NECO 2'>('NECO 1');
   const [destinationBranch, setDestinationBranch] = useState<'NECO 1' | 'NECO 2'>('NECO 2');
@@ -28,8 +28,48 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   const [vehiclePlate, setVehiclePlate] = useState('');
   const [notes, setNotes] = useState('');
   const [inlineNotification, setInlineNotification] = useState<{ type: 'info' | 'warning' | 'error' | 'success'; message: string } | null>(null);
+  const [searchFilter, setSearchFilter] = useState('');
 
-  // Items en preparación para transferir (inicia vacío para respetar disponibilidad de origen)
+  // Recepciones disponibles (medias reses en gancho en cámara)
+  const availableReceptions = useMemo(() => {
+    if (!meatReceptions) return [];
+    const debonedTropas = new Set(meatDebonings?.map((d) => d.tropaNumber?.trim().toLowerCase()).filter(Boolean) || []);
+    const debonedCodes = new Set(meatDebonings?.map((d) => d.sourceProductCode?.trim()).filter(Boolean) || []);
+
+    return meatReceptions.filter((r) => {
+      if (r.status !== 'CONFIRMADO') return false;
+      if (r.branchId && r.branchId !== originBranch) return false;
+      const tropaLower = r.tropaNumber?.trim().toLowerCase();
+      if (tropaLower && debonedTropas.has(tropaLower)) return false;
+      if (r.productCode && debonedCodes.has(r.productCode.trim())) return false;
+      return true;
+    });
+  }, [meatReceptions, meatDebonings, originBranch]);
+
+  const filteredReceptions = useMemo(() => {
+    if (!searchFilter.trim()) return availableReceptions;
+    const q = searchFilter.toLowerCase().trim();
+    return availableReceptions.filter(
+      (r) =>
+        r.tropaNumber.toLowerCase().includes(q) ||
+        r.supplier.toLowerCase().includes(q) ||
+        r.species.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q)
+    );
+  }, [availableReceptions, searchFilter]);
+
+  const filteredProducts = useMemo(() => {
+    if (!searchFilter.trim()) return products.slice(0, 100);
+    const q = searchFilter.toLowerCase().trim();
+    return products.filter(
+      (p) =>
+        p.code.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q) ||
+        p.category?.toLowerCase().includes(q)
+    );
+  }, [products, searchFilter]);
+
+  // Items en preparación para transferir
   const [transferItems, setTransferItems] = useState<StockTransferItem[]>(() => {
     if (defaultProduct) {
       const doc = branchStock.find((s) => s.branchId === 'NECO 1' && s.productCode === defaultProduct.code);
@@ -52,8 +92,8 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     return [];
   });
 
-  // Selector de nuevo corte
-  const [selectedProductCode, setSelectedProductCode] = useState<string>(() => {
+  // Selector de nuevo corte o media res
+  const [selectedTargetCode, setSelectedTargetCode] = useState<string>(() => {
     return defaultProduct?.code || '';
   });
   const [addQuantity, setAddQuantity] = useState<string>(() => {
@@ -64,7 +104,6 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     }
     return '10';
   });
-  const [searchFilter, setSearchFilter] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
@@ -73,6 +112,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   const handleOriginChange = (newOrigin: 'NECO 1' | 'NECO 2') => {
     setOriginBranch(newOrigin);
     setDestinationBranch(newOrigin === 'NECO 1' ? 'NECO 2' : 'NECO 1');
+    setSelectedTargetCode('');
     setInlineNotification({
       type: 'info',
       message: `Cámara de origen cambiada a ${newOrigin}. Por favor verificá la disponibilidad de stock en el origen seleccionado.`,
@@ -85,46 +125,108 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     return doc ? Number(doc.currentStock) || 0 : 0;
   };
 
-  // Stock restante disponible considerando lo ya agregado al remito
   const getRemainingStock = (code: string) => {
     const totalStock = getOriginStock(code);
     const inRemito = transferItems.find((it) => it.productCode === code)?.quantity || 0;
     return Number(Math.max(0, totalStock - inRemito).toFixed(3));
   };
 
+  const selectedReception = useMemo(() => {
+    if (!selectedTargetCode.startsWith('REC:')) return null;
+    const recId = selectedTargetCode.replace('REC:', '');
+    return availableReceptions.find((r) => r.id === recId) || null;
+  }, [availableReceptions, selectedTargetCode]);
+
   const selectedProduct = useMemo(() => {
-    return products.find((p) => p.code === selectedProductCode) || null;
-  }, [products, selectedProductCode]);
+    if (selectedTargetCode.startsWith('REC:')) return null;
+    return products.find((p) => p.code === selectedTargetCode) || null;
+  }, [products, selectedTargetCode]);
 
-  const selectedProductStock = useMemo(() => {
-    if (!selectedProductCode) return 0;
-    return getOriginStock(selectedProductCode);
-  }, [selectedProductCode, branchStock, originBranch]);
+  const currentItemStockOrWeight = useMemo(() => {
+    if (selectedReception) return Number(selectedReception.totalWeightKg) || 0;
+    if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
+      return getOriginStock(selectedTargetCode);
+    }
+    return 0;
+  }, [selectedReception, selectedTargetCode, branchStock, originBranch]);
 
-  const selectedProductRemaining = useMemo(() => {
-    if (!selectedProductCode) return 0;
-    return getRemainingStock(selectedProductCode);
-  }, [selectedProductCode, branchStock, originBranch, transferItems]);
-
-  // Productos disponibles
-  const availableProducts = useMemo(() => {
-    if (!searchFilter.trim()) return products.slice(0, 100);
-    const q = searchFilter.toLowerCase().trim();
-    return products.filter(
-      (p) =>
-        p.code.toLowerCase().includes(q) ||
-        p.description.toLowerCase().includes(q) ||
-        p.category?.toLowerCase().includes(q)
-    );
-  }, [products, searchFilter]);
+  const currentItemRemaining = useMemo(() => {
+    if (selectedReception) {
+      const prodCode = selectedReception.productCode || 'MEDIA_RES';
+      const inRemito = transferItems.find((it) => it.productCode === prodCode)?.quantity || 0;
+      return Number(Math.max(0, selectedReception.totalWeightKg - inRemito).toFixed(3));
+    }
+    if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
+      return getRemainingStock(selectedTargetCode);
+    }
+    return 0;
+  }, [selectedReception, selectedTargetCode, branchStock, originBranch, transferItems]);
 
   const handleAddItem = () => {
-    const product = products.find((p) => p.code === selectedProductCode);
+    if (selectedReception) {
+      const prodCode = selectedReception.productCode || 'MEDIA_RES';
+      const desc = `MEDIA RES - Tropa #${selectedReception.tropaNumber} (${selectedReception.species} ${selectedReception.category} - ${selectedReception.supplier})`;
+      const cat = selectedReception.category;
+      const unitType = 'Kg';
+      const price = selectedReception.pricePerKg;
+      const available = selectedReception.totalWeightKg;
+
+      const qty = Number(addQuantity) || 0;
+      if (qty <= 0) {
+        setInlineNotification({ type: 'warning', message: 'La cantidad a transferir debe ser mayor a cero.' });
+        return;
+      }
+
+      const existingIndex = transferItems.findIndex((it) => it.productCode === prodCode);
+      const currentInRemito = existingIndex >= 0 ? transferItems[existingIndex].quantity : 0;
+      const totalRequested = Number((currentInRemito + qty).toFixed(3));
+
+      if (totalRequested > available) {
+        setInlineNotification({
+          type: 'error',
+          message: `⛔ Stock insuficiente para la media res Tropa #${selectedReception.tropaNumber}. Peso disponible: ${formatQuantity(available, unitType)}.`,
+        });
+        return;
+      }
+
+      setInlineNotification({
+        type: 'success',
+        message: `✓ Se agregó Tropa #${selectedReception.tropaNumber} (${formatQuantity(qty, unitType)}) al remito de traslado.`,
+      });
+
+      if (existingIndex >= 0) {
+        const updated = [...transferItems];
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          quantity: totalRequested,
+          totalValue: Number((totalRequested * price).toFixed(2)),
+        };
+        setTransferItems(updated);
+      } else {
+        setTransferItems([
+          ...transferItems,
+          {
+            productCode: prodCode,
+            description: desc,
+            category: cat,
+            unitType,
+            quantity: qty,
+            price,
+            totalValue: Number((qty * price).toFixed(2)),
+          },
+        ]);
+      }
+
+      setSelectedTargetCode('');
+      setAddQuantity('10');
+      return;
+    }
+
+    const product = products.find((p) => p.code === selectedTargetCode);
     if (!product) return;
 
     const available = getOriginStock(product.code);
 
-    // Validación estricta: No permitir mover si el stock es 0 o negativo
     if (available <= 0) {
       setInlineNotification({
         type: 'error',
@@ -143,14 +245,11 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     const currentInRemito = existingIndex >= 0 ? transferItems[existingIndex].quantity : 0;
     const totalRequested = Number((currentInRemito + qty).toFixed(3));
 
-    // Validación estricta: No permitir transferir más de lo disponible
     if (totalRequested > available) {
       const maxAllowed = Number((available - currentInRemito).toFixed(3));
       setInlineNotification({
         type: 'error',
-        message: `⛔ Stock insuficiente: En ${originBranch} hay ${formatQuantity(available, product.unitType)} de "${product.description}". ${
-          currentInRemito > 0 ? `(Ya agregaste ${formatQuantity(currentInRemito, product.unitType)} al remito. Solo podés agregar ${formatQuantity(Math.max(0, maxAllowed), product.unitType)} más).` : `No se pueden transferir ${formatQuantity(qty, product.unitType)}.`
-        }`,
+        message: `⛔ Stock insuficiente: En ${originBranch} hay ${formatQuantity(available, product.unitType)} de "${product.description}".`,
       });
       return;
     }
@@ -161,7 +260,6 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     });
 
     if (existingIndex >= 0) {
-      // Actualizar cantidad
       const updated = [...transferItems];
       updated[existingIndex] = {
         ...updated[existingIndex],
@@ -170,7 +268,6 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
       };
       setTransferItems(updated);
     } else {
-      // Agregar nuevo ítem
       setTransferItems([
         ...transferItems,
         {
@@ -185,7 +282,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
       ]);
     }
 
-    setSelectedProductCode('');
+    setSelectedTargetCode('');
     setAddQuantity('10');
   };
 
@@ -398,119 +495,168 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
             </div>
           </div>
 
-          {/* AGREGAR CORTES */}
+          {/* AGREGAR CORTES O MEDIAS RESES */}
           <div className="p-3 bg-white border border-gray-400 rounded space-y-2">
             <div className="font-bold text-gray-800 flex items-center space-x-1.5 border-b pb-1.5">
               <Plus className="w-4 h-4 text-blue-800" />
-              <span>Incorporar Cortes al Remito de Traslado</span>
+              <span>Incorporar Cortes o Medias Reses en Cámara al Remito de Traslado</span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-              <div className="md:col-span-3">
-                <label className="block font-bold text-gray-600 mb-1 text-[11px]">Filtrar cortes:</label>
+            <div className="space-y-2">
+              <div>
+                <label className="block font-bold text-gray-700 mb-1 text-[11px]">
+                  Buscar artículo, corte de carne o media res en cámara ({originBranch}):
+                </label>
                 <div className="relative">
                   <input
                     type="text"
-                    className="win-input w-full pl-6 pr-2 py-1 text-xs"
-                    placeholder="Buscar..."
+                    className="win-input w-full pl-6 pr-2 py-1.5 text-xs text-black font-medium border border-gray-400"
+                    placeholder="Buscar por descripción, tropa o proveedor..."
                     value={searchFilter}
                     onChange={(e) => setSearchFilter(e.target.value)}
                   />
-                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-1.5 top-1.5" />
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-1.5 top-2" />
                 </div>
               </div>
 
-              <div className="md:col-span-5">
-                <label className="block font-bold text-gray-700 mb-1 text-[11px]">Corte de Carne:</label>
-                <select
-                  className="win-select w-full p-1 text-xs font-mono"
-                  value={selectedProductCode}
-                  onChange={(e) => {
-                    const code = e.target.value;
-                    setSelectedProductCode(code);
-                    if (code) {
-                      const rem = getRemainingStock(code);
-                      if (rem > 0 && (Number(addQuantity) > rem || Number(addQuantity) <= 0)) {
-                        setAddQuantity(Math.min(10, rem).toString());
-                      }
-                    }
-                  }}
-                >
-                  <option value="">-- Seleccionar corte --</option>
-                  {availableProducts.map((p) => {
-                    const st = getOriginStock(p.code);
-                    const isZero = st <= 0;
-                    return (
-                      <option
-                        key={p.code}
-                        value={p.code}
-                        className={isZero ? 'text-gray-400 bg-gray-50' : 'text-gray-900 font-semibold'}
-                      >
-                        {p.code} - {p.description} {isZero ? '⛔ [SIN STOCK]' : `[Disp: ${formatQuantity(st, p.unitType)}]`}
-                      </option>
-                    );
-                  })}
-                </select>
+              <div className="max-h-[200px] overflow-y-auto border-2 border-gray-400 bg-white rounded shadow-inner divide-y divide-gray-200 text-xs font-mono">
+                {filteredReceptions.length > 0 && (
+                  <div>
+                    <div className="bg-amber-100 text-amber-900 font-bold px-2 py-1 text-[11px] sticky top-0 border-b border-amber-300 flex items-center justify-between">
+                      <span>🥩 MEDIAS RESES / CANALES EN GANCHO (CÁMARA)</span>
+                      <span className="text-[10px] bg-amber-200 px-1.5 py-0.5 rounded text-amber-900">Traslado Frigorífico</span>
+                    </div>
+                    {filteredReceptions.map((r) => {
+                      const targetCode = `REC:${r.id}`;
+                      const isSel = selectedTargetCode === targetCode;
+                      return (
+                        <div
+                          key={r.id}
+                          onClick={() => {
+                            setSelectedTargetCode(targetCode);
+                            setAddQuantity(r.totalWeightKg.toString());
+                          }}
+                          className={`p-2 cursor-pointer flex items-center justify-between transition-colors ${
+                            isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-gray-100 text-black'
+                          }`}
+                        >
+                          <div>
+                            <div className="font-bold">Tropa #{r.tropaNumber} - {r.species} ({r.category})</div>
+                            <div className={`text-[10px] ${isSel ? 'text-gray-200' : 'text-gray-600'}`}>
+                              Proveedor: {r.supplier} | Fecha: {r.date}
+                            </div>
+                          </div>
+                          <div className="text-right font-bold text-amber-800 font-mono">
+                            <span className={isSel ? 'text-white' : ''}>{formatKg(r.totalWeightKg)}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
-                {selectedProduct && (
-                  <div className="mt-1 text-[10px]">
-                    {selectedProductStock <= 0 ? (
-                      <span className="text-red-700 font-bold flex items-center space-x-1">
-                        <span>⛔ Sin stock en {originBranch} (0,000 {selectedProduct.unitType}) — Movimiento bloqueado</span>
-                      </span>
-                    ) : selectedProductRemaining <= 0 ? (
-                      <span className="text-amber-700 font-bold">
-                        ⚠️ Ya se asignó todo el stock disponible ({formatQuantity(selectedProductStock, selectedProduct.unitType)}) al remito.
-                      </span>
-                    ) : (
-                      <span className="text-emerald-700 font-bold">
-                        ✓ Stock disponible para transferir: {formatQuantity(selectedProductRemaining, selectedProduct.unitType)}
-                      </span>
-                    )}
+                {filteredProducts.length > 0 && (
+                  <div>
+                    <div className="bg-blue-100 text-blue-900 font-bold px-2 py-1 text-[11px] sticky top-0 border-b border-blue-300">
+                      📦 CORTES Y ARTÍCULOS DE STOCK
+                    </div>
+                    {filteredProducts.map((p) => {
+                      const isSel = selectedTargetCode === p.code;
+                      const st = getOriginStock(p.code);
+                      const isZero = st <= 0;
+                      return (
+                        <div
+                          key={p.code}
+                          onClick={() => {
+                            setSelectedTargetCode(p.code);
+                            const rem = getRemainingStock(p.code);
+                            if (rem > 0) setAddQuantity(Math.min(10, rem).toString());
+                          }}
+                          className={`p-2 cursor-pointer flex items-center justify-between transition-colors ${
+                            isSel ? 'bg-[#002046] text-white font-bold' : isZero ? 'bg-gray-50 text-gray-400' : 'hover:bg-gray-100 text-black'
+                          }`}
+                        >
+                          <div>
+                            <div className="font-bold">{p.code} - {p.description}</div>
+                            <div className={`text-[10px] ${isSel ? 'text-gray-200' : 'text-gray-500'}`}>
+                              Categoría: {p.category || 'Carnes Vacunas'} | Unidad: {p.unitType}
+                            </div>
+                          </div>
+                          <div className="text-right font-mono font-bold">
+                            {isZero ? <span className="text-red-600">SIN STOCK</span> : <span>Disp: {formatQuantity(st, p.unitType)}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
-              <div className="md:col-span-2">
-                <label className="block font-bold text-gray-700 mb-1 text-[11px]">Cantidad (Kg/Unid):</label>
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0.001"
-                  max={selectedProductRemaining > 0 ? selectedProductRemaining : undefined}
-                  disabled={!selectedProductCode || selectedProductRemaining <= 0}
-                  className="win-input w-full p-1 text-xs font-mono font-bold disabled:bg-gray-100 disabled:text-gray-400"
-                  value={addQuantity}
-                  onChange={(e) => setAddQuantity(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddItem();
-                    }
-                  }}
-                />
-              </div>
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end pt-1">
+                <div className="md:col-span-8">
+                  {selectedReception ? (
+                    <div className="text-[11px] text-emerald-700 font-bold">
+                      ✓ Media res seleccionada: Tropa #{selectedReception.tropaNumber} ({selectedReception.species} {selectedReception.category}) — Peso: {formatKg(selectedReception.totalWeightKg)}
+                    </div>
+                  ) : selectedProduct ? (
+                    <div className="text-[11px]">
+                      {currentItemStockOrWeight <= 0 ? (
+                        <span className="text-red-700 font-bold">
+                          ⛔ Sin stock en {originBranch} (0,000 {selectedProduct.unitType}) — Movimiento bloqueado
+                        </span>
+                      ) : currentItemRemaining <= 0 ? (
+                        <span className="text-amber-700 font-bold">
+                          ⚠️ Ya se asignó todo el stock disponible ({formatQuantity(currentItemStockOrWeight, selectedProduct.unitType)}) al remito.
+                        </span>
+                      ) : (
+                        <span className="text-emerald-700 font-bold">
+                          ✓ Stock disponible para transferir: {formatQuantity(currentItemRemaining, selectedProduct.unitType)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-gray-500 italic">
+                      Seleccioná una media res de cámara o un corte de stock de la lista superior.
+                    </div>
+                  )}
+                </div>
 
-              <div className="md:col-span-2">
-                <button
-                  type="button"
-                  onClick={handleAddItem}
-                  disabled={
-                    !selectedProductCode ||
-                    selectedProductRemaining <= 0 ||
-                    (Number(addQuantity) || 0) <= 0 ||
-                    (Number(addQuantity) || 0) > selectedProductRemaining
-                  }
-                  className="win-button w-full py-1.5 font-bold text-blue-900 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center space-x-1 shadow-sm"
-                  title={
-                    selectedProductRemaining <= 0
-                      ? 'No hay stock disponible para transferir'
-                      : 'Agregar corte al remito'
-                  }
-                >
-                  <Plus className="w-3.5 h-3.5 text-blue-700" />
-                  <span>Agregar</span>
-                </button>
+                <div className="md:col-span-2">
+                  <label className="block font-bold text-gray-700 mb-1 text-[11px]">Cantidad:</label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0.001"
+                    max={currentItemRemaining > 0 ? currentItemRemaining : undefined}
+                    disabled={!selectedTargetCode || currentItemRemaining <= 0}
+                    className="win-input w-full p-1 text-xs font-mono font-bold disabled:bg-gray-100 disabled:text-gray-400"
+                    value={addQuantity}
+                    onChange={(e) => setAddQuantity(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddItem();
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <button
+                    type="button"
+                    onClick={handleAddItem}
+                    disabled={
+                      !selectedTargetCode ||
+                      currentItemRemaining <= 0 ||
+                      (Number(addQuantity) || 0) <= 0 ||
+                      (Number(addQuantity) || 0) > currentItemRemaining
+                    }
+                    className="win-button w-full py-1.5 font-bold text-blue-900 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center space-x-1 shadow-sm"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-blue-700" />
+                    <span>Agregar</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

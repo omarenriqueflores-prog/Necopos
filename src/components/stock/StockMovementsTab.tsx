@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
-import { StockMovement, StockMovementType } from '../../types/pos';
+import { StockMovement, StockMovementType, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatQuantity, formatCurrency } from '../../utils/stockHelper';
 
 export const StockMovementsTab: React.FC = () => {
@@ -21,8 +21,18 @@ export const StockMovementsTab: React.FC = () => {
 
   const [selectedBranch, setSelectedBranch] = useState<'ALL' | 'NECO 1' | 'NECO 2'>('ALL');
   const [selectedType, setSelectedType] = useState<string>('ALL');
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [dateFilter, setDateFilter] = useState<'TODAY' | 'WEEK' | 'MONTH' | 'ALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Categorías presentes con las oficiales primero
+  const categories = useMemo(() => {
+    const customCats = new Set<string>();
+    stockMovements.forEach((m) => {
+      if (m.category) customCats.add(m.category);
+    });
+    return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
+  }, [stockMovements]);
 
   // Filtrado de movimientos
   const filteredMovements = useMemo(() => {
@@ -43,6 +53,11 @@ export const StockMovementsTab: React.FC = () => {
 
       // Tipo de Movimiento
       if (selectedType !== 'ALL' && m.type !== selectedType) {
+        return false;
+      }
+
+      // Categoría
+      if (selectedCategory !== 'ALL' && m.category !== selectedCategory) {
         return false;
       }
 
@@ -72,6 +87,7 @@ export const StockMovementsTab: React.FC = () => {
       return true;
     });
   }, [stockMovements, selectedBranch, selectedType, dateFilter, searchQuery]);
+
 
   const exportToExcel = () => {
     const data = filteredMovements.map((m) => ({
@@ -216,6 +232,23 @@ export const StockMovementsTab: React.FC = () => {
               <option value="MERMA">Mermas / Desposte</option>
               <option value="DEVOLUCION">Devoluciones / NC</option>
               <option value="STOCK_INICIAL">Stock Inicial</option>
+            </select>
+          </div>
+
+          {/* Categoría Animal */}
+          <div className="flex items-center space-x-1">
+            <span className="text-gray-700 font-bold">Categoría:</span>
+            <select
+              className="win-select py-1 text-xs font-semibold text-blue-900"
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+            >
+              <option value="ALL">Todas las categorías</option>
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
             </select>
           </div>
 

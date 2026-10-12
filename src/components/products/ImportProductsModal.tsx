@@ -40,44 +40,52 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
   const handleDownloadTemplate = () => {
     const templateData = [
       {
-        CODIGO: '001',
+        CODIGO: '101',
         DESCRIPCION: 'ASADO DE TIRA',
-        RUBRO: 'Carnes Vacunas',
+        RUBRO: 'Novillito',
         UNIDAD: 'Kg',
         PRECIO: 11500,
-        PLU_BALANZA: '1',
+        PLU_BALANZA: '101',
       },
       {
-        CODIGO: '002',
+        CODIGO: '102',
         DESCRIPCION: 'VACIO ESPECIAL',
-        RUBRO: 'Carnes Vacunas',
+        RUBRO: 'Ternera',
         UNIDAD: 'Kg',
         PRECIO: 12900,
-        PLU_BALANZA: '2',
+        PLU_BALANZA: '102',
       },
       {
-        CODIGO: '003',
-        DESCRIPCION: 'MILANESA DE NALGA',
-        RUBRO: 'Elaborados',
+        CODIGO: '103',
+        DESCRIPCION: 'NALGA CORTADA / PECETO',
+        RUBRO: 'Vaca',
         UNIDAD: 'Kg',
-        PRECIO: 9800,
-        PLU_BALANZA: '3',
+        PRECIO: 10800,
+        PLU_BALANZA: '103',
       },
       {
-        CODIGO: '004',
-        DESCRIPCION: 'CHORIZO BOMBÓN',
-        RUBRO: 'Cerdo / Embutidos',
+        CODIGO: '104',
+        DESCRIPCION: 'BIFE DE CHORIZO',
+        RUBRO: 'Novillo Pesado',
         UNIDAD: 'Kg',
-        PRECIO: 7500,
-        PLU_BALANZA: '4',
+        PRECIO: 13500,
+        PLU_BALANZA: '104',
       },
       {
-        CODIGO: '005',
-        DESCRIPCION: 'CARBON VEGETAL 5KG',
-        RUBRO: 'Almacén / Varios',
-        UNIDAD: 'Unid',
-        PRECIO: 4500,
-        PLU_BALANZA: '',
+        CODIGO: '105',
+        DESCRIPCION: 'CUADRIL / COLITA',
+        RUBRO: 'Vaquillona',
+        UNIDAD: 'Kg',
+        PRECIO: 12500,
+        PLU_BALANZA: '105',
+      },
+      {
+        CODIGO: '106',
+        DESCRIPCION: 'COSTILLITA / PECHITO',
+        RUBRO: 'Cerdo',
+        UNIDAD: 'Kg',
+        PRECIO: 8900,
+        PLU_BALANZA: '106',
       },
     ];
 
@@ -174,7 +182,8 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
 
         const rawCode = getVal(['codigo', 'cod', 'code', 'id', 'articulo', 'item', 'plu']);
         const rawDesc = getVal(['descripcion', 'desc', 'nombre', 'detalle', 'producto', 'denominacion']);
-        const rawCategory = getVal(['rubro', 'categoria', 'category', 'seccion', 'departamento']);
+        const rawRubro = getVal(['rubro', 'departamento', 'seccion']);
+        const rawCategory = getVal(['categoria', 'especie', 'category']);
         const rawUnit = getVal(['unidad', 'unidaddemedida', 'um', 'medida', 'unit', 'tipo']);
         const rawPrice = getVal(['precio', 'precioventa', 'price', 'pvp', 'venta', 'importe']);
         const rawPlu = getVal(['plubalanza', 'balanza', 'plu', 'pesable']);
@@ -195,7 +204,29 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
 
         const price = parseNum(rawPrice, 0);
 
-        const category = String(rawCategory || 'Carnes Vacunas').trim();
+        let rubro = String(rawRubro || 'Carnes Vacunas').trim();
+        let category = String(rawCategory || '').trim();
+
+        const catUpper = category.toUpperCase();
+        if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
+          rubro = 'Carnes Vacunas';
+          if (description.includes(' VACA') || description.endsWith('VACA') || description.includes(' - VACA')) {
+            category = 'Vaca';
+          } else if (description.includes(' TERNERA') || description.endsWith('TERNERA')) {
+            category = 'Ternera';
+          } else if (description.includes(' NOVILLITO') || description.endsWith('NOVILLITO')) {
+            category = 'Novillito';
+          } else if (description.includes(' NOVILLO') || description.endsWith('NOVILLO')) {
+            category = 'Novillo Pesado';
+          } else if (description.includes(' VAQUILLONA') || description.endsWith('VAQUILLONA')) {
+            category = 'Vaquillona';
+          } else if (description.includes(' CERDO') || description.includes('PORCINO')) {
+            category = 'Cerdo';
+            rubro = 'Cerdo';
+          } else {
+            category = 'Novillito';
+          }
+        }
 
         // Robust detection of unit: KG vs UNID
         const unitValStr = String(rawUnit || '')
@@ -237,6 +268,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         productsMapped.push({
           code,
           description,
+          rubro,
           category,
           unitType,
           price,

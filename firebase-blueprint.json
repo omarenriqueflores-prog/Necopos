@@ -146,6 +146,41 @@
         "status": { "type": "string" }
       },
       "required": ["id", "inventoryNumber", "branchId", "date", "status"]
+    },
+    "MeatDeboning": {
+      "title": "MeatDeboning",
+      "description": "Carcass deboning, meat yields, and cuts breakdown order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "branchId": { "type": "string" },
+        "tropaNumber": { "type": "string" },
+        "carcassType": { "type": "string" },
+        "initialWeightKg": { "type": "number" },
+        "totalInitialCost": { "type": "number" },
+        "status": { "type": "string" },
+        "date": { "type": "string" },
+        "operator": { "type": "string" }
+      },
+      "required": ["id", "code", "branchId", "tropaNumber", "initialWeightKg", "status", "date"]
+    },
+    "MeatReception": {
+      "title": "MeatReception",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "branchId": { "type": "string" },
+        "chamber": { "type": "string" },
+        "date": { "type": "string" },
+        "supplier": { "type": "string" },
+        "tropaNumber": { "type": "string" },
+        "totalWeightKg": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "code", "branchId", "tropaNumber", "totalWeightKg", "status", "date"]
     }
   },
   "firestore": {
@@ -184,6 +219,14 @@
     "/physicalInventories/{invId}": {
       "schema": "PhysicalInventory",
       "description": "Physical counts and chamber audits"
+    },
+    "/meatDebonings/{deboningId}": {
+      "schema": "MeatDeboning",
+      "description": "Deboning operations and cuts traceability"
+    },
+    "/meatReceptions/{receptionId}": {
+      "schema": "MeatReception",
+      "description": "Incoming carcass reception and SENASA traceability"
     }
   }
 }
