@@ -23,12 +23,18 @@ import {
   DeboningCarcassType,
   Product,
   ANIMAL_CATEGORIES,
+  DeboningYieldTemplate,
+  CarcassUnit,
+  CarcassStatus,
 } from '../../types/pos';
 import {
   calculateDeboningMassBalance,
   allocateDeboningCosts,
   calculateDeboningEconomics,
   generateDeboningVoucherHtml,
+  createYieldTemplateFromDeboning,
+  applyYieldTemplateToCarcass,
+  DEBONING_TEMPLATES,
 } from '../../utils/deboningHelper';
 import { formatKg, formatCurrency, isMeatCategory } from '../../utils/stockHelper';
 
@@ -41,7 +47,18 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   onClose,
   existingDeboning,
 }) => {
-  const { products, branchConfigs, localUser, user, saveMeatDeboning, finalizeMeatDeboning, meatReceptions, meatDebonings } = useFirebase();
+  const {
+    products,
+    branchConfigs,
+    localUser,
+    user,
+    saveMeatDeboning,
+    finalizeMeatDeboning,
+    meatReceptions,
+    meatDebonings,
+    deboningTemplates,
+    saveDeboningTemplate,
+  } = useFirebase();
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Faena';
 
@@ -50,18 +67,20 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     return products.filter((p) => p && p.active !== false);
   }, [products]);
 
-  // Recepciones disponibles que aún no han sido despostadas
+  // Recepciones disponibles con medias reses aún no despostadas
   const availableReceptions = useMemo(() => {
     if (!meatReceptions) return [];
-    const debonedTropas = new Set(meatDebonings?.map((d) => d.tropaNumber?.trim().toLowerCase()).filter(Boolean) || []);
-    const debonedCodes = new Set(meatDebonings?.map((d) => d.sourceProductCode?.trim()).filter(Boolean) || []);
-
     return meatReceptions.filter((r) => {
       if (r.status !== 'CONFIRMADO') return false;
-      const tropaLower = r.tropaNumber?.trim().toLowerCase();
-      if (tropaLower && debonedTropas.has(tropaLower)) return false;
-      if (r.productCode && debonedCodes.has(r.productCode.trim())) return false;
-      return true;
+      // Si tiene lista de medias reses, verificar si tiene alguna DISPONIBLE
+      if (r.carcasses && r.carcasses.length > 0) {
+        return r.carcasses.some((c) => c.status === 'DISPONIBLE' || !c.status);
+      }
+      // Si no tiene arreglo de carcasses, verificar si no fue completamente despostada por un desposte finalizado
+      const hasFinalized = meatDebonings?.some(
+        (d) => d.status === 'FINALIZADO' && (d.tropaNumber === r.tropaNumber || d.sourceProductCode === r.code)
+      );
+      return !hasFinalized;
     });
   }, [meatReceptions, meatDebonings]);
 
@@ -98,6 +117,11 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   }, [activeProducts, availableReceptions]);
 
   // 1. Datos Generales de la Tropa y Materia Prima
+  const [selectedReceptionId, setSelectedReceptionId] = useState<string>('');
+  const [selectedCarcassIds, setSelectedCarcassIds] = useState<string[]>(existingDeboning?.selectedCarcassIds || []);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(existingDeboning?.yieldTemplateId || '');
+  const [isEstimated, setIsEstimated] = useState<boolean>(existingDeboning?.isEstimated || false);
+
   const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(existingDeboning?.branchId || 'NECO 1');
   const [chamber, setChamber] = useState(existingDeboning?.chamber || 'Cámara Central NECO 1');
   const [tropaNumber, setTropaNumber] = useState(existingDeboning?.tropaNumber || '');
@@ -112,6 +136,50 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   const [initialWeightKg, setInitialWeightKg] = useState<number>(existingDeboning?.initialWeightKg || 120.0);
   const [costPerKgInitial, setCostPerKgInitial] = useState<number>(existingDeboning?.costPerKgInitial || 4200.0);
   const [sourceProductCode, setSourceProductCode] = useState<string>(existingDeboning?.sourceProductCode || '');
+
+  // Recepción actualmente seleccionada
+  const selectedReceptionObj = useMemo(() => {
+    if (!selectedReceptionId) return null;
+    return availableReceptions.find((r) => r.id === selectedReceptionId) || null;
+  }, [availableReceptions, selectedReceptionId]);
+
+  // Medias reses individuales disponibles en la recepción elegida
+  const availableCarcassesForSelected = useMemo(() => {
+    if (!selectedReceptionObj || !selectedReceptionObj.carcasses) return [];
+    return selectedReceptionObj.carcasses.filter((c) => c.status === 'DISPONIBLE' || !c.status);
+  }, [selectedReceptionObj]);
+
+  // Manejador de selección de una media res individual
+  const handleToggleCarcass = (carcass: CarcassUnit) => {
+    const isSelected = selectedCarcassIds.includes(carcass.id);
+    const newIds = isSelected
+      ? selectedCarcassIds.filter((id) => id !== carcass.id)
+      : [...selectedCarcassIds, carcass.id];
+    
+    setSelectedCarcassIds(newIds);
+
+    if (selectedReceptionObj && selectedReceptionObj.carcasses) {
+      const sumWeight = selectedReceptionObj.carcasses
+        .filter((c) => newIds.includes(c.id))
+        .reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
+      
+      if (sumWeight > 0) {
+        setInitialWeightKg(Number(sumWeight.toFixed(3)));
+      }
+    }
+  };
+
+  const handleSelectAllCarcasses = () => {
+    if (!availableCarcassesForSelected || availableCarcassesForSelected.length === 0) return;
+    const allIds = availableCarcassesForSelected.map((c) => c.id);
+    setSelectedCarcassIds(allIds);
+    const sumWeight = availableCarcassesForSelected.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
+    setInitialWeightKg(Number(sumWeight.toFixed(3)));
+  };
+
+  const handleDeselectAllCarcasses = () => {
+    setSelectedCarcassIds([]);
+  };
 
   // 2. Cortes Obtenidos en el Desposte (Inicialmente vacío o existentes cargados previamente)
   const [cuts, setCuts] = useState<DeboningCutItem[]>(() => {
@@ -456,8 +524,47 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
       grossMarginPercent: economics.grossMarginPercent,
       multiplicationFactor: economics.multiplicationFactor,
       breakEvenPricePerKg: economics.breakEvenPricePerKg,
+      selectedCarcassIds: selectedCarcassIds.length > 0 ? selectedCarcassIds : undefined,
+      isEstimated,
+      yieldTemplateId: selectedTemplateId || undefined,
       notes: notes.trim(),
     };
+  };
+
+  // Aplicar plantilla de rendimiento / coeficientes
+  const handleApplyYieldTemplate = (template: DeboningYieldTemplate) => {
+    if (initialWeightKg <= 0) {
+      setErrorMessage('Seleccione o ingrese primero el peso de entrada antes de aplicar la plantilla.');
+      return;
+    }
+    const estimatedCuts = applyYieldTemplateToCarcass(template, initialWeightKg, activeProducts);
+    setCuts(estimatedCuts);
+    setIsEstimated(true);
+    setSelectedTemplateId(template.id);
+    setFeedbackMessage(
+      `✓ Plantilla "${template.name}" aplicada exitosamente a ${formatKg(initialWeightKg)}. ${estimatedCuts.length} cortes calculados por coeficientes reales.`
+    );
+  };
+
+  // Guardar coeficientes de este desposte como nueva plantilla de lote
+  const handleSaveAsYieldTemplate = async () => {
+    if (cuts.length === 0) {
+      setErrorMessage('No hay cortes cargados en la planilla para generar la plantilla.');
+      return;
+    }
+    if (initialWeightKg <= 0) {
+      setErrorMessage('El peso inicial de la media res debe ser mayor a 0.');
+      return;
+    }
+    try {
+      const deboningObj = buildDeboningObject('BORRADOR');
+      const templateName = `Lote TR-${tropaNumber || 'S/N'} (${animalCategory}) - ${formatKg(initialWeightKg)}`;
+      const template = createYieldTemplateFromDeboning(deboningObj, templateName);
+      await saveDeboningTemplate(template);
+      setFeedbackMessage(`✓ Plantilla de coeficientes guardada exitosamente: "${template.name}" (${template.items.length} cortes).`);
+    } catch (err: any) {
+      setErrorMessage(`Error al guardar plantilla: ${err.message}`);
+    }
   };
 
   // Guardar como Borrador

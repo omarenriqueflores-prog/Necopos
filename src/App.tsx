@@ -525,8 +525,11 @@ export default function App() {
           branchForStock,
           operatorForStock
         );
-      } catch (stockErr) {
+      } catch (stockErr: any) {
         console.error('Error al descontar stock de venta en cámara:', stockErr);
+        await showAlert(
+          `⚠️ Venta registrada, pero ocurrió un inconveniente al registrar la salida de stock en cámara: ${stockErr?.message || 'Error de conexión'}. La operación mantiene su identificador para reintento.`
+        );
       }
     }
   };

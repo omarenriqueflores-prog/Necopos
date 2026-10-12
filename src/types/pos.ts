@@ -409,6 +409,8 @@ export interface StockMovement {
   reason?: string; // Motivo de merma o ajuste
   operator: string;
   notes?: string;
+  idempotencyKey?: string;
+  reversalOf?: string;
 }
 
 export type StockTransferStatus = 'BORRADOR' | 'EN_TRANSITO' | 'RECIBIDA' | 'CANCELADA';
@@ -555,19 +557,77 @@ export interface MeatDeboning {
   grossMarginPercent: number; // Margen bruto proyectado %
   multiplicationFactor: number; // totalCommercialValue / totalInitialCost
   breakEvenPricePerKg: number; // totalInitialCost / netMeatWeightKg
+  selectedCarcassIds?: string[]; // IDs de las medias reses seleccionadas para este desposte
+  isEstimated?: boolean; // Indica si los cortes provienen de estimación por coeficientes
+  yieldTemplateId?: string; // Plantilla de rendimiento utilizada si aplica
+  templateVersion?: number;
+  confirmedAt?: string;
   notes?: string;
   appliedAt?: string;
+}
+
+// ==========================================
+// MÓDULO DE RENDIMIENTO Y PLANTILLAS DE COEFICIENTES
+// ==========================================
+
+export interface YieldCoefficientItem {
+  productCode: string;
+  description: string;
+  category: string;
+  cutType: 'CORTE_UTIL' | 'PICADA_RECORTES' | 'GRASA' | 'HUESO';
+  weightKg: number;
+  coefficient: number; // weightKg / referenceInitialWeightKg (ej: 0.125)
+  yieldPercent: number; // coefficient * 100
+  suggestedPrice?: number;
+}
+
+export interface DeboningYieldTemplate {
+  id: string; // ej: YIELD-NOVILLITO-001
+  name: string; // Nombre descriptivo
+  receptionId?: string;
+  tropaNumber?: string;
+  referenceCarcassId?: string;
+  referenceInitialWeightKg: number;
+  species: string;
+  animalCategory: string;
+  carcassType: DeboningCarcassType;
+  items: YieldCoefficientItem[];
+  shrinkageWeightKg: number;
+  shrinkagePercent: number;
+  totalYieldPercent: number;
+  operator: string;
+  createdAt: string;
+  version: number;
+  notes?: string;
 }
 
 // ==========================================
 // MÓDULO DE INGRESO / RECEPCIÓN DE MEDIAS RESES
 // ==========================================
 
+export type CarcassStatus =
+  | 'PENDIENTE'
+  | 'DISPONIBLE'
+  | 'DESPOSTADO'
+  | 'TRASLADADO'
+  | 'ANULADO'
+  | 'ESTIMADO';
+
 export interface CarcassUnit {
-  id: string; // Identificador individual único (ej: MR-001)
-  tagNumber: string; // N° de Garfa / Caravana / Precinto SENASA
+  id: string; // Identificador individual único (ej: REC-0001-MR-001)
+  receptionId?: string;
+  tropaNumber?: string;
+  supplier?: string;
+  species?: string;
+  category?: string;
+  branchId?: 'NECO 1' | 'NECO 2';
+  chamber?: string;
+  tagNumber?: string; // N° de Garfa / Caravana / Precinto SENASA
   weightKg: number; // Peso real individual en balanza (Kg)
-  cost: number; // Costo individual calculado ($)
+  cost?: number; // Costo individual calculado ($)
+  status?: CarcassStatus; // Estado individual de la media res
+  deboningId?: string; // ID de desposte si fue procesada
+  transferId?: string; // ID de traslado si fue trasladada
   notes?: string;
 }
 

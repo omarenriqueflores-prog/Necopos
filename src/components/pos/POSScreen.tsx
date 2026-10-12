@@ -249,7 +249,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       setLiveScaleWeight(newWeight);
       setAmountInput(newWeight.toFixed(3));
       setScaleStatus('ESTABLE');
-      showNotification(`Balanza COM1 capturada: ${formatWeight(newWeight)}`);
+      showNotification(`[MODO PRUEBA / SIMULACIÓN] Balanza COM1 capturada: ${formatWeight(newWeight)}`);
     }, 200);
   };
 
@@ -872,16 +872,16 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     }
   };
 
-  // Simulate reading from COM1 electronic scale directly
+  // Lectura desde balanza electrónica COM1 (Modo Simulación / Prueba para entornos web sin puerto serial físico)
   const handleCaptureScale = () => {
     setScaleStatus('PESANDO');
     setTimeout(() => {
-      // Simulate slight variation or realistic meat weight
+      // Simular variación realista de pesaje cárnico
       const randomWeights = [1.25, 2.15, 0.85, 3.42, 1.95, 2.35];
       const newWeight = randomWeights[Math.floor(Math.random() * randomWeights.length)];
       setLiveScaleWeight(newWeight);
       setScaleStatus('ESTABLE');
-      showNotification(`Balanza COM1 capturada: ${formatWeight(newWeight)}`);
+      showNotification(`[MODO PRUEBA / SIMULACIÓN] Balanza COM1 capturada: ${formatWeight(newWeight)}`);
     }, 300);
   };
 

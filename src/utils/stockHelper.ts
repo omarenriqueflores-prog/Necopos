@@ -4,48 +4,62 @@ export { ANIMAL_CATEGORIES };
 export type { AnimalCategory };
 
 /**
- * Determina si una categoría pertenece al rubro cárnico (Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo, etc.).
- * Las categorías de almacén, bebidas y fiambrería NO son consideradas para la valorización de stock cárnico.
+ * Determina si una categoría pertenece de forma positiva y explícita al rubro cárnico.
+ * (Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo, Cortes Vacunos, etc.)
+ * Los artículos de almacén, bebidas, limpieza, fiambrería o sin clasificar quedan excluidos.
  */
 export function isMeatCategory(category: string | undefined | null): boolean {
-  if (!category) return true; // Por defecto en carnicería Neco se asume cárnico
+  if (!category) return false;
   const cat = category.trim().toLowerCase();
 
-  // Exclusiones explícitas de almacén y no cárnicos
+  // Exclusiones explícitas de no cárnicos
   if (
     cat.includes('almacén') ||
     cat.includes('almacen') ||
     cat.includes('bebida') ||
     cat.includes('limpieza') ||
     cat.includes('verduleria') ||
-    cat.includes('kiosco')
+    cat.includes('verdulería') ||
+    cat.includes('kiosco') ||
+    cat.includes('fiambr') ||
+    cat.includes('lacteo') ||
+    cat.includes('lácteo') ||
+    cat.includes('panaderia') ||
+    cat.includes('panadería') ||
+    cat.includes('bazar')
   ) {
     return false;
   }
 
-  // Inclusiones cárnicas oficiales de Neco POS:
-  // Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo
-  if (
-    cat.includes('vaca') ||
-    cat.includes('ternera') ||
-    cat.includes('novillito') ||
-    cat.includes('novillo') ||
-    cat.includes('vaquillona') ||
-    cat.includes('cerdo') ||
-    cat.includes('porcino') ||
-    cat.includes('carne') ||
-    cat.includes('vacun') ||
-    cat.includes('pollo') ||
-    cat.includes('granja') ||
-    cat.includes('embutido') ||
-    cat.includes('achura') ||
-    cat.includes('menudencia')
-  ) {
-    return true;
-  }
+  // Criterios positivos explícitos para productos cárnicos oficiales de NECO POS
+  const positiveTerms = [
+    'vaca',
+    'ternera',
+    'novillito',
+    'novillo',
+    'vaquillona',
+    'cerdo',
+    'porcino',
+    'carne',
+    'vacun',
+    'pollo',
+    'granja',
+    'embutido',
+    'achura',
+    'menudencia',
+    'subproducto',
+    'desposte',
+    'media res',
+    'canal',
+    'carcasa',
+    'gancho',
+    'hueso',
+    'grasa',
+    'sebo',
+    'picada',
+  ];
 
-  // Por defecto, si el producto se vende por Kg es considerado cárnico
-  return true;
+  return positiveTerms.some((term) => cat.includes(term));
 }
 
 /**

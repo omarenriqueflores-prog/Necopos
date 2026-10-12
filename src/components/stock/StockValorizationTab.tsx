@@ -17,7 +17,7 @@ import { useFirebase } from '../../context/FirebaseContext';
 import { isMeatCategory, formatKg, formatCurrency } from '../../utils/stockHelper';
 
 export const StockValorizationTab: React.FC = () => {
-  const { products, branchStock, branchConfigs } = useFirebase();
+  const { products, branchStock, branchConfigs, meatReceptions } = useFirebase();
 
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [showNonMeatSection, setShowNonMeatSection] = useState<boolean>(false);
@@ -33,7 +33,7 @@ export const StockValorizationTab: React.FC = () => {
 
   // Artículos cárnicos procesados
   const meatItems = useMemo(() => {
-    return products
+    const list = products
       .filter((p) => isMeatCategory(p.category))
       .map((p) => {
         const neco1Stock = stockMap.get(`NECO 1_${p.code}`) || 0;
@@ -57,7 +57,37 @@ export const StockValorizationTab: React.FC = () => {
           totalValue,
         };
       });
-  }, [products, stockMap]);
+
+    // Incorporar medias reses o artículos cárnicos presentes en stock de cámara que no estén en el catálogo
+    const productCodes = new Set(products.map((p) => p.code));
+    branchStock.forEach((bs) => {
+      if (!productCodes.has(bs.productCode) && (bs.productCode === 'MEDIA_RES' || isMeatCategory(bs.productCode) || bs.productCode.includes('RES'))) {
+        const matchingRec = meatReceptions.find((r) => r.productCode === bs.productCode || bs.productCode === 'MEDIA_RES');
+        const price = matchingRec?.pricePerKg || 4200;
+        const neco1Stock = stockMap.get(`NECO 1_${bs.productCode}`) || 0;
+        const neco2Stock = stockMap.get(`NECO 2_${bs.productCode}`) || 0;
+        const totalStock = Number((neco1Stock + neco2Stock).toFixed(3));
+
+        if (!list.some((it) => it.code === bs.productCode)) {
+          list.push({
+            code: bs.productCode,
+            description: matchingRec?.productDescription || `MEDIA RES AL GANCHO (${matchingRec?.species || 'Vacuno'})`,
+            category: matchingRec?.category || 'Novillito',
+            unitType: 'Kg',
+            price,
+            neco1Stock,
+            neco2Stock,
+            totalStock,
+            neco1Value: Number((neco1Stock * price).toFixed(2)),
+            neco2Value: Number((neco2Stock * price).toFixed(2)),
+            totalValue: Number((totalStock * price).toFixed(2)),
+          });
+        }
+      }
+    });
+
+    return list;
+  }, [products, stockMap, branchStock, meatReceptions]);
 
   // Artículos no cárnicos (Almacén, bebidas, etc.) - estrictamente excluidos de la valorización cárnica
   const nonMeatItems = useMemo(() => {

@@ -4,6 +4,8 @@ import {
   DeboningCarcassType,
   Product,
   BranchConfig,
+  DeboningYieldTemplate,
+  YieldCoefficientItem,
 } from '../types/pos';
 import { formatKg, formatCurrency } from './stockHelper';
 
@@ -140,6 +142,9 @@ export function calculateDeboningMassBalance(
   shrinkagePercent: number;
   netMeatYieldPercent: number;
   totalYieldPercent: number;
+  isImpossibleBalance: boolean;
+  impossibleOverweightKg: number;
+  realDifferenceKg: number;
 } {
   const initial = Math.max(0.001, initialWeightKg || 0);
 
@@ -154,7 +159,6 @@ export function calculateDeboningMassBalance(
     totalOutput += w;
 
     const desc = (cut.description || '').toLowerCase();
-    const cat = (cut.category || '').toLowerCase();
 
     if (cut.cutType === 'HUESO' || desc.includes('hueso')) {
       bone += w;
@@ -168,7 +172,13 @@ export function calculateDeboningMassBalance(
   });
 
   const totalOutputRounded = Number(totalOutput.toFixed(3));
-  const shrinkageWeightKg = Number(Math.max(0, initial - totalOutputRounded).toFixed(3));
+  // Diferencia real: initial - totalOutput. Si es negativo, los cortes superan a la res (imposible).
+  const realDifferenceKg = Number((initial - totalOutputRounded).toFixed(3));
+  const isImpossibleBalance = realDifferenceKg < -0.005; // Margen de flotante 5 gramos
+  const impossibleOverweightKg = isImpossibleBalance ? Number(Math.abs(realDifferenceKg).toFixed(3)) : 0;
+
+  // Merma real sólo si la salida es menor o igual a la res
+  const shrinkageWeightKg = isImpossibleBalance ? 0 : Number(Math.max(0, realDifferenceKg).toFixed(3));
   const shrinkagePercent = Number(((shrinkageWeightKg / initial) * 100).toFixed(2));
   const netMeatYieldPercent = Number(((netMeat / initial) * 100).toFixed(2));
   const totalYieldPercent = Number(((totalOutputRounded / initial) * 100).toFixed(2));
@@ -183,6 +193,9 @@ export function calculateDeboningMassBalance(
     shrinkagePercent,
     netMeatYieldPercent,
     totalYieldPercent,
+    isImpossibleBalance,
+    impossibleOverweightKg,
+    realDifferenceKg,
   };
 }
 
@@ -191,11 +204,14 @@ export function calculateDeboningMassBalance(
  * (Principio contable de producción conjunta cárnica: el costo de compra de la res se distribuye
  * según el peso relativo del valor de venta de cada corte, de manera que la suma de los costos
  * de los cortes resultantes sea EXACTAMENTE igual al costo de adquisición de la media res).
+ * Garantiza que no haya pérdidas de centavos por redondeo (distribución del residuo).
  */
 export function allocateDeboningCosts(
   initialCostTotal: number,
   cuts: DeboningCutItem[]
 ): DeboningCutItem[] {
+  if (cuts.length === 0) return [];
+
   // 1. Calcular el valor de venta total
   let totalSaleValue = 0;
   cuts.forEach((cut) => {
@@ -204,21 +220,18 @@ export function allocateDeboningCosts(
     totalSaleValue += w * p;
   });
 
-  // Si no hay ventas valorizadas, distribuir por proporción de kilos
   const totalWeight = cuts.reduce((acc, c) => acc + (Number(c.weightKg) || 0), 0);
 
-  return cuts.map((cut) => {
+  const allocated = cuts.map((cut) => {
     const w = Math.max(0, Number(cut.weightKg) || 0);
     const p = Math.max(0, Number(cut.currentSalePrice) || 0);
     const saleVal = Number((w * p).toFixed(2));
 
     let allocatedCost = 0;
     if (totalSaleValue > 0) {
-      // Ponderación por valor comercial
       const share = saleVal / totalSaleValue;
       allocatedCost = Number((initialCostTotal * share).toFixed(2));
     } else if (totalWeight > 0) {
-      // Ponderación uniforme por kilos
       const share = w / totalWeight;
       allocatedCost = Number((initialCostTotal * share).toFixed(2));
     }
@@ -232,6 +245,122 @@ export function allocateDeboningCosts(
       allocatedCostPerKg,
       totalAllocatedCost: allocatedCost,
       projectedMarginPercent: projectedMargin,
+    };
+  });
+
+  // Ajuste exacto de centavos por redondeo: la suma debe ser exactamente igual a initialCostTotal
+  const sumAllocated = Number(allocated.reduce((sum, c) => sum + (c.totalAllocatedCost || 0), 0).toFixed(2));
+  const centDifference = Number((initialCostTotal - sumAllocated).toFixed(2));
+
+  if (Math.abs(centDifference) > 0.001 && allocated.length > 0) {
+    // Asignar el residuo de centavos al corte de mayor costo asignado
+    let maxIdx = 0;
+    let maxCost = -1;
+    allocated.forEach((c, idx) => {
+      if ((c.totalAllocatedCost || 0) > maxCost) {
+        maxCost = c.totalAllocatedCost || 0;
+        maxIdx = idx;
+      }
+    });
+
+    const target = allocated[maxIdx];
+    const newTotalCost = Number(((target.totalAllocatedCost || 0) + centDifference).toFixed(2));
+    const newCostPerKg = target.weightKg > 0 ? Number((newTotalCost / target.weightKg).toFixed(2)) : 0;
+    const newMargin = target.totalSaleValue > 0
+      ? Number((((target.totalSaleValue - newTotalCost) / target.totalSaleValue) * 100).toFixed(2))
+      : 0;
+
+    allocated[maxIdx] = {
+      ...target,
+      totalAllocatedCost: newTotalCost,
+      allocatedCostPerKg: newCostPerKg,
+      projectedMarginPercent: newMargin,
+    };
+  }
+
+  return allocated;
+}
+
+/**
+ * Genera una plantilla de coeficientes de rendimiento reales a partir de un desposte físico de referencia
+ */
+export function createYieldTemplateFromDeboning(
+  deboning: MeatDeboning,
+  templateName: string,
+  version: number = 1
+): DeboningYieldTemplate {
+  const initialWeight = Math.max(0.001, deboning.initialWeightKg || 0);
+
+  const items: YieldCoefficientItem[] = deboning.cuts.map((cut) => {
+    const weight = Math.max(0, Number(cut.weightKg) || 0);
+    const coefficient = Number((weight / initialWeight).toFixed(6));
+    const yieldPercent = Number((coefficient * 100).toFixed(3));
+
+    return {
+      productCode: cut.productCode,
+      description: cut.description,
+      category: cut.category,
+      cutType: cut.cutType,
+      weightKg: weight,
+      coefficient,
+      yieldPercent,
+      suggestedPrice: cut.currentSalePrice,
+    };
+  });
+
+  return {
+    id: `YIELD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+    name: templateName || `Plantilla Lote #${deboning.tropaNumber} - ${deboning.animalCategory}`,
+    receptionId: deboning.sourceProductCode,
+    tropaNumber: deboning.tropaNumber,
+    referenceCarcassId: deboning.selectedCarcassIds?.[0] || deboning.id,
+    referenceInitialWeightKg: initialWeight,
+    species: deboning.animalCategory.toLowerCase().includes('cerdo') ? 'Porcino' : 'Vacuno',
+    animalCategory: deboning.animalCategory,
+    carcassType: deboning.carcassType,
+    items,
+    shrinkageWeightKg: deboning.shrinkageWeightKg,
+    shrinkagePercent: deboning.shrinkagePercent,
+    totalYieldPercent: deboning.totalYieldPercent,
+    operator: deboning.operator,
+    createdAt: new Date().toISOString(),
+    version,
+    notes: `Creada a partir de desposte real de res ref. ${formatKg(initialWeight)}`,
+  };
+}
+
+/**
+ * Aplica una plantilla de coeficientes a una media res pendiente, estimando el peso de cada corte
+ */
+export function applyYieldTemplateToCarcass(
+  template: DeboningYieldTemplate,
+  targetCarcassWeightKg: number,
+  allProducts: Product[] = []
+): DeboningCutItem[] {
+  const priceMap = new Map<string, number>();
+  allProducts.forEach((p) => {
+    if (p.code) priceMap.set(p.code, p.price || 0);
+  });
+
+  return template.items.map((item) => {
+    // Estimación: peso = coeficiente * peso individual de la res
+    const estimatedWeightKg = Number((item.coefficient * targetCarcassWeightKg).toFixed(3));
+    const salePrice = priceMap.get(item.productCode) ?? (item.suggestedPrice || 0);
+    const saleValue = Number((estimatedWeightKg * salePrice).toFixed(2));
+
+    return {
+      productCode: item.productCode,
+      description: item.description,
+      category: item.category,
+      unitType: 'Kg',
+      weightKg: estimatedWeightKg,
+      yieldPercent: item.yieldPercent,
+      cutType: item.cutType,
+      currentSalePrice: salePrice,
+      totalSaleValue: saleValue,
+      allocatedCostPerKg: 0,
+      totalAllocatedCost: 0,
+      projectedMarginPercent: 0,
     };
   });
 }

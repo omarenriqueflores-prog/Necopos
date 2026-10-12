@@ -96,6 +96,10 @@ service cloud.firestore {
     match /meatReceptions/{receptionId} {
       allow read, write: if isValidId(receptionId);
     }
+
+    match /deboningTemplates/{templateId} {
+      allow read, write: if isValidId(templateId);
+    }
   }
 }
 

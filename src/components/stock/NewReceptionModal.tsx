@@ -13,7 +13,7 @@ import {
   Info,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
-import { MeatReception, CarcassUnit, Product, ANIMAL_CATEGORIES } from '../../types/pos';
+import { MeatReception, CarcassUnit, CarcassStatus, Product, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
 
@@ -193,9 +193,28 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       `REC-${Date.now().toString().slice(-6)}`;
 
     const selectedProd = products.find((p) => p.code === productCode);
+    const recId = existingReception?.id || `REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const updatedCarcasses = carcasses.map((c, idx) => {
+      const stableId = c.id && c.id.includes('-') && !c.id.startsWith('MR-')
+        ? c.id
+        : `${code}-MR-${String(idx + 1).padStart(3, '0')}`;
+      return {
+        ...c,
+        id: stableId,
+        receptionId: recId,
+        tropaNumber: tropaNumber.trim() || `TR-${Date.now().toString().slice(-4)}`,
+        supplier: supplier.trim() || 'Proveedor Frigorífico',
+        species,
+        category,
+        branchId,
+        chamber,
+        status: (c.status || (status === 'CONFIRMADO' ? 'DISPONIBLE' : 'PENDIENTE')) as CarcassStatus,
+      };
+    });
 
     return {
-      id: existingReception?.id || `REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      id: recId,
       code,
       date,
       time,
@@ -215,7 +234,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       totalQuantity,
       totalWeightKg,
       totalCost,
-      carcasses,
+      carcasses: updatedCarcasses,
       productCode: productCode.trim() || undefined,
       productDescription: selectedProd?.description,
       notes: notes.trim(),

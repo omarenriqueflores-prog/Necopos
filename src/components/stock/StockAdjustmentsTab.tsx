@@ -22,7 +22,7 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
   initialProduct,
   initialBranch = 'NECO 1',
 }) => {
-  const { products, branchStock, recordStockMovement, stockMovements, localUser, user, meatReceptions, meatDebonings } = useFirebase();
+  const { products, branchStock, recordStockMovement, stockMovements, localUser, user, meatReceptions, meatDebonings, saveMeatReception } = useFirebase();
 
   const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(initialBranch);
   const [selectedTargetCode, setSelectedTargetCode] = useState<string>(initialProduct?.code || '');
@@ -158,7 +158,7 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
         timestamp: Date.now(),
         branchId,
         chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
-        productCode: selectedReception ? `TROPA-${selectedReception.tropaNumber}` : selectedProduct!.code,
+        productCode: selectedReception ? (selectedReception.productCode?.trim() || 'MEDIA_RES') : selectedProduct!.code,
         productDescription: selectedItemName,
         category: selectedItemCategory,
         unitType: selectedItemUnit,
@@ -169,13 +169,25 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
         newStock: newStockCalculated,
         unitPrice: selectedItemPrice,
         totalValue: Number((qtyNumber * selectedItemPrice).toFixed(2)),
-        referenceDoc: `AJUSTE-${Date.now().toString().slice(-6)}`,
+        referenceDoc: selectedReception ? selectedReception.code : `AJUSTE-${Date.now().toString().slice(-6)}`,
+        idempotencyKey: `ADJ_${Date.now()}_${selectedReception ? selectedReception.code : selectedProduct!.code}`,
         operator: operatorName,
         reason: finalReason,
-        notes: notes.trim() || (selectedReception ? 'Merma natural / evaporación en gancho (Cámara)' : undefined),
+        notes: notes.trim() || (selectedReception ? `Ajuste de Media Res Tropa ${selectedReception.tropaNumber} en cámara` : undefined),
       };
 
       await recordStockMovement(movement);
+
+      if (selectedReception) {
+        const diff = isPositive ? qtyNumber : -qtyNumber;
+        const newTotalWeight = Number(Math.max(0, selectedReception.totalWeightKg + diff).toFixed(3));
+        const updatedRec = {
+          ...selectedReception,
+          totalWeightKg: newTotalWeight,
+          notes: (selectedReception.notes ? `${selectedReception.notes} | ` : '') + `Ajuste ${type}: ${diff > 0 ? '+' : ''}${diff.toFixed(3)} Kg (${finalReason})`,
+        };
+        await saveMeatReception(updatedRec);
+      }
 
       setSuccessMessage(
         `¡${type} registrado exitosamente! Stock de ${selectedItemName} actualizado a ${formatQuantity(newStockCalculated, selectedItemUnit)}.`

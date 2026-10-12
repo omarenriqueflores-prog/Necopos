@@ -119,8 +119,16 @@ export const MeatReconciliationTab: React.FC = () => {
     return meatProducts.map((p) => {
       const movs = movByCode.get(p.code) || [];
 
+      // Saldo inicial del período (movimientos registrados previos a startDateStr en esta sucursal)
+      const prevMovs = stockMovements.filter(
+        (m) => m.branchId === selectedBranch && m.productCode === p.code && m.date < startDateStr
+      );
+      const initialPeriodStock = Number(
+        prevMovs.reduce((sum, m) => sum + (Number(m.quantity) || 0) * (m.factor || 1), 0).toFixed(3)
+      );
+
       let producedKg = 0; // Desposte / Producción
-      let initialOrEntryKg = 0; // Stock inicial u otros ingresos
+      let initialOrEntryKg = 0; // Stock inicial u otros ingresos dentro del período
       let transferInKg = 0; // Traslados recibidos
       let soldKg = 0; // Ventas mostrador
       let wasteKg = 0; // Mermas
@@ -164,11 +172,9 @@ export const MeatReconciliationTab: React.FC = () => {
       // Stock físico actual en la cámara
       const currentPhysicalStock = Number((stockMap.get(p.code) || 0).toFixed(3));
 
-      // Stock teórico estimado por balance de kardex
-      let theoreticalStock = Number((grossAvailableKg - totalOutflowKg).toFixed(3));
-      if (currentPhysicalStock === 0) {
-        theoreticalStock = 0;
-      }
+      // Saldo teórico de cierre independiente: Saldo Inicial + Entradas - Salidas
+      // (Bajo ninguna circunstancia se fuerza a cero si el físico es cero para no ocultar faltantes)
+      const theoreticalStock = Number((initialPeriodStock + grossAvailableKg - totalOutflowKg).toFixed(3));
 
       // Stock disponible actual en cámara
       const totalAvailableKg = currentPhysicalStock;
@@ -191,9 +197,11 @@ export const MeatReconciliationTab: React.FC = () => {
 
       return {
         product: p,
+        initialPeriodStock,
         producedKg: Number(producedKg.toFixed(3)),
         initialOrEntryKg: Number(initialOrEntryKg.toFixed(3)),
         transferInKg: Number(transferInKg.toFixed(3)),
+        grossAvailableKg,
         totalAvailableKg,
         soldKg: Number(soldKg.toFixed(3)),
         wasteKg: Number(wasteKg.toFixed(3)),
@@ -207,7 +215,7 @@ export const MeatReconciliationTab: React.FC = () => {
         status,
       };
     });
-  }, [relevantMovements, meatProducts, branchStock, selectedBranch]);
+  }, [relevantMovements, meatProducts, branchStock, selectedBranch, stockMovements, startDateStr]);
 
   // Filtrado final para grilla
   const filteredData = useMemo(() => {
@@ -634,6 +642,7 @@ export const MeatReconciliationTab: React.FC = () => {
                 <th className="p-2 text-left w-14">Cód</th>
                 <th className="p-2 text-left">Corte Cárnico</th>
                 <th className="p-2 text-left w-28">Categoría</th>
+                <th className="p-2 text-right w-24 bg-gray-700">Stock Inicial (Kg)</th>
                 <th className="p-2 text-right w-24 bg-blue-900/80">Producido (Kg)</th>
                 <th className="p-2 text-right w-24">Otros In (Kg)</th>
                 <th className="p-2 text-right w-24 bg-blue-950 font-bold">Disponible (Kg)</th>
@@ -650,7 +659,7 @@ export const MeatReconciliationTab: React.FC = () => {
             <tbody className="divide-y divide-gray-200 text-[11px]">
               {filteredData.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="p-8 text-center text-gray-500">
+                  <td colSpan={15} className="p-8 text-center text-gray-500">
                     No se encontraron productos cárnicos con los filtros seleccionados.
                   </td>
                 </tr>
@@ -674,6 +683,9 @@ export const MeatReconciliationTab: React.FC = () => {
                     </td>
                     <td className="p-2 text-gray-600 text-[10px]">
                       {item.product.category}
+                    </td>
+                    <td className="p-2 text-right font-medium text-gray-700 bg-gray-50/70">
+                      {formatKg(item.initialPeriodStock)}
                     </td>
                     <td className="p-2 text-right font-semibold text-blue-900 bg-blue-50/50">
                       {formatKg(item.producedKg)}

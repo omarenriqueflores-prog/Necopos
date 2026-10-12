@@ -39,7 +39,12 @@ import {
   PhysicalInventory,
   MeatDeboning,
   MeatReception,
+  DeboningYieldTemplate,
+  CarcassStatus,
+  CarcassUnit,
 } from '../types/pos';
+import { calculateDeboningMassBalance } from '../utils/deboningHelper';
+import { formatKg } from '../utils/stockHelper';
 import { INITIAL_BRANCH_CONFIGS, INITIAL_USERS } from '../data/mockData';
 
 export function sanitizeForFirestore<T>(data: T): T {
@@ -99,6 +104,9 @@ interface FirebaseContextType {
   physicalInventories: PhysicalInventory[];
   meatDebonings: MeatDeboning[];
   meatReceptions: MeatReception[];
+  deboningTemplates: DeboningYieldTemplate[];
+  saveDeboningTemplate: (template: DeboningYieldTemplate) => Promise<void>;
+  deleteDeboningTemplate: (id: string) => Promise<void>;
   saveProduct: (p: Product) => Promise<void>;
   saveProductsBatch: (items: Product[]) => Promise<void>;
   deleteProduct: (code: string, docId?: string) => Promise<void>;
@@ -191,6 +199,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [physicalInventories, setPhysicalInventories] = useState<PhysicalInventory[]>([]);
   const [meatDebonings, setMeatDebonings] = useState<MeatDeboning[]>([]);
   const [meatReceptions, setMeatReceptions] = useState<MeatReception[]>([]);
+  const [deboningTemplates, setDeboningTemplates] = useState<DeboningYieldTemplate[]>([]);
 
   // Auth Listener
   useEffect(() => {
@@ -692,6 +701,22 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
+  // Sync Deboning Templates
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'deboningTemplates'),
+      (snapshot) => {
+        const loaded = snapshot.docs.map((docItem) => docItem.data() as DeboningYieldTemplate);
+        loaded.sort((a, b) => (b.version || 0) - (a.version || 0));
+        setDeboningTemplates(loaded);
+      },
+      (error) => {
+        console.warn('Firestore DeboningTemplates sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
@@ -1064,69 +1089,105 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // ==========================================
 
   const recordStockMovement = async (movement: StockMovement) => {
-    const path = `stockMovements/${movement.id}`;
-    try {
-      const batch = writeBatch(db);
-      // 1. Guardar movimiento inmutable
-      batch.set(doc(db, 'stockMovements', movement.id), sanitizeForFirestore(movement));
-
-      // 2. Actualizar stock de la sucursal
-      const stockDocId = `${movement.branchId}_${movement.productCode}`;
-      const stockRef = doc(db, 'branchStock', stockDocId);
-      const existing = branchStock.find((s) => s.id === stockDocId);
-
-      batch.set(
-        stockRef,
-        sanitizeForFirestore({
-          id: stockDocId,
-          branchId: movement.branchId,
-          productCode: movement.productCode,
-          currentStock: movement.newStock,
-          minStock: existing?.minStock ?? 20,
-          lastUpdated: new Date().toISOString(),
-          chamberName: movement.chamber || (movement.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2'),
-        }),
-        { merge: true }
-      );
-
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    return recordStockMovementsBatch([movement]);
   };
 
   const recordStockMovementsBatch = async (movements: StockMovement[]) => {
-    if (movements.length === 0) return;
+    if (!movements || movements.length === 0) return;
     try {
-      // Chunk batches by 250 items (each movement updates 2 documents)
-      const chunkSize = 200;
-      for (let i = 0; i < movements.length; i += chunkSize) {
-        const chunk = movements.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
+      // 1. Filtrar movimientos con claves de idempotencia ya registradas y validar cantidades
+      const recordedKeys = new Set(stockMovements.map((m) => m.idempotencyKey).filter(Boolean));
+      const validMovements = movements.filter((mov) => {
+        if (!mov || !mov.productCode || !mov.branchId) return false;
+        const qty = Number(mov.quantity);
+        if (isNaN(qty) || !isFinite(qty) || qty <= 0) return false;
+        if (mov.idempotencyKey && recordedKeys.has(mov.idempotencyKey)) {
+          console.log(`Idempotencia: Movimiento con clave "${mov.idempotencyKey}" ya registrado previamente. Se omite duplicación.`);
+          return false;
+        }
+        return true;
+      });
 
-        for (const mov of chunk) {
-          batch.set(doc(db, 'stockMovements', mov.id), sanitizeForFirestore(mov));
-          const stockDocId = `${mov.branchId}_${mov.productCode}`;
-          const stockRef = doc(db, 'branchStock', stockDocId);
-          const existing = branchStock.find((s) => s.id === stockDocId);
+      if (validMovements.length === 0) {
+        return;
+      }
 
-          batch.set(
-            stockRef,
-            sanitizeForFirestore({
-              id: stockDocId,
-              branchId: mov.branchId,
-              productCode: mov.productCode,
-              currentStock: mov.newStock,
-              minStock: existing?.minStock ?? 20,
-              lastUpdated: new Date().toISOString(),
-              chamberName: mov.chamber || (mov.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2'),
-            }),
-            { merge: true }
-          );
+      // 2. Agrupar movimientos por sucursal y código de producto para calcular el kardex
+      // continuo y evitar que múltiples movimientos sobre el mismo artículo sobrescriban el saldo.
+      const groups = new Map<string, StockMovement[]>();
+      for (const mov of validMovements) {
+        const key = `${mov.branchId}_${mov.productCode}`;
+        const list = groups.get(key) || [];
+        list.push(mov);
+        groups.set(key, list);
+      }
+
+      const processedMovements: StockMovement[] = [];
+      const stockDocUpdates = new Map<
+        string,
+        {
+          id: string;
+          branchId: 'NECO 1' | 'NECO 2';
+          productCode: string;
+          currentStock: number;
+          minStock: number;
+          lastUpdated: string;
+          chamberName: string;
+        }
+      >();
+
+      for (const [key, groupMovs] of groups.entries()) {
+        const existingStockDoc = branchStock.find((s) => s.id === key);
+        let runningStock = existingStockDoc ? Number(existingStockDoc.currentStock) || 0 : 0;
+        let lastChamber =
+          existingStockDoc?.chamberName ||
+          (groupMovs[0].branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
+
+        for (const mov of groupMovs) {
+          const qty = Number(mov.quantity) || 0;
+          const factor = mov.factor || 1;
+          const prev = runningStock;
+          runningStock = Number((runningStock + qty * factor).toFixed(3));
+
+          processedMovements.push({
+            ...mov,
+            previousStock: prev,
+            newStock: runningStock,
+          });
+
+          if (mov.chamber) {
+            lastChamber = mov.chamber;
+          }
         }
 
-        await batch.commit();
+        const [branchIdStr, ...codeParts] = key.split('_');
+        const branchId = branchIdStr as 'NECO 1' | 'NECO 2';
+        const productCode = codeParts.join('_');
+
+        stockDocUpdates.set(key, {
+          id: key,
+          branchId,
+          productCode,
+          currentStock: runningStock,
+          minStock: existingStockDoc?.minStock ?? 20,
+          lastUpdated: new Date().toISOString(),
+          chamberName: lastChamber,
+        });
       }
+
+      // 3. Guardar en lotes de Firestore
+      const batch = writeBatch(db);
+
+      for (const mov of processedMovements) {
+        batch.set(doc(db, 'stockMovements', mov.id), sanitizeForFirestore(mov));
+      }
+
+      for (const [key, stockData] of stockDocUpdates.entries()) {
+        const stockRef = doc(db, 'branchStock', key);
+        batch.set(stockRef, sanitizeForFirestore(stockData), { merge: true });
+      }
+
+      await batch.commit();
     } catch (error) {
       console.error('Error in recordStockMovementsBatch:', error);
       throw error;
@@ -1151,23 +1212,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
     const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    for (const item of saleData.items) {
+    for (let idx = 0; idx < saleData.items.length; idx++) {
+      const item = saleData.items[idx];
       const productCode = item.code || item.productCode;
       if (!productCode) continue;
 
       const qty = Number(item.unitType === 'Kg' ? (item.weight || item.quantity || 0) : (item.quantity || 1));
       if (qty <= 0) continue;
 
-      const stockDocId = `${branchId}_${productCode}`;
-      const currentStockItem = branchStock.find((s) => s.id === stockDocId);
-      const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
-      const newStock = Number((prevStock - qty).toFixed(3));
-
       const mov: StockMovement = {
-        id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+        id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
         date: dateStr,
         time: timeStr,
-        timestamp: Date.now(),
+        timestamp: Date.now() + idx,
         branchId,
         chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
         productCode,
@@ -1177,12 +1234,13 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         type: 'VENTA',
         quantity: qty,
         factor: -1,
-        previousStock: prevStock,
-        newStock,
+        previousStock: 0,
+        newStock: 0,
         unitPrice: Number(item.unitPrice) || 0,
         totalValue: Number((qty * (Number(item.unitPrice) || 0)).toFixed(2)),
         referenceDoc: saleData.ticketNumber || `Venta ${saleData.id}`,
         saleId: String(saleId),
+        idempotencyKey: `SALE_${saleId}_${productCode}_${idx}`,
         operator: operator || 'Cajero POS',
         notes: `Venta POS - ${saleData.customerName || 'Consumidor Final'} (${saleData.invoiceType || 'Ticket'})`,
       };
@@ -1237,6 +1295,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           totalValue: item.totalValue,
           referenceDoc: transfer.transferNumber,
           transferId: transfer.id,
+          idempotencyKey: `TR_OUT_${transfer.id || transfer.transferNumber}_${item.productCode}`,
           operator,
           notes: `Despacho hacia ${transfer.destinationBranch}`,
         });
@@ -1259,17 +1318,18 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const receiveStockTransfer = async (transfer: StockTransfer, operator: string) => {
     try {
+      // Idempotencia: Verificar que no esté recibida previamente
+      if (transfer.status === 'RECIBIDA') {
+        console.warn('El remito de traslado ya fue recibido previamente (idempotencia verificada):', transfer.transferNumber);
+        return;
+      }
+
       const now = new Date();
       const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const movements: StockMovement[] = [];
 
       for (const item of transfer.items) {
-        const stockDocId = `${transfer.destinationBranch}_${item.productCode}`;
-        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
-        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
-        const newStock = Number((prevStock + item.quantity).toFixed(3));
-
         movements.push({
           id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
           date: dateStr,
@@ -1284,12 +1344,13 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           type: 'TRANSFERENCIA_ENTRADA',
           quantity: item.quantity,
           factor: 1,
-          previousStock: prevStock,
-          newStock,
+          previousStock: 0,
+          newStock: 0,
           unitPrice: item.price,
           totalValue: item.totalValue,
           referenceDoc: transfer.transferNumber,
           transferId: transfer.id,
+          idempotencyKey: `TR_IN_${transfer.id || transfer.transferNumber}_${item.productCode}`,
           operator,
           notes: `Recepción desde ${transfer.originBranch}`,
         });
@@ -1297,17 +1358,26 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       await recordStockMovementsBatch(movements);
 
-      // Actualizar ubicación de medias reses en cámara si se transfirieron
+      // Si se transfirió una recepción completa, actualizar su sucursal de custodia
       for (const item of transfer.items) {
         if (item.productCode) {
           const matchingReception = meatReceptions.find(
-            (r) => r.branchId === transfer.originBranch && r.status === 'CONFIRMADO' && (r.productCode === item.productCode || item.description.includes(r.tropaNumber))
+            (r) =>
+              r.branchId === transfer.originBranch &&
+              r.status === 'CONFIRMADO' &&
+              (r.productCode === item.productCode || item.description.includes(r.tropaNumber))
           );
-          if (matchingReception) {
+          if (matchingReception && item.quantity >= matchingReception.totalWeightKg - 0.01) {
             const updatedReception: MeatReception = {
               ...matchingReception,
               branchId: transfer.destinationBranch,
               chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+              carcasses: (matchingReception.carcasses || []).map((c) => ({
+                ...c,
+                branchId: transfer.destinationBranch,
+                chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+                status: 'DISPONIBLE' as CarcassStatus,
+              })),
             };
             await saveMeatReception(updatedReception);
           }
@@ -1448,20 +1518,30 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const finalizeMeatDeboning = async (deboning: MeatDeboning, operator: string) => {
     try {
+      // Idempotencia: Verificar que no esté finalizado previamente
+      if (deboning.status === 'FINALIZADO') {
+        console.warn('El desposte ya fue finalizado previamente (idempotencia verificada):', deboning.code);
+        return;
+      }
+
+      // Validación estricta de balance de masas: salidas no pueden superar el peso inicial
+      const balance = calculateDeboningMassBalance(deboning.initialWeightKg, deboning.cuts);
+      if (balance.isImpossibleBalance) {
+        throw new Error(
+          `Balance de masas imposible: el total de cortes y subproductos (${balance.totalOutputWeightKg} Kg) supera el peso inicial al gancho (${deboning.initialWeightKg} Kg) por ${balance.impossibleOverweightKg} Kg. Verifique los pesajes antes de finalizar.`
+        );
+      }
+
       const now = new Date();
       const dateStr = deboning.date || now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = deboning.time || now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const movements: StockMovement[] = [];
 
-      // 1. Si existe producto origen a descontar (ej. media res que ya estaba en cámara)
+      // 1. Descontar materia prima origen (res en cámara)
       if (deboning.sourceProductCode) {
-        const stockDocId = `${deboning.branchId}_${deboning.sourceProductCode}`;
-        const sourceStockItem = branchStock.find((s) => s.id === stockDocId);
-        const prevStock = sourceStockItem ? Number(sourceStockItem.currentStock) || 0 : 0;
-        const newStock = Number((prevStock - deboning.initialWeightKg).toFixed(3));
-
         movements.push({
           id: `SM-${Date.now()}-SRC-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `DEB_SRC_${deboning.code || deboning.id}`,
           date: dateStr,
           time: timeStr,
           timestamp: Date.now(),
@@ -1474,8 +1554,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           type: 'DESPOSTE_SALIDA',
           quantity: deboning.initialWeightKg,
           factor: -1,
-          previousStock: prevStock,
-          newStock,
+          previousStock: 0,
+          newStock: 0,
           unitPrice: deboning.costPerKgInitial,
           totalValue: deboning.totalInitialCost,
           referenceDoc: deboning.code,
@@ -1489,13 +1569,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const cut = deboning.cuts[i];
         if (!cut.weightKg || cut.weightKg <= 0) continue;
 
-        const stockDocId = `${deboning.branchId}_${cut.productCode}`;
-        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
-        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
-        const newStock = Number((prevStock + cut.weightKg).toFixed(3));
-
         movements.push({
           id: `SM-${Date.now()}-${i}-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `DEB_CUT_${deboning.code || deboning.id}_${cut.productCode}_${i}`,
           date: dateStr,
           time: timeStr,
           timestamp: Date.now() + i,
@@ -1509,8 +1585,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           type: 'PRODUCCION',
           quantity: cut.weightKg,
           factor: 1,
-          previousStock: prevStock,
-          newStock,
+          previousStock: 0,
+          newStock: 0,
           unitPrice: cut.currentSalePrice,
           totalValue: cut.totalSaleValue,
           referenceDoc: deboning.code,
@@ -1519,12 +1595,31 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
       }
 
-      // 3. Registrar todos los movimientos y actualizar el stock de cámara
+      // 3. Registrar todos los movimientos de forma atómica y consistente
       if (movements.length > 0) {
         await recordStockMovementsBatch(movements);
       }
 
-      // 4. Actualizar el estado de la orden de desposte a FINALIZADO
+      // 4. Actualizar el estado de las medias reses individuales procesadas en la recepción
+      if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+        for (const rec of meatReceptions) {
+          const hasMatching = rec.carcasses?.some((c) => deboning.selectedCarcassIds?.includes(c.id));
+          if (hasMatching) {
+            const updatedCarcasses = rec.carcasses.map((c) => {
+              if (deboning.selectedCarcassIds?.includes(c.id)) {
+                return { ...c, status: 'DESPOSTADO' as CarcassStatus, deboningId: deboning.id };
+              }
+              return c;
+            });
+            await saveMeatReception({
+              ...rec,
+              carcasses: updatedCarcasses,
+            });
+          }
+        }
+      }
+
+      // 5. Actualizar el estado de la orden de desposte a FINALIZADO
       const updatedDeboning: MeatDeboning = {
         ...deboning,
         status: 'FINALIZADO',
@@ -1542,20 +1637,133 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     try {
       const deboning = meatDebonings.find((d) => d.id === deboningId);
       if (!deboning) return;
+      if (deboning.status === 'ANULADO') {
+        console.warn('El desposte ya se encuentra anulado.');
+        return;
+      }
 
       if (deboning.status === 'BORRADOR') {
         await deleteDoc(doc(db, 'meatDebonings', deboningId));
-      } else {
-        const updated: MeatDeboning = {
-          ...deboning,
-          status: 'ANULADO',
-          notes: (deboning.notes ? `${deboning.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
-        };
-        await saveMeatDeboning(updated);
+        return;
       }
+
+      // Si fue FINALIZADO, generar movimientos inversos de reversión trazables
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const reverseMovements: StockMovement[] = [];
+
+      // A. Revertir cortes obtenidos (descontar con AJUSTE_NEGATIVO)
+      for (let i = 0; i < deboning.cuts.length; i++) {
+        const cut = deboning.cuts[i];
+        if (!cut.weightKg || cut.weightKg <= 0) continue;
+
+        reverseMovements.push({
+          id: `SM-REV-DEB-${Date.now()}-${i}-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `REV_DEB_CUT_${deboning.code || deboning.id}_${cut.productCode}_${i}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now() + i,
+          branchId: deboning.branchId,
+          chamber: deboning.chamber,
+          productId: cut.productId,
+          productCode: cut.productCode,
+          productDescription: cut.description,
+          category: cut.category,
+          unitType: cut.unitType || 'Kg',
+          type: 'AJUSTE_NEGATIVO',
+          quantity: cut.weightKg,
+          factor: -1,
+          previousStock: 0,
+          newStock: 0,
+          unitPrice: cut.currentSalePrice,
+          totalValue: cut.totalSaleValue,
+          referenceDoc: `REV-${deboning.code}`,
+          reversalOf: deboning.code,
+          operator,
+          notes: `Reversión por anulación de Desposte ${deboning.code} (Corte ${cut.description})`,
+        });
+      }
+
+      // B. Restaurar materia prima / media res (reincorporar con AJUSTE_POSITIVO)
+      if (deboning.sourceProductCode) {
+        reverseMovements.push({
+          id: `SM-REV-SRC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `REV_DEB_SRC_${deboning.code || deboning.id}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now(),
+          branchId: deboning.branchId,
+          chamber: deboning.chamber,
+          productCode: deboning.sourceProductCode,
+          productDescription: `Materia Prima Reincorporada - Tropa ${deboning.tropaNumber}`,
+          category: deboning.animalCategory || 'Novillito',
+          unitType: 'Kg',
+          type: 'AJUSTE_POSITIVO',
+          quantity: deboning.initialWeightKg,
+          factor: 1,
+          previousStock: 0,
+          newStock: 0,
+          unitPrice: deboning.costPerKgInitial,
+          totalValue: deboning.totalInitialCost,
+          referenceDoc: `REV-${deboning.code}`,
+          reversalOf: deboning.code,
+          operator,
+          notes: `Restauración de materia prima por anulación de desposte ${deboning.code}`,
+        });
+      }
+
+      if (reverseMovements.length > 0) {
+        await recordStockMovementsBatch(reverseMovements);
+      }
+
+      // C. Restaurar estado de las medias reses en meatReceptions
+      if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+        for (const rec of meatReceptions) {
+          const hasMatching = rec.carcasses?.some((c) => deboning.selectedCarcassIds?.includes(c.id));
+          if (hasMatching) {
+            const updatedCarcasses = rec.carcasses.map((c) => {
+              if (deboning.selectedCarcassIds?.includes(c.id)) {
+                return { ...c, status: 'DISPONIBLE' as CarcassStatus, deboningId: undefined };
+              }
+              return c;
+            });
+            await saveMeatReception({
+              ...rec,
+              carcasses: updatedCarcasses,
+            });
+          }
+        }
+      }
+
+      // D. Marcar desposte como ANULADO
+      const updated: MeatDeboning = {
+        ...deboning,
+        status: 'ANULADO',
+        notes: (deboning.notes ? `${deboning.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
+      };
+      await saveMeatDeboning(updated);
     } catch (error) {
       console.error('Error deleting or cancelling meat deboning:', error);
       throw error;
+    }
+  };
+
+  const saveDeboningTemplate = async (template: DeboningYieldTemplate) => {
+    const path = `deboningTemplates/${template.id}`;
+    try {
+      await setDoc(doc(db, 'deboningTemplates', template.id), sanitizeForFirestore(template));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
+  const deleteDeboningTemplate = async (id: string) => {
+    const path = `deboningTemplates/${id}`;
+    try {
+      await deleteDoc(doc(db, 'deboningTemplates', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
     }
   };
 
@@ -1570,9 +1778,41 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const finalizeMeatReception = async (reception: MeatReception, operator: string) => {
     try {
+      // Idempotencia: Verificar si ya está confirmada
+      if (reception.status === 'CONFIRMADO') {
+        console.warn('La recepción ya fue confirmada previamente (idempotencia verificada):', reception.code);
+        return;
+      }
+
       const now = new Date();
       const dateStr = reception.date || now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = reception.time || now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      // Validar que el peso total coincida con la suma de las unidades individuales cargadas
+      if (reception.carcasses && reception.carcasses.length > 0) {
+        const sumCarcassesWeight = Number(
+          reception.carcasses.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0).toFixed(3)
+        );
+        if (Math.abs(sumCarcassesWeight - reception.totalWeightKg) > 0.05) {
+          throw new Error(
+            `Inconsistencia de pesaje: El peso total (${formatKg(reception.totalWeightKg)}) difiere de la suma de las medias reses individuales (${formatKg(sumCarcassesWeight)}).`
+          );
+        }
+      }
+
+      // Asegurar que cada media res tenga ID único permanente y estado DISPONIBLE
+      const normalizedCarcasses: CarcassUnit[] = (reception.carcasses || []).map((c, idx) => ({
+        ...c,
+        id: c.id && c.id.trim() ? c.id.trim() : `${reception.code}-MR-${String(idx + 1).padStart(3, '0')}`,
+        receptionId: reception.id,
+        tropaNumber: reception.tropaNumber,
+        supplier: reception.supplier,
+        species: reception.species,
+        category: reception.category,
+        branchId: reception.branchId,
+        chamber: reception.chamber,
+        status: 'DISPONIBLE' as CarcassStatus,
+      }));
 
       // Si tiene código de producto vinculado, incrementar existencia de stock en la cámara elegida
       const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
@@ -1580,11 +1820,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const prodDesc = prod?.description || reception.productDescription || `Media Res ${reception.species} - Tropa ${reception.tropaNumber}`;
       const prodCat = prod?.category || reception.category || 'Novillito';
       const unitType = prod?.unitType || 'Kg';
-
-      const stockDocId = `${reception.branchId}_${targetProdCode}`;
-      const currentStockItem = branchStock.find((s) => s.id === stockDocId);
-      const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
-      const newStock = Number((prevStock + reception.totalWeightKg).toFixed(3));
 
       const movement: StockMovement = {
         id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1601,11 +1836,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         type: 'ENTRADA',
         quantity: reception.totalWeightKg,
         factor: 1,
-        previousStock: prevStock,
-        newStock,
+        previousStock: 0,
+        newStock: 0,
         unitPrice: reception.pricePerKg,
         totalValue: reception.totalCost,
         referenceDoc: reception.code,
+        idempotencyKey: `REC_CONFIRM_${reception.code || reception.id}`,
         operator,
         notes: `Recepción Tropa SENASA ${reception.tropaNumber} | Proveedor: ${reception.supplier} (${reception.totalQuantity} medias reses, Fact/Rem: ${reception.invoiceNumber || reception.deliveryNoteNumber || 'S/N'})`,
       };
@@ -1614,6 +1850,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       const confirmed: MeatReception = {
         ...reception,
+        carcasses: normalizedCarcasses,
         status: 'CONFIRMADO',
         operator,
         appliedAt: new Date().toISOString(),
@@ -1632,19 +1869,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const timeStr = updatedReception.time || now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
       // Calcular diferencia de peso
-      const weightDiff = updatedReception.totalWeightKg - originalReception.totalWeightKg;
+      const weightDiff = Number((updatedReception.totalWeightKg - originalReception.totalWeightKg).toFixed(3));
 
-      if (Math.abs(weightDiff) > 0.0001) {
+      if (Math.abs(weightDiff) > 0.001) {
         const targetProdCode = updatedReception.productCode?.trim() || 'MEDIA_RES';
         const prod = products.find((p) => p.code === targetProdCode);
         const prodDesc = prod?.description || updatedReception.productDescription || `Media Res ${updatedReception.species} - Tropa ${updatedReception.tropaNumber}`;
         const prodCat = prod?.category || updatedReception.category || 'Novillito';
         const unitType = prod?.unitType || 'Kg';
-
-        const stockDocId = `${updatedReception.branchId}_${targetProdCode}`;
-        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
-        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
-        const newStock = Number((prevStock + weightDiff).toFixed(3));
 
         const movement: StockMovement = {
           id: `SM-ADJ-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1661,10 +1893,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           type: weightDiff >= 0 ? 'AJUSTE_POSITIVO' : 'AJUSTE_NEGATIVO',
           quantity: Math.abs(weightDiff),
           factor: weightDiff >= 0 ? 1 : -1,
-          previousStock: prevStock,
-          newStock,
+          previousStock: 0,
+          newStock: 0,
           unitPrice: updatedReception.pricePerKg,
-          totalValue: Math.abs(weightDiff * updatedReception.pricePerKg),
+          totalValue: Number(Math.abs(weightDiff * updatedReception.pricePerKg).toFixed(2)),
           referenceDoc: updatedReception.code,
           operator,
           notes: `Ajuste por Edición de Recepción Tropa ${updatedReception.tropaNumber}. Dif: ${weightDiff.toFixed(3)} Kg.`,
@@ -1693,14 +1925,93 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       if (reception.status === 'PENDIENTE') {
         await deleteDoc(doc(db, 'meatReceptions', receptionId));
-      } else {
-        const updated: MeatReception = {
-          ...reception,
-          status: 'ANULADO',
-          notes: (reception.notes ? `${reception.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
-        };
-        await saveMeatReception(updated);
+        return;
       }
+
+      // 1. Validar que no tenga despostes confirmados asociados
+      const hasDebonings = meatDebonings.some(
+        (d) =>
+          d.status === 'FINALIZADO' &&
+          (d.tropaNumber === reception.tropaNumber ||
+            d.sourceProductCode === reception.code ||
+            (d.selectedCarcassIds && d.selectedCarcassIds.some((cid) => reception.carcasses?.some((c) => c.id === cid))))
+      );
+      if (hasDebonings) {
+        throw new Error(
+          `No es posible anular la recepción ${reception.code}: contiene medias reses con despostes finalizados en el sistema. Debe anular primero los despostes asociados.`
+        );
+      }
+
+      const hasConsumedCarcasses = reception.carcasses?.some(
+        (c) => c.status === 'DESPOSTADO' || c.status === 'TRASLADADO'
+      );
+      if (hasConsumedCarcasses) {
+        throw new Error(
+          `No es posible anular la recepción ${reception.code}: una o más medias reses ya han sido despostadas o trasladadas.`
+        );
+      }
+
+      // 2. Validar que no tenga traslados asociados
+      const hasTransfers = stockTransfers.some(
+        (t) =>
+          (t.status === 'EN_TRANSITO' || t.status === 'RECIBIDA') &&
+          t.items.some((it) => it.description.includes(reception.tropaNumber) || it.productCode === reception.productCode)
+      );
+      if (hasTransfers) {
+        throw new Error(
+          `No es posible anular la recepción ${reception.code}: existen traslados de mercadería asociados a la Tropa ${reception.tropaNumber}.`
+        );
+      }
+
+      // 3. Si estaba CONFIRMADO, generar movimiento inverso de reversión trazable
+      if (reception.status === 'CONFIRMADO') {
+        const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
+        const prod = products.find((p) => p.code === targetProdCode);
+        const prodDesc = prod?.description || reception.productDescription || `Media Res ${reception.species} - Tropa ${reception.tropaNumber}`;
+
+        const reverseMovement: StockMovement = {
+          id: `SM-REV-REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `REV_REC_${reception.code || reception.id}`,
+          date: new Date().toLocaleDateString('es-AR').split('/').reverse().join('-'),
+          time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          timestamp: Date.now(),
+          branchId: reception.branchId,
+          chamber: reception.chamber,
+          productId: prod?.id || prod?.docId,
+          productCode: targetProdCode,
+          productDescription: prodDesc,
+          category: reception.category || 'Novillito',
+          unitType: 'Kg',
+          type: 'AJUSTE_NEGATIVO',
+          quantity: reception.totalWeightKg,
+          factor: -1,
+          previousStock: 0,
+          newStock: 0,
+          unitPrice: reception.pricePerKg,
+          totalValue: reception.totalCost,
+          referenceDoc: `REV-${reception.code}`,
+          reversalOf: reception.code,
+          operator,
+          notes: `Reversión por anulación de Recepción ${reception.code} Tropa ${reception.tropaNumber}: ${reason || 'Sin motivo'}`,
+        };
+
+        await recordStockMovementsBatch([reverseMovement]);
+      }
+
+      // 4. Actualizar estado de las medias reses y de la recepción a ANULADO
+      const updatedCarcasses = (reception.carcasses || []).map((c) => ({
+        ...c,
+        status: 'ANULADO' as CarcassStatus,
+      }));
+
+      const updated: MeatReception = {
+        ...reception,
+        carcasses: updatedCarcasses,
+        status: 'ANULADO',
+        notes: (reception.notes ? `${reception.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveMeatReception(updated);
     } catch (error) {
       console.error('Error deleting or cancelling meat reception:', error);
       throw error;
@@ -1957,6 +2268,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         stockTransfers,
         physicalInventories,
         meatDebonings,
+        saveDeboningTemplate,
+        deleteDeboningTemplate,
+        deboningTemplates,
         saveProduct,
         saveProductsBatch,
         deleteProduct,
