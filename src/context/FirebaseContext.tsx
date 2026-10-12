@@ -1752,7 +1752,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const saveDeboningTemplate = async (template: DeboningYieldTemplate) => {
     const path = `deboningTemplates/${template.id}`;
     try {
-      await setDoc(doc(db, 'deboningTemplates', template.id), sanitizeForFirestore(template));
+      const now = new Date().toISOString();
+      const templateToSave = {
+        ...template,
+        updatedAt: now,
+        version: (template.version || 0) + 1,
+        isActive: template.isActive !== undefined ? template.isActive : true,
+      };
+      await setDoc(doc(db, 'deboningTemplates', template.id), sanitizeForFirestore(templateToSave));
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }

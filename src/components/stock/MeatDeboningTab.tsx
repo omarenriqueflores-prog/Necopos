@@ -17,6 +17,7 @@ import {
   Layers,
   Building2,
   Calendar,
+  X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
@@ -38,6 +39,9 @@ export const MeatDeboningTab: React.FC = () => {
   const [showNewModal, setShowNewModal] = useState(false);
   const [editingDeboning, setEditingDeboning] = useState<MeatDeboning | null>(null);
   const [viewingDeboning, setViewingDeboning] = useState<MeatDeboning | null>(null);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [password, setPassword] = useState('');
+  const [deboningToDelete, setDeboningToDelete] = useState<MeatDeboning | null>(null);
 
   // Filtrado
   const filteredDebonings = useMemo(() => {
@@ -429,17 +433,30 @@ export const MeatDeboningTab: React.FC = () => {
                           <Printer className="w-3.5 h-3.5" />
                         </button>
                         {deb.status === 'BORRADOR' && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingDeboning(deb);
-                              setShowNewModal(true);
-                            }}
-                            className="p-1 text-green-700 hover:bg-green-100 rounded font-bold"
-                            title="Continuar / Finalizar Borrador"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex space-x-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDeboning(deb);
+                                setShowNewModal(true);
+                              }}
+                              className="p-1 text-green-700 hover:bg-green-100 rounded font-bold"
+                              title="Continuar / Finalizar Borrador"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeboningToDelete(deb);
+                                setShowPasswordModal(true);
+                              }}
+                              className="p-1 text-red-700 hover:bg-red-100 rounded"
+                              title="Eliminar Borrador"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         )}
                       </div>
                     </td>
@@ -475,6 +492,49 @@ export const MeatDeboningTab: React.FC = () => {
       )}
 
       {/* MODAL VER DETALLE DESPOSTE */}
+        {showPasswordModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white p-6 rounded shadow-lg">
+              <h2 className="text-lg font-bold mb-4">Clave de Administrador</h2>
+              <input
+                type="password"
+                className="border p-2 w-full mb-4"
+                placeholder="Ingrese clave..."
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <div className="flex justify-end space-x-2">
+                <button
+                  className="bg-gray-300 px-4 py-2 rounded"
+                  onClick={() => {
+                    setShowPasswordModal(false);
+                    setPassword('');
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="bg-red-600 text-white px-4 py-2 rounded"
+                  onClick={() => {
+                    if (password === '26635235' && deboningToDelete) {
+                      const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
+                      deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
+                      setShowPasswordModal(false);
+                      setPassword('');
+                      setDeboningToDelete(null);
+                    } else {
+                      alert('Clave incorrecta.');
+                      setPassword('');
+                    }
+                  }}
+                >
+                  Eliminar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       {viewingDeboning && (
         <DeboningDetailModal
           deboning={viewingDeboning}
@@ -485,6 +545,49 @@ export const MeatDeboningTab: React.FC = () => {
             setShowNewModal(true);
           }}
         />
+      )}
+
+      {showPasswordModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded shadow-lg">
+            <h2 className="text-lg font-bold mb-4">Clave de Administrador</h2>
+            <input
+              type="password"
+              className="border p-2 w-full mb-4"
+              placeholder="Ingrese clave..."
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <div className="flex justify-end space-x-2">
+              <button
+                className="bg-gray-300 px-4 py-2 rounded"
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setPassword('');
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                className="bg-red-600 text-white px-4 py-2 rounded"
+                onClick={() => {
+                  if (password === '26635235' && deboningToDelete) {
+                    const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
+                    deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
+                    setShowPasswordModal(false);
+                    setPassword('');
+                    setDeboningToDelete(null);
+                  } else {
+                    alert('Clave incorrecta.');
+                    setPassword('');
+                  }
+                }}
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -597,7 +597,9 @@ export interface DeboningYieldTemplate {
   totalYieldPercent: number;
   operator: string;
   createdAt: string;
+  updatedAt: string;
   version: number;
+  isActive: boolean;
   notes?: string;
 }
 
