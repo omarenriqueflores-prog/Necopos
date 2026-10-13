@@ -8,6 +8,7 @@ interface WindowsModalProps {
   icon?: React.ReactNode;
   children: React.ReactNode;
   maxWidth?: string;
+  zIndex?: string;
 }
 
 export const WindowsModal: React.FC<WindowsModalProps> = ({
@@ -17,6 +18,7 @@ export const WindowsModal: React.FC<WindowsModalProps> = ({
   icon,
   children,
   maxWidth = 'max-w-4xl',
+  zIndex = 'z-[9999]',
 }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -31,7 +33,7 @@ export const WindowsModal: React.FC<WindowsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 top-[26px] bottom-[22px] bg-black/40 z-50 flex items-center justify-center p-3 select-none">
+    <div className={`fixed inset-0 top-[26px] bottom-[22px] bg-black/50 ${zIndex} flex items-center justify-center p-3 select-none`}>
       <div
         className={`w-full ${maxWidth} bg-[#ebeef2] border-2 border-[#002046] shadow-2xl flex flex-col overflow-hidden text-[#181c1f] font-sans`}
       >

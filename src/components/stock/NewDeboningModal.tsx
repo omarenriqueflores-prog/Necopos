@@ -37,6 +37,7 @@ import {
   DEBONING_TEMPLATES,
 } from '../../utils/deboningHelper';
 import { formatKg, formatCurrency, isMeatCategory } from '../../utils/stockHelper';
+import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
 
 interface NewDeboningModalProps {
   onClose: () => void;
@@ -203,6 +204,7 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   // Estados de proceso
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showConfirmFinalize, setShowConfirmFinalize] = useState(false);
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Actualizar nombre de cámara al cambiar sucursal
@@ -531,39 +533,78 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     };
   };
 
-  // Aplicar plantilla de rendimiento / coeficientes
+  // Aplicar planilla de rendimiento / coeficientes (Regla A.4)
   const handleApplyYieldTemplate = (template: DeboningYieldTemplate) => {
     if (initialWeightKg <= 0) {
-      setErrorMessage('Seleccione o ingrese primero el peso de entrada antes de aplicar la plantilla.');
+      setErrorMessage('Seleccione o ingrese primero el peso de entrada antes de aplicar la planilla.');
+      setSelectedTemplateId('');
       return;
     }
+
+    const isCompatible = template.animalCategory === animalCategory && template.carcassType === carcassType;
+    if (!isCompatible) {
+       const confirmIncompatible = window.confirm(
+         `⚠️ ATENCIÓN: La planilla "${template.name}" es para ${template.animalCategory} (${template.carcassType}), pero usted tiene seleccionado ${animalCategory} (${carcassType}).\n\n¿Desea aplicarla de todas formas?`
+       );
+       if (!confirmIncompatible) {
+         setSelectedTemplateId('');
+         return;
+       }
+    }
+
     const estimatedCuts = applyYieldTemplateToCarcass(template, initialWeightKg, activeProducts);
     setCuts(estimatedCuts);
-    setIsEstimated(true);
+    setIsEstimated(true); // Regla A.4: Indicar que los cortes provienen de estimación
     setSelectedTemplateId(template.id);
+    
     setFeedbackMessage(
-      `✓ Plantilla "${template.name}" aplicada exitosamente a ${formatKg(initialWeightKg)}. ${estimatedCuts.length} cortes calculados por coeficientes reales.`
+      `✓ Planilla "${template.name}" aplicada. LOS KILOS SON ESTIMADOS (${formatKg(initialWeightKg)}). Verifique y ajuste con el pesaje real de balanza.`
     );
   };
 
-  // Guardar coeficientes de este desposte como nueva plantilla de lote
+  // Guardar coeficientes de este desposte como nueva planilla de rendimiento personalizada (Regla A.1 y A.2)
   const handleSaveAsYieldTemplate = async () => {
-    if (cuts.length === 0) {
-      setErrorMessage('No hay cortes cargados en la planilla para generar la plantilla.');
+    // Regla A.2: Una planilla solo puede crearse a partir de un desposte finalizado que tenga pesajes reales verificables.
+    const deboningToValidate = existingDeboning || buildDeboningObject('FINALIZADO');
+
+    if (deboningToValidate.status !== 'FINALIZADO') {
+      setErrorMessage('Regla A.2: Una planilla de rendimiento solo puede crearse a partir de un desposte FINALIZADO con pesajes reales verificados.');
       return;
     }
-    if (initialWeightKg <= 0) {
-      setErrorMessage('El peso inicial de la media res debe ser mayor a 0.');
+
+    if (deboningToValidate.isEstimated) {
+      setErrorMessage('Regla A.2: No se puede guardar como planilla de rendimiento un desposte generado mediante estimaciones.');
       return;
     }
+
+    if (!customTemplateName.trim()) {
+      setErrorMessage('El nombre de la planilla es obligatorio.');
+      return;
+    }
+
     try {
-      const deboningObj = buildDeboningObject('BORRADOR');
-      const templateName = `Lote TR-${tropaNumber || 'S/N'} (${animalCategory}) - ${formatKg(initialWeightKg)}`;
-      const template = createYieldTemplateFromDeboning(deboningObj, templateName);
+      setIsSubmitting(true);
+      setErrorMessage(null);
+
+      // Usar createYieldTemplateFromDeboning que ahora tiene las validaciones de la Regla A.2
+      const template = createYieldTemplateFromDeboning(
+        deboningToValidate,
+        customTemplateName.trim(),
+        1,
+        undefined,
+        customTemplateNotes.trim()
+      );
+
       await saveDeboningTemplate(template);
-      setFeedbackMessage(`✓ Plantilla de coeficientes guardada exitosamente: "${template.name}" (${template.items.length} cortes).`);
+      setFeedbackMessage(`✓ Planilla de rendimiento "${template.name}" guardada exitosamente (${template.items.length} cortes).`);
+      setShowTemplateNameModal(false);
+      setCustomTemplateName('');
+      setCustomTemplateNotes('');
     } catch (err: any) {
-      setErrorMessage(`Error al guardar plantilla: ${err.message}`);
+      console.error('Error al guardar planilla de rendimiento:', err);
+      setErrorMessage(`Error al guardar planilla: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -827,6 +868,32 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
               </div>
 
               <div>
+                <label className="font-bold text-[10px] text-gray-700 block">Planilla de Rendimiento (Regla A.4):</label>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => {
+                    const tid = e.target.value;
+                    setSelectedTemplateId(tid);
+                    if (tid) {
+                      const found = deboningTemplates.find(temp => temp.id === tid);
+                      if (found) handleApplyYieldTemplate(found);
+                    }
+                  }}
+                  className="w-full bg-white border border-blue-400 px-1.5 py-1 text-xs font-bold text-blue-900"
+                >
+                  <option value="">-- Sin planilla (Carga manual) --</option>
+                  {deboningTemplates.filter(t => t.isActive !== false).map((t) => {
+                    const isCompatible = t.animalCategory === animalCategory && t.carcassType === carcassType;
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {!isCompatible ? '[INCOMPATIBLE] ' : ''}{t.name} (v{t.version}) - {t.animalCategory} {t.carcassType.replace('_', ' ')} — Ref: {formatKg(t.referenceInitialWeightKg)}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div>
                 <label className="font-bold text-[10px] text-gray-700 block">Descontar Código Cámara:</label>
                 <select
                   value={sourceProductCode}
@@ -856,6 +923,18 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
                 <span>Obtenido: <strong>{formatKg(massBalance.totalOutputWeightKg)}</strong> ({massBalance.totalYieldPercent}%)</span>
               </div>
             </div>
+
+            {isEstimated && (
+              <div className="bg-amber-100 border-b border-amber-300 text-amber-950 px-3 py-1.5 text-xs font-bold flex items-center justify-between">
+                <span className="flex items-center space-x-1.5">
+                  <Info className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>⚠️ VALORES PROYECTADOS SEGÚN PLANILLA: Los kilos mostrados son estimaciones teóricas según la planilla. Verifique y ajuste cada corte con el pesaje real de balanza antes de finalizar.</span>
+                </span>
+                <span className="px-1.5 py-0.5 bg-amber-200 border border-amber-400 text-amber-950 rounded text-[10px] uppercase font-extrabold">
+                  Proyección Teórica
+                </span>
+              </div>
+            )}
 
             {/* PANEL DESTACADO: AGREGAR CORTE UNO POR UNO */}
             <form onSubmit={handleAddCutOneByOne} className="p-2.5 bg-[#f5f7fa] border-b border-gray-400 space-y-2">
@@ -1025,7 +1104,9 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
                     <th className="p-1 w-12 border-r border-gray-300">Cód</th>
                     <th className="p-1 border-r border-gray-300">Corte Cárnico (Productos)</th>
                     <th className="p-1 border-r border-gray-300 w-28">Clasificación</th>
-                    <th className="p-1 border-r border-gray-300 text-right w-24 bg-yellow-100">Kilos Reales (Kg)</th>
+                    <th className={`p-1 border-r border-gray-300 text-right w-28 ${isEstimated ? 'bg-amber-100 text-amber-950 font-extrabold' : 'bg-yellow-100 text-gray-800'}`}>
+                      {isEstimated ? 'Kilos (Proyectados s/ Plantilla)' : 'Kilos Reales (Kg)'}
+                    </th>
                     <th className="p-1 border-r border-gray-300 text-right w-16">Rend %</th>
                     <th className="p-1 border-r border-gray-300 text-right w-24">Venta $/Kg</th>
                     <th className="p-1 border-r border-gray-300 text-right w-28">Total Venta ($)</th>
@@ -1311,6 +1392,29 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
 
             <button
               type="button"
+              onClick={() => {
+                setErrorMessage(null);
+                // Validar requisitos previos antes de abrir el modal
+                const deboningToValidate = existingDeboning || buildDeboningObject('FINALIZADO');
+                if (deboningToValidate.status !== 'FINALIZADO' && !existingDeboning) {
+                   setErrorMessage('Regla A.2: La planilla debe basarse en pesajes reales de un desposte que esté listo para finalizar o ya finalizado.');
+                   return;
+                }
+                if (deboningToValidate.isEstimated) {
+                   setErrorMessage('Regla A.2: No se puede guardar como planilla un desposte que use pesos estimados.');
+                   return;
+                }
+                setShowSaveTemplateModal(true);
+              }}
+              className="px-3 py-1 bg-white hover:bg-indigo-50 border border-indigo-300 text-indigo-900 font-bold flex items-center space-x-1 shadow-sm"
+              title="Guardar coeficientes reales como planilla reutilizable (Regla A.1)"
+            >
+              <Save className="w-3.5 h-3.5 text-indigo-700" />
+              <span>Guardar como Planilla</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleSaveDraft}
               disabled={isSubmitting}
               className="px-3 py-1 bg-white hover:bg-amber-50 border border-gray-400 text-black font-bold flex items-center space-x-1 shadow-sm"
@@ -1384,6 +1488,17 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
             </div>
           </div>
         </div>
+      )}
+      {/* MODAL DE GUARDAR COMO PLANILLA DE RENDIMIENTO (Regla A.1 y A.2) */}
+      {showSaveTemplateModal && (
+        <SaveYieldTemplateModal
+          isOpen={showSaveTemplateModal}
+          onClose={() => setShowSaveTemplateModal(false)}
+          deboning={existingDeboning || buildDeboningObject('FINALIZADO')}
+          onSuccess={(tmpl) => {
+            setFeedbackMessage(`✓ Planilla de rendimiento "${tmpl.name}" guardada exitosamente (${tmpl.items.length} cortes).`);
+          }}
+        />
       )}
     </div>
   );

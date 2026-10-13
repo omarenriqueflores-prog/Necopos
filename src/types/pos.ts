@@ -581,9 +581,21 @@ export interface YieldCoefficientItem {
   suggestedPrice?: number;
 }
 
+export interface YieldTemplateVersionHistory {
+  version: number;
+  updatedAt: string;
+  operator: string;
+  referenceInitialWeightKg: number;
+  items: YieldCoefficientItem[];
+  shrinkageWeightKg: number;
+  shrinkagePercent: number;
+  totalYieldPercent: number;
+  notes?: string;
+}
+
 export interface DeboningYieldTemplate {
-  id: string; // ej: YIELD-NOVILLITO-001
-  name: string; // Nombre descriptivo
+  id: string; // ej: YIELD-NOVILLITO-001 (identidad permanente)
+  name: string; // Nombre descriptivo personalizado
   receptionId?: string;
   tropaNumber?: string;
   referenceCarcassId?: string;
@@ -601,6 +613,7 @@ export interface DeboningYieldTemplate {
   version: number;
   isActive: boolean;
   notes?: string;
+  versionHistory?: YieldTemplateVersionHistory[];
 }
 
 // ==========================================

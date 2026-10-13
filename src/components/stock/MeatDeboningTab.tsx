@@ -21,14 +21,18 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 import { MeatDeboning, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateDeboningVoucherHtml } from '../../utils/deboningHelper';
 import { NewDeboningModal } from './NewDeboningModal';
 import { DeboningDetailModal } from './DeboningDetailModal';
+import { WindowsModal } from '../common/WindowsModal';
+import { Lock, ShieldAlert } from 'lucide-react';
 
 export const MeatDeboningTab: React.FC = () => {
   const { meatDebonings, branchConfigs, localUser, user, finalizeMeatDeboning, deleteOrCancelMeatDeboning } = useFirebase();
+  const { showAdminAuth, showAlert, showConfirm } = useDialog();
 
   const [selectedBranch, setSelectedBranch] = useState<'ALL' | 'NECO 1' | 'NECO 2'>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'FINALIZADO' | 'BORRADOR' | 'ANULADO'>('ALL');
@@ -42,6 +46,7 @@ export const MeatDeboningTab: React.FC = () => {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [password, setPassword] = useState('');
   const [deboningToDelete, setDeboningToDelete] = useState<MeatDeboning | null>(null);
+  const [passwordError, setPasswordError] = useState('');
 
   // Filtrado
   const filteredDebonings = useMemo(() => {
@@ -129,6 +134,29 @@ export const MeatDeboningTab: React.FC = () => {
       setTimeout(() => {
         win.print();
       }, 350);
+    }
+  };
+
+  // Eliminar o anular desposte con autorización de administrador
+  const handleDeleteDeboning = async (deb: MeatDeboning) => {
+    try {
+      const authorized = await showAdminAuth(
+        `¿Desea anular o eliminar el desposte ${deb.code} (Tropa ${deb.tropaNumber}, ${formatKg(deb.initialWeightKg)})?\n\nEsta operación revertirá el stock de cortes y restablecerá la media res. Ingrese la clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR DESPOSTE'
+      );
+
+      if (authorized) {
+        const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
+        await deleteOrCancelMeatDeboning(deb.id, operator);
+        await showAlert(`El desposte ${deb.code} fue anulado correctamente y el stock ha sido revertido.`, 'DESPOSTE ANULADO');
+      }
+    } catch (err: any) {
+      console.error('Error al autorizar eliminación de desposte:', err);
+      // Fallback a modal directo si showAdminAuth fallara por cualquier motivo
+      setDeboningToDelete(deb);
+      setPassword('');
+      setPasswordError('');
+      setShowPasswordModal(true);
     }
   };
 
@@ -433,30 +461,27 @@ export const MeatDeboningTab: React.FC = () => {
                           <Printer className="w-3.5 h-3.5" />
                         </button>
                         {deb.status === 'BORRADOR' && (
-                          <div className="flex space-x-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingDeboning(deb);
-                                setShowNewModal(true);
-                              }}
-                              className="p-1 text-green-700 hover:bg-green-100 rounded font-bold"
-                              title="Continuar / Finalizar Borrador"
-                            >
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDeboningToDelete(deb);
-                                setShowPasswordModal(true);
-                              }}
-                              className="p-1 text-red-700 hover:bg-red-100 rounded"
-                              title="Eliminar Borrador"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingDeboning(deb);
+                              setShowNewModal(true);
+                            }}
+                            className="p-1 text-green-700 hover:bg-green-100 rounded font-bold"
+                            title="Continuar / Finalizar Borrador"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {deb.status !== 'ANULADO' && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDeboning(deb)}
+                            className="p-1 text-red-700 hover:bg-red-100 rounded"
+                            title="Eliminar / Anular Desposte (Clave Admin)"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
                     </td>
@@ -491,49 +516,7 @@ export const MeatDeboningTab: React.FC = () => {
         />
       )}
 
-      {/* MODAL VER DETALLE DESPOSTE */}
-        {showPasswordModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white p-6 rounded shadow-lg">
-              <h2 className="text-lg font-bold mb-4">Clave de Administrador</h2>
-              <input
-                type="password"
-                className="border p-2 w-full mb-4"
-                placeholder="Ingrese clave..."
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <div className="flex justify-end space-x-2">
-                <button
-                  className="bg-gray-300 px-4 py-2 rounded"
-                  onClick={() => {
-                    setShowPasswordModal(false);
-                    setPassword('');
-                  }}
-                >
-                  Cancelar
-                </button>
-                <button
-                  className="bg-red-600 text-white px-4 py-2 rounded"
-                  onClick={() => {
-                    if (password === '26635235' && deboningToDelete) {
-                      const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
-                      deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
-                      setShowPasswordModal(false);
-                      setPassword('');
-                      setDeboningToDelete(null);
-                    } else {
-                      alert('Clave incorrecta.');
-                      setPassword('');
-                    }
-                  }}
-                >
-                  Eliminar
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+
 
       {viewingDeboning && (
         <DeboningDetailModal
@@ -547,47 +530,103 @@ export const MeatDeboningTab: React.FC = () => {
         />
       )}
 
-      {showPasswordModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded shadow-lg">
-            <h2 className="text-lg font-bold mb-4">Clave de Administrador</h2>
-            <input
-              type="password"
-              className="border p-2 w-full mb-4"
-              placeholder="Ingrese clave..."
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <div className="flex justify-end space-x-2">
+      {showPasswordModal && deboningToDelete && (
+        <WindowsModal
+          isOpen={showPasswordModal}
+          onClose={() => {
+            setShowPasswordModal(false);
+            setPassword('');
+            setPasswordError('');
+            setDeboningToDelete(null);
+          }}
+          title="AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR DESPOSTE"
+          icon={<ShieldAlert className="w-4 h-4 text-[#ffdad6]" />}
+          maxWidth="max-w-md"
+          zIndex="z-[9999]"
+        >
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const cleanPass = password.trim();
+              if (!cleanPass) {
+                setPasswordError('Ingrese la clave de administrador.');
+                return;
+              }
+              if (cleanPass === '26635235') {
+                const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
+                await deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
+                setShowPasswordModal(false);
+                setPassword('');
+                setPasswordError('');
+                setDeboningToDelete(null);
+                await showAlert(`El desposte ${deboningToDelete.code} fue anulado correctamente y el stock ha sido revertido.`, 'DESPOSTE ANULADO');
+              } else {
+                setPasswordError('Clave incorrecta. Acceso denegado.');
+                setPassword('');
+              }
+            }}
+            className="flex flex-col gap-3 p-2 text-sm select-none"
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-[#ffdad6] border border-[#ba1a1a] rounded shrink-0">
+                <Lock className="w-6 h-6 text-[#aa3531]" />
+              </div>
+              <div className="flex flex-col gap-1 flex-1">
+                <div className="text-[12px] font-bold text-[#181c1f] leading-snug">
+                  ¿Confirma la anulación o eliminación del desposte {deboningToDelete.code}?
+                </div>
+                <div className="text-[11px] text-[#44474e]">
+                  Tropa {deboningToDelete.tropaNumber} ({formatKg(deboningToDelete.initialWeightKg)}). Esta acción revertirá los kilos sumados al stock y restaurará la media res.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1 mt-1">
+              <label className="text-[11px] font-bold text-[#002046] flex items-center gap-1">
+                <ShieldAlert className="w-3.5 h-3.5 text-[#aa3531]" />
+                Clave de Administrador:
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                placeholder="Ingrese clave..."
+                className="w-full h-[32px] px-2.5 bg-white border border-[#74777f] focus:border-[#002046] focus:outline-none text-[12px] font-mono shadow-inner"
+                autoFocus
+              />
+              {passwordError && (
+                <div className="text-[11px] font-bold text-[#ba1a1a] bg-[#ffdad6] border border-[#ba1a1a] px-2 py-1 mt-1">
+                  {passwordError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-[#74777f] pt-3 mt-1">
               <button
-                className="bg-gray-300 px-4 py-2 rounded"
+                type="button"
                 onClick={() => {
                   setShowPasswordModal(false);
                   setPassword('');
+                  setPasswordError('');
+                  setDeboningToDelete(null);
                 }}
+                className="h-[28px] px-4 bg-[#e0e3e7] hover:bg-[#c4c6cf] border border-[#74777f] text-[#44474e] text-[12px] font-bold cursor-pointer"
               >
                 Cancelar
               </button>
               <button
-                className="bg-red-600 text-white px-4 py-2 rounded"
-                onClick={() => {
-                  if (password === '26635235' && deboningToDelete) {
-                    const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
-                    deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
-                    setShowPasswordModal(false);
-                    setPassword('');
-                    setDeboningToDelete(null);
-                  } else {
-                    alert('Clave incorrecta.');
-                    setPassword('');
-                  }
-                }}
+                type="submit"
+                className="h-[28px] px-5 bg-[#aa3531] hover:bg-[#8b2926] border border-[#8b2926] text-white text-[12px] font-bold cursor-pointer flex items-center gap-1.5"
               >
-                Eliminar
+                <Lock className="w-3.5 h-3.5" />
+                Autorizar y Eliminar
               </button>
             </div>
-          </div>
-        </div>
+          </form>
+        </WindowsModal>
       )}
     </div>
   );

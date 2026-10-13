@@ -283,17 +283,59 @@ export function allocateDeboningCosts(
 
 /**
  * Genera una plantilla de coeficientes de rendimiento reales a partir de un desposte físico de referencia
+ * Regla A.2: Una planilla solo puede crearse a partir de un desposte finalizado que tenga pesajes reales verificables.
  */
 export function createYieldTemplateFromDeboning(
   deboning: MeatDeboning,
   templateName: string,
-  version: number = 1
+  version: number = 1,
+  existingTemplateId?: string,
+  customNotes?: string,
+  overrides?: {
+    species?: string;
+    animalCategory?: string;
+    carcassType?: DeboningCarcassType;
+    tropaNumber?: string;
+    referenceInitialWeightKg?: number;
+    operator?: string;
+  }
 ): DeboningYieldTemplate {
-  const initialWeight = Math.max(0.001, deboning.initialWeightKg || 0);
+  // A.2.1 Validar que no sea borrador
+  if (deboning.status !== 'FINALIZADO') {
+    throw new Error('No se puede crear una plantilla de rendimiento desde un desposte en estado BORRADOR o no finalizado.');
+  }
+
+  // A.2.2 Validar que no provenga de estimaciones
+  if (deboning.isEstimated) {
+    throw new Error('No se puede guardar como plantilla de rendimiento un desposte generado mediante estimaciones.');
+  }
+
+  // A.2.3 Validar peso inicial positivo
+  const initialWeight = Number(overrides?.referenceInitialWeightKg ?? deboning.initialWeightKg) || 0;
+  if (!Number.isFinite(initialWeight) || initialWeight <= 0) {
+    throw new Error('El peso inicial de la media res de referencia debe ser un valor numérico mayor a 0 Kg.');
+  }
+
+  // A.2.4 Validar existencia de cortes válidos
+  if (!deboning.cuts || deboning.cuts.length === 0) {
+    throw new Error('El desposte no tiene cortes cargados.');
+  }
+
+  // A.2.5 Validar que la suma de cortes de salida no supere el peso de entrada
+  const totalOutputWeight = deboning.cuts.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
+  if (totalOutputWeight > initialWeight + 0.001) {
+    throw new Error(`Los kilos de salida (${formatKg(totalOutputWeight)}) no pueden superar el peso inicial de entrada (${formatKg(initialWeight)}).`);
+  }
 
   const items: YieldCoefficientItem[] = deboning.cuts.map((cut) => {
-    const weight = Math.max(0, Number(cut.weightKg) || 0);
+    const weight = Number(cut.weightKg) || 0;
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new Error(`El corte "${cut.description || cut.productCode}" tiene un peso inválido (${weight}).`);
+    }
     const coefficient = Number((weight / initialWeight).toFixed(6));
+    if (!Number.isFinite(coefficient) || coefficient < 0) {
+      throw new Error(`Coeficiente inválido calculado para "${cut.description}".`);
+    }
     const yieldPercent = Number((coefficient * 100).toFixed(3));
 
     return {
@@ -308,24 +350,34 @@ export function createYieldTemplateFromDeboning(
     };
   });
 
+  const shrinkageWeight = Math.max(0, initialWeight - totalOutputWeight);
+  const shrinkagePercent = initialWeight > 0 ? Number(((shrinkageWeight / initialWeight) * 100).toFixed(2)) : 0;
+  const totalYieldPercent = initialWeight > 0 ? Number(((totalOutputWeight / initialWeight) * 100).toFixed(2)) : 0;
+
+  const templateId = existingTemplateId || `YIELD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const finalCategory = overrides?.animalCategory || deboning.animalCategory;
+  const finalSpecies = overrides?.species || (finalCategory.toLowerCase().includes('cerdo') ? 'Porcino' : 'Vacuno');
+
   return {
-    id: `YIELD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-    name: templateName || `Plantilla Lote #${deboning.tropaNumber} - ${deboning.animalCategory}`,
+    id: templateId,
+    name: templateName?.trim() || `Plantilla Lote #${deboning.tropaNumber} - ${finalCategory}`,
     receptionId: deboning.sourceProductCode,
-    tropaNumber: deboning.tropaNumber,
+    tropaNumber: overrides?.tropaNumber?.trim() || deboning.tropaNumber,
     referenceCarcassId: deboning.selectedCarcassIds?.[0] || deboning.id,
     referenceInitialWeightKg: initialWeight,
-    species: deboning.animalCategory.toLowerCase().includes('cerdo') ? 'Porcino' : 'Vacuno',
-    animalCategory: deboning.animalCategory,
-    carcassType: deboning.carcassType,
+    species: finalSpecies,
+    animalCategory: finalCategory,
+    carcassType: overrides?.carcassType || deboning.carcassType,
     items,
-    shrinkageWeightKg: deboning.shrinkageWeightKg,
-    shrinkagePercent: deboning.shrinkagePercent,
-    totalYieldPercent: deboning.totalYieldPercent,
-    operator: deboning.operator,
+    shrinkageWeightKg: shrinkageWeight,
+    shrinkagePercent: shrinkagePercent,
+    totalYieldPercent: totalYieldPercent,
+    operator: overrides?.operator || deboning.operator,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     version,
-    notes: `Creada a partir de desposte real de res ref. ${formatKg(initialWeight)}`,
+    isActive: true,
+    notes: customNotes || `Creada a partir de desposte real de res ref. ${formatKg(initialWeight)} (Orden ${deboning.code || deboning.id})`,
   };
 }
 

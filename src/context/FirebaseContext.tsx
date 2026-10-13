@@ -19,6 +19,11 @@ import {
   writeBatch,
   updateDoc,
   deleteField,
+  runTransaction,
+  query,
+  where,
+  limit,
+  Transaction,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
@@ -1094,102 +1099,107 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const recordStockMovementsBatch = async (movements: StockMovement[]) => {
     if (!movements || movements.length === 0) return;
+
     try {
-      // 1. Filtrar movimientos con claves de idempotencia ya registradas y validar cantidades
-      const recordedKeys = new Set(stockMovements.map((m) => m.idempotencyKey).filter(Boolean));
-      const validMovements = movements.filter((mov) => {
-        if (!mov || !mov.productCode || !mov.branchId) return false;
-        const qty = Number(mov.quantity);
-        if (isNaN(qty) || !isFinite(qty) || qty <= 0) return false;
-        if (mov.idempotencyKey && recordedKeys.has(mov.idempotencyKey)) {
-          console.log(`Idempotencia: Movimiento con clave "${mov.idempotencyKey}" ya registrado previamente. Se omite duplicación.`);
-          return false;
-        }
-        return true;
-      });
+      // 1. Pre-filtrado básico (datos inválidos)
+      const sanitizedMovements = movements.filter(m => 
+        m && m.productCode && m.branchId && Number(m.quantity) > 0 && isFinite(Number(m.quantity))
+      );
 
-      if (validMovements.length === 0) {
-        return;
-      }
+      if (sanitizedMovements.length === 0) return;
 
-      // 2. Agrupar movimientos por sucursal y código de producto para calcular el kardex
-      // continuo y evitar que múltiples movimientos sobre el mismo artículo sobrescriban el saldo.
-      const groups = new Map<string, StockMovement[]>();
-      for (const mov of validMovements) {
-        const key = `${mov.branchId}_${mov.productCode}`;
-        const list = groups.get(key) || [];
-        list.push(mov);
-        groups.set(key, list);
-      }
-
-      const processedMovements: StockMovement[] = [];
-      const stockDocUpdates = new Map<
-        string,
-        {
-          id: string;
-          branchId: 'NECO 1' | 'NECO 2';
-          productCode: string;
-          currentStock: number;
-          minStock: number;
-          lastUpdated: string;
-          chamberName: string;
-        }
-      >();
-
-      for (const [key, groupMovs] of groups.entries()) {
-        const existingStockDoc = branchStock.find((s) => s.id === key);
-        let runningStock = existingStockDoc ? Number(existingStockDoc.currentStock) || 0 : 0;
-        let lastChamber =
-          existingStockDoc?.chamberName ||
-          (groupMovs[0].branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
-
-        for (const mov of groupMovs) {
-          const qty = Number(mov.quantity) || 0;
-          const factor = mov.factor || 1;
-          const prev = runningStock;
-          runningStock = Number((runningStock + qty * factor).toFixed(3));
-
-          processedMovements.push({
-            ...mov,
-            previousStock: prev,
-            newStock: runningStock,
-          });
-
-          if (mov.chamber) {
-            lastChamber = mov.chamber;
+      await runTransaction(db, async (transaction) => {
+        // 2. Verificar idempotencia de forma robusta (Regla D)
+        // Buscamos si alguno de los movimientos con idempotencyKey ya fue procesado
+        // Nota: En transacciones de Firestore para Web, no podemos hacer queries dinámicas fácilmente.
+        // Usaremos una técnica de "Documento de Idempotencia" para cada clave.
+        for (const mov of sanitizedMovements) {
+          if (mov.idempotencyKey) {
+            const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey);
+            const idempDoc = await transaction.get(idempRef);
+            if (idempDoc.exists()) {
+              console.warn(`Regla D (Idempotencia): La operación con clave "${mov.idempotencyKey}" ya fue procesada. Se omite el lote completo para evitar duplicación.`);
+              return; // Salir de la transacción (no hace nada)
+            }
           }
         }
 
-        const [branchIdStr, ...codeParts] = key.split('_');
-        const branchId = branchIdStr as 'NECO 1' | 'NECO 2';
-        const productCode = codeParts.join('_');
+        // 3. Agrupar por producto/sucursal para lectura consistente
+        const groups = new Map<string, StockMovement[]>();
+        for (const mov of sanitizedMovements) {
+          const key = `${mov.branchId}_${mov.productCode}`;
+          const list = groups.get(key) || [];
+          list.push(mov);
+          groups.set(key, list);
+        }
 
-        stockDocUpdates.set(key, {
-          id: key,
-          branchId,
-          productCode,
-          currentStock: runningStock,
-          minStock: existingStockDoc?.minStock ?? 20,
-          lastUpdated: new Date().toISOString(),
-          chamberName: lastChamber,
-        });
-      }
+        const processedMovements: StockMovement[] = [];
+        const stockUpdates: Array<{ ref: any, data: any }> = [];
 
-      // 3. Guardar en lotes de Firestore
-      const batch = writeBatch(db);
+        // 4. Procesar cada grupo leyendo el stock actual del backend (Regla D)
+        for (const [stockKey, groupMovs] of groups.entries()) {
+          const stockRef = doc(db, 'branchStock', stockKey);
+          const stockSnap = await transaction.get(stockRef);
+          
+          let runningStock = stockSnap.exists() ? Number(stockSnap.data().currentStock) || 0 : 0;
+          let minStock = stockSnap.exists() ? stockSnap.data().minStock ?? 20 : 20;
+          let chamberName = stockSnap.exists() ? stockSnap.data().chamberName : 
+            (groupMovs[0].branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
 
-      for (const mov of processedMovements) {
-        batch.set(doc(db, 'stockMovements', mov.id), sanitizeForFirestore(mov));
-      }
+          for (const mov of groupMovs) {
+            const qty = Number(mov.quantity) || 0;
+            const factor = mov.factor || 1;
+            const prev = runningStock;
+            runningStock = Number((runningStock + (qty * factor)).toFixed(3));
 
-      for (const [key, stockData] of stockDocUpdates.entries()) {
-        const stockRef = doc(db, 'branchStock', key);
-        batch.set(stockRef, sanitizeForFirestore(stockData), { merge: true });
-      }
+            processedMovements.push({
+              ...mov,
+              previousStock: prev,
+              newStock: runningStock,
+            });
 
-      await batch.commit();
+            if (mov.chamber) chamberName = mov.chamber;
+          }
+
+          const [branchIdStr] = stockKey.split('_');
+          const productCode = stockKey.substring(branchIdStr.length + 1);
+
+          stockUpdates.push({
+            ref: stockRef,
+            data: {
+              id: stockKey,
+              branchId: branchIdStr,
+              productCode,
+              currentStock: runningStock,
+              minStock,
+              lastUpdated: new Date().toISOString(),
+              chamberName,
+            }
+          });
+        }
+
+        // 5. Aplicar todas las escrituras (movimientos, stocks e idempotencia)
+        for (const mov of processedMovements) {
+          const movRef = doc(db, 'stockMovements', mov.id);
+          transaction.set(movRef, sanitizeForFirestore(mov));
+          
+          // Registrar la clave de idempotencia
+          if (mov.idempotencyKey) {
+            const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey);
+            transaction.set(idempRef, { 
+              timestamp: Date.now(), 
+              movementId: mov.id,
+              reference: mov.referenceDoc || ''
+            });
+          }
+        }
+
+        for (const update of stockUpdates) {
+          transaction.set(update.ref, sanitizeForFirestore(update.data), { merge: true });
+        }
+      });
     } catch (error) {
-      console.error('Error in recordStockMovementsBatch:', error);
+      console.error('Error en recordStockMovementsBatch (Transaction):', error);
       throw error;
     }
   };
@@ -1518,17 +1528,50 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const finalizeMeatDeboning = async (deboning: MeatDeboning, operator: string) => {
     try {
-      // Idempotencia: Verificar que no esté finalizado previamente
+      // 1. Idempotencia y validaciones básicas
       if (deboning.status === 'FINALIZADO') {
-        console.warn('El desposte ya fue finalizado previamente (idempotencia verificada):', deboning.code);
+        console.warn('El desposte ya fue finalizado previamente (idempotencia):', deboning.code);
         return;
       }
 
-      // Validación estricta de balance de masas: salidas no pueden superar el peso inicial
+      // Regla C.7: Al menos una salida válida para finalizar un desposte comercial
+      const validCuts = deboning.cuts.filter(c => Number(c.weightKg) > 0);
+      if (validCuts.length === 0) {
+        throw new Error('Regla C.7: Debe registrar al menos un corte con peso positivo para finalizar el desposte.');
+      }
+
+      // Regla C.5: Validación de peso de entrada vs suma de unidades seleccionadas
+      if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+        let theoreticalSum = 0;
+        const allAvailableCarcasses: CarcassUnit[] = [];
+        meatReceptions.forEach(r => {
+          if (r.carcasses) allAvailableCarcasses.push(...r.carcasses);
+        });
+
+        for (const cid of deboning.selectedCarcassIds) {
+          const carcass = allAvailableCarcasses.find(c => c.id === cid);
+          if (!carcass) {
+            throw new Error(`Regla C.2: No se encontró la media res con ID "${cid}" en ninguna recepción registrada.`);
+          }
+          // Regla C.3: Disponibilidad
+          if (carcass.status && carcass.status !== 'DISPONIBLE') {
+            throw new Error(`Regla C.3: La media res "${cid}" ya no está disponible (Estado actual: ${carcass.status}).`);
+          }
+          theoreticalSum += (Number(carcass.weightKg) || 0);
+        }
+
+        const diff = Math.abs(deboning.initialWeightKg - theoreticalSum);
+        const tolerance = 0.5; // Tolerancia de 500g (Regla C.5)
+        if (diff > tolerance) {
+          throw new Error(`Regla C.5: El peso de entrada (${formatKg(deboning.initialWeightKg)}) difiere de la suma de las unidades seleccionadas (${formatKg(theoreticalSum)}) por ${formatKg(diff)}. La tolerancia máxima es de 0.5 Kg.`);
+        }
+      }
+
+      // Validación estricta de balance de masas (Regla C.8)
       const balance = calculateDeboningMassBalance(deboning.initialWeightKg, deboning.cuts);
       if (balance.isImpossibleBalance) {
         throw new Error(
-          `Balance de masas imposible: el total de cortes y subproductos (${balance.totalOutputWeightKg} Kg) supera el peso inicial al gancho (${deboning.initialWeightKg} Kg) por ${balance.impossibleOverweightKg} Kg. Verifique los pesajes antes de finalizar.`
+          `Regla C.8: Balance de masas imposible. El total de salida (${formatKg(balance.totalOutputWeightKg)}) supera el peso inicial (${formatKg(deboning.initialWeightKg)}).`
         );
       }
 
@@ -1537,7 +1580,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const timeStr = deboning.time || now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const movements: StockMovement[] = [];
 
-      // 1. Descontar materia prima origen (res en cámara)
+      // 2. Preparar movimientos de stock
       if (deboning.sourceProductCode) {
         movements.push({
           id: `SM-${Date.now()}-SRC-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1548,7 +1591,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           branchId: deboning.branchId,
           chamber: deboning.chamber,
           productCode: deboning.sourceProductCode,
-          productDescription: `Materia Prima para Desposte - Tropa ${deboning.tropaNumber}`,
+          productDescription: `Materia Prima p/ Desposte - Tropa ${deboning.tropaNumber}`,
           category: deboning.animalCategory || 'Novillito',
           unitType: 'Kg',
           type: 'DESPOSTE_SALIDA',
@@ -1564,7 +1607,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
       }
 
-      // 2. Incrementar stock en cámara para cada corte obtenido con peso > 0
       for (let i = 0; i < deboning.cuts.length; i++) {
         const cut = deboning.cuts[i];
         if (!cut.weightKg || cut.weightKg <= 0) continue;
@@ -1595,38 +1637,42 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
       }
 
-      // 3. Registrar todos los movimientos de forma atómica y consistente
+      // 3. Ejecutar movimientos de stock (atómico con transacción interna)
       if (movements.length > 0) {
         await recordStockMovementsBatch(movements);
       }
 
-      // 4. Actualizar el estado de las medias reses individuales procesadas en la recepción
+      // 4. Actualizar estados de unidades y desposte
+      const batch = writeBatch(db);
+
+      // Marcar unidades como DESPOSTADAS
       if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
         for (const rec of meatReceptions) {
-          const hasMatching = rec.carcasses?.some((c) => deboning.selectedCarcassIds?.includes(c.id));
-          if (hasMatching) {
-            const updatedCarcasses = rec.carcasses.map((c) => {
+          const matchingCarcasses = rec.carcasses?.filter(c => deboning.selectedCarcassIds?.includes(c.id));
+          if (matchingCarcasses && matchingCarcasses.length > 0) {
+            const updatedCarcasses = rec.carcasses.map(c => {
               if (deboning.selectedCarcassIds?.includes(c.id)) {
                 return { ...c, status: 'DESPOSTADO' as CarcassStatus, deboningId: deboning.id };
               }
               return c;
             });
-            await saveMeatReception({
-              ...rec,
-              carcasses: updatedCarcasses,
-            });
+            const recRef = doc(db, 'meatReceptions', rec.id);
+            batch.set(recRef, sanitizeForFirestore({ ...rec, carcasses: updatedCarcasses }), { merge: true });
           }
         }
       }
 
-      // 5. Actualizar el estado de la orden de desposte a FINALIZADO
+      // Finalizar la orden de desposte
       const updatedDeboning: MeatDeboning = {
         ...deboning,
         status: 'FINALIZADO',
         operator,
         appliedAt: new Date().toISOString(),
       };
-      await saveMeatDeboning(updatedDeboning);
+      const debRef = doc(db, 'meatDebonings', deboning.id);
+      batch.set(debRef, sanitizeForFirestore(updatedDeboning), { merge: true });
+
+      await batch.commit();
     } catch (error) {
       console.error('Error finalizing meat deboning:', error);
       throw error;
@@ -1753,12 +1799,43 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const path = `deboningTemplates/${template.id}`;
     try {
       const now = new Date().toISOString();
-      const templateToSave = {
+      const existingDoc = deboningTemplates.find((t) => t.id === template.id);
+
+      let versionHistory = template.versionHistory ? [...template.versionHistory] : [];
+      let newVersion = template.version || 1;
+
+      if (existingDoc) {
+        // Si ya existía, archivar la versión previa en el historial si cambió algún dato de rendimiento
+        const previousVersionEntry: YieldTemplateVersionHistory = {
+          version: existingDoc.version || 1,
+          updatedAt: existingDoc.updatedAt || existingDoc.createdAt || now,
+          operator: existingDoc.operator || 'Operador',
+          referenceInitialWeightKg: existingDoc.referenceInitialWeightKg,
+          items: existingDoc.items,
+          shrinkageWeightKg: existingDoc.shrinkageWeightKg,
+          shrinkagePercent: existingDoc.shrinkagePercent,
+          totalYieldPercent: existingDoc.totalYieldPercent,
+          notes: existingDoc.notes,
+        };
+
+        // Evitar duplicar la misma versión en el historial
+        const alreadyInHistory = versionHistory.some((vh) => vh.version === previousVersionEntry.version);
+        if (!alreadyInHistory) {
+          versionHistory.push(previousVersionEntry);
+        }
+
+        newVersion = (existingDoc.version || 1) + 1;
+      }
+
+      const templateToSave: DeboningYieldTemplate = {
         ...template,
+        version: newVersion,
+        createdAt: template.createdAt || existingDoc?.createdAt || now,
         updatedAt: now,
-        version: (template.version || 0) + 1,
         isActive: template.isActive !== undefined ? template.isActive : true,
+        versionHistory,
       };
+
       await setDoc(doc(db, 'deboningTemplates', template.id), sanitizeForFirestore(templateToSave));
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -1768,7 +1845,18 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const deleteDeboningTemplate = async (id: string) => {
     const path = `deboningTemplates/${id}`;
     try {
-      await deleteDoc(doc(db, 'deboningTemplates', id));
+      // Regla A.3: Desactivar una plantilla no debe borrar el documento ni invalidar despostes históricos que la utilizaron
+      const existingDoc = deboningTemplates.find((t) => t.id === id);
+      if (existingDoc) {
+        const deactivated: DeboningYieldTemplate = {
+          ...existingDoc,
+          isActive: false,
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(doc(db, 'deboningTemplates', id), sanitizeForFirestore(deactivated));
+      } else {
+        await deleteDoc(doc(db, 'deboningTemplates', id));
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }

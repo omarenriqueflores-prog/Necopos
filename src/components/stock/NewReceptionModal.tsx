@@ -155,10 +155,9 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
 
   // Agregar 1 media res
   const handleAddCarcass = () => {
-    const nextNum = carcasses.length + 1;
-    const formattedId = `MR-${String(nextNum).padStart(3, '0')}`;
+    const tempId = `TEMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const newUnit: CarcassUnit = {
-      id: formattedId,
+      id: tempId,
       tagNumber: '',
       weightKg: 120.0,
       cost: Number((120.0 * pricePerKg).toFixed(2)),
@@ -168,16 +167,16 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
 
   // Agregar 2 medias reses (1 res entera)
   const handleAddPair = () => {
-    const currentCount = carcasses.length;
+    const now = Date.now();
     const item1: CarcassUnit = {
-      id: `MR-${String(currentCount + 1).padStart(3, '0')}`,
+      id: `TEMP-${now}-1`,
       tagNumber: '',
       weightKg: 119.0,
       cost: Number((119.0 * pricePerKg).toFixed(2)),
       notes: 'Lado Izquierdo',
     };
     const item2: CarcassUnit = {
-      id: `MR-${String(currentCount + 2).padStart(3, '0')}`,
+      id: `TEMP-${now}-2`,
       tagNumber: '',
       weightKg: 120.5,
       cost: Number((120.5 * pricePerKg).toFixed(2)),
@@ -196,9 +195,11 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
     const recId = existingReception?.id || `REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const updatedCarcasses = carcasses.map((c, idx) => {
-      const stableId = c.id && c.id.includes('-') && !c.id.startsWith('MR-')
+      // Regla B: Generar IDs únicos y persistentes. Mantener históricos.
+      const isHistorical = c.id && c.id.includes('-') && !c.id.startsWith('MR-') && !c.id.startsWith('TEMP-');
+      const stableId = isHistorical
         ? c.id
-        : `${code}-MR-${String(idx + 1).padStart(3, '0')}`;
+        : `${code}-UNIT-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`;
       return {
         ...c,
         id: stableId,
