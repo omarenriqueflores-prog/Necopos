@@ -45,7 +45,8 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
   const { showAlert, showConfirm, showAdminAuth } = useDialog();
   const { 
     sales, 
-    deleteSaleRecord, 
+    cancelSaleRecord, 
+    deleteSaleRecord,
     deleteCashMovement,
     customers,
     employees,
@@ -54,6 +55,7 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
     saveEmployee,
     deleteAccountMovement
   } = useFirebase();
+  console.log("Debug: FirebaseContext contents:", { cancelSaleRecord, deleteSaleRecord });
 
   const isAdminOrSuperadmin = currentUser.role === 'ADMIN' || currentUser.role === 'SUPERADMIN';
   const [selectedBranchFilter, setSelectedBranchFilter] = useState<string>(
@@ -83,7 +85,7 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
 
       for (const s of branchSales) {
         if (s.id) {
-          await deleteSaleRecord(s.id);
+          await cancelSaleRecord(s, currentUser.fullName);
           salesCount++;
         }
       }
@@ -653,16 +655,8 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                                   'AUTORIZACIÓN DE ADMINISTRADOR'
                                 );
                                 if (authorized && s.id) {
-                                  await deleteSaleRecord(s.id);
-                                  const matchingMov = (movements || []).find(
-                                    (m) =>
-                                      (s.ticketNumber && m.ticketNumber === s.ticketNumber) ||
-                                      (m.concept?.includes('Venta POS') &&
-                                        Math.abs(Number(m.amount) - Number(s.total)) < 0.01)
-                                  );
-                                  if (matchingMov?.id) {
-                                    await deleteCashMovement(matchingMov.id);
-                                  }
+                                  await cancelSaleRecord(s, currentUser.fullName);
+                                  // The cancelSaleRecord function handles deleting the sale record and the associated cash movement.
 
                                   // Propagate deletion to Cuentas Corrientes if it was a credit sale
                                   if (s.paymentMethod === 'CUENTA_CORRIENTE') {

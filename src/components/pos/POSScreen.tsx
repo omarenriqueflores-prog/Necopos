@@ -46,6 +46,7 @@ interface POSScreenProps {
   employees?: Employee[];
   currentBranch: BranchConfig;
   currentUser: UserAccount;
+  cashOpen: boolean;
   onSaleComplete?: (saleData: {
     items: SaleItem[];
     total: number;
@@ -72,6 +73,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   employees = [],
   currentBranch,
   currentUser,
+  cashOpen,
   onSaleComplete,
   onOpenCustomerManagement,
 }) => {
@@ -542,6 +544,10 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   };
 
   const handleFacturar = async (type: 'FACTURA_B' | 'FACTURA_A' | 'RECIBO_COMUN') => {
+    if (!cashOpen) {
+      await showAlert('La caja no está abierta. No es posible realizar ventas ni facturación.');
+      return;
+    }
     if (saleItems.length === 0) {
       await showAlert('No hay artículos cargados en la venta actual.');
       return;
@@ -622,6 +628,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       : 'Consumidor Final';
 
     const saleData = {
+      id: `SALE-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
       items: [...saleItems],
       subtotal: rawSubtotal,
       employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,

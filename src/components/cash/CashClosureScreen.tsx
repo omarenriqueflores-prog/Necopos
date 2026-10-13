@@ -32,6 +32,7 @@ interface CashClosureScreenProps {
   movements?: CashMovement[];
   onConfirmClosure: (closure: CashClosure) => void;
   onCancel: () => void;
+  cashOpen: boolean;
 }
 
 export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
@@ -40,6 +41,7 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
   movements = [],
   onConfirmClosure,
   onCancel,
+  cashOpen,
 }) => {
   const { showAlert, showConfirm } = useDialog();
   const { sales, cashClosures } = useFirebase();
@@ -310,6 +312,11 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
   const totalDifference = cashDifference;
 
   const handleExecuteZ = async () => {
+    console.log("Debug: cashOpen in handleExecuteZ:", cashOpen);
+    if (!cashOpen) {
+      showAlert('No se puede cerrar la caja porque aún no está abierta.');
+      return;
+    }
     const hasCashDifference = Math.abs(cashDifference) >= 1;
 
     let confirmMsg =

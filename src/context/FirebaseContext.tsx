@@ -128,6 +128,7 @@ interface FirebaseContextType {
   deleteCashClosure: (id: string) => Promise<void>;
   purgeAutoClosures: () => Promise<void>;
   addSaleRecord: (saleData: any) => Promise<void>;
+  cancelSaleRecord: (saleData: any, operator: string) => Promise<void>;
   deleteSaleRecord: (saleId: string) => Promise<void>;
   updateCustomerBalance: (customerId: string, newBalance: number) => Promise<void>;
   saveElectronicInvoice: (inv: ElectronicInvoice) => Promise<void>;
@@ -1032,6 +1033,63 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  const cancelSaleRecord = async (saleData: any, operator: string) => {
+    try {
+      const saleId = saleData.id;
+      if (!saleId) throw new Error('No se puede cancelar una venta sin ID.');
+
+      // 1. Crear movimientos inversos para restaurar stock
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const movements: StockMovement[] = [];
+
+      for (let idx = 0; idx < saleData.items.length; idx++) {
+        const item = saleData.items[idx];
+        const productCode = item.code || item.productCode;
+        if (!productCode) continue;
+
+        const qty = Number(item.unitType === 'Kg' ? (item.weight || item.quantity || 0) : (item.quantity || 1));
+        if (qty <= 0) continue;
+
+        movements.push({
+          id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+          idempotencyKey: `REV_SALE_${saleId}_${productCode}_${idx}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now() + idx,
+          branchId: saleData.branchId,
+          chamber: saleData.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          productCode: productCode,
+          productDescription: item.description || '',
+          category: item.category || 'Carnes Vacunas',
+          unitType: item.unitType || 'Kg',
+          type: 'DEVOLUCION',
+          quantity: qty,
+          factor: 1, // Restaura stock
+          previousStock: 0,
+          newStock: 0,
+          unitPrice: Number(item.unitPrice) || 0,
+          totalValue: Number((qty * (Number(item.unitPrice) || 0)).toFixed(2)),
+          referenceDoc: `REV-${saleData.ticketNumber || saleId}`,
+          saleId: String(saleId),
+          operator: operator || 'Cajero POS',
+          notes: `Reversión por cancelación de venta POS: ${saleData.ticketNumber || saleId}`,
+        });
+      }
+
+      if (movements.length > 0) {
+        await recordStockMovementsBatch(movements);
+      }
+
+      // 2. Eliminar registro de venta
+      await deleteSaleRecord(saleId);
+    } catch (error) {
+      console.error('Error canceling sale record:', error);
+      throw error;
+    }
+  };
+
   const updateCustomerBalance = async (customerId: string, newBalance: number) => {
     const path = `customers/${customerId}`;
     try {
@@ -1269,11 +1327,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const deductSaleStock = async (saleData: any, branchId: 'NECO 1' | 'NECO 2', operator: string) => {
     if (!saleData || !saleData.items || saleData.items.length === 0) return;
 
-    // Idempotencia: Verificar si ya se procesó este descuento de venta
-    const saleId = saleData.id || saleData.ticketNumber;
+    // Idempotencia: Verificar si ya se procesó este descuento de venta usando un ID único garantizado
+    const saleId = saleData.id || `SALE-${Date.now()}-${Math.random()}`;
     const isAlreadyProcessed = stockMovements.some(
-      (m) => m.type === 'VENTA' && (m.saleId === saleId || (saleData.ticketNumber && m.referenceDoc === saleData.ticketNumber))
+      (m) => m.type === 'VENTA' && m.saleId === saleId
     );
+    console.log("Debug: deductSaleStock isAlreadyProcessed:", isAlreadyProcessed, "saleId:", saleId);
     if (isAlreadyProcessed) {
       console.log('Stock ya descontado para esta venta (idempotencia verificada):', saleId);
       return;
@@ -2516,6 +2575,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         deleteCashClosure,
         purgeAutoClosures,
         addSaleRecord,
+        cancelSaleRecord,
         deleteSaleRecord,
         updateCustomerBalance,
         saveElectronicInvoice,

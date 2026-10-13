@@ -21,7 +21,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
   currentBranch,
 }) => {
   const { showAlert, showConfirm, showAdminAuth } = useDialog();
-  const { deleteCashClosure, deleteSaleRecord, deleteCashMovement, purgeAutoClosures, sales, cashMovements, electronicInvoices } = useFirebase();
+  const { deleteCashClosure, cancelSaleRecord, deleteCashMovement, purgeAutoClosures, sales, cashMovements, electronicInvoices } = useFirebase();
   const isAdmin = currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN';
   const userBranch = currentUser?.branch || currentBranch?.id || 'NECO 1';
 
@@ -105,7 +105,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
         });
 
         for (const s of matchedSales) {
-          if (s.id) await deleteSaleRecord(s.id);
+          if (s.id) await cancelSaleRecord(s, currentUser.fullName);
         }
 
         const matchedMovements = (cashMovements || []).filter((m: any) => {

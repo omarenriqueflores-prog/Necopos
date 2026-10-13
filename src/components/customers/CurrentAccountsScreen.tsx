@@ -67,7 +67,7 @@ export const CurrentAccountsScreen: React.FC<CurrentAccountsScreenProps> = ({
     cashMovements,
     deleteCashMovement,
     sales,
-    deleteSaleRecord
+    cancelSaleRecord
   } = fb;
   const arcaConfig = fb.arcaConfig;
   const pointOfSale = currentBranch.pointOfSale || arcaConfig?.pointsOfSale?.[currentBranch.id as 'NECO 1' | 'NECO 2'] || '0001';
@@ -409,7 +409,7 @@ export const CurrentAccountsScreen: React.FC<CurrentAccountsScreenProps> = ({
         (s) => s.ticketNumber === movementToDelete.voucher
       );
       if (linkedSale) {
-        await deleteSaleRecord(linkedSale.id);
+        await cancelSaleRecord(linkedSale, currentUser.fullName);
       }
 
       await deleteAccountMovement(movementToDelete.id);

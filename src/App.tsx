@@ -120,7 +120,7 @@ export default function App() {
   const [accountMovements, setAccountMovements] = useState<AccountMovement[]>([]);
   const [cashMovements, setCashMovements] = useState<CashMovement[]>([]);
   const [cashClosures, setCashClosures] = useState<CashClosure[]>([]);
-  const [cashOpen, setCashOpen] = useState<boolean>(true);
+  const [cashOpen, setCashOpen] = useState<boolean>(false);
 
   // Sync Firebase products and customers directly
   useEffect(() => {
@@ -148,6 +148,30 @@ export default function App() {
   }, [fbBranchConfigs]);
 
   useEffect(() => {
+    if (fbCashMovements && fbCashClosures) {
+      const sortedMovements = [...fbCashMovements].sort((a, b) => 
+        new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
+      const sortedClosures = [...fbCashClosures].sort((a, b) => 
+        (b.createdAt || 0) - (a.createdAt || 0)
+      );
+
+      const lastOpening = sortedMovements.find(m => m.voucher === 'APERTURA');
+      const lastClosure = sortedClosures[0];
+
+      if (lastOpening) {
+        const openingTime = new Date(lastOpening.createdAt || 0).getTime();
+        const closureTime = lastClosure?.createdAt || 0;
+        console.log("Debug: openingTime:", openingTime, "closureTime:", closureTime);
+        setCashOpen(openingTime > closureTime);
+      } else {
+        console.log("Debug: no lastOpening found");
+        setCashOpen(false);
+      }
+    }
+  }, [fbCashMovements, fbCashClosures]);
+
+  useEffect(() => {
     if (fbUsers && fbUsers.length > 0) {
       setUsers(fbUsers);
       if (user) {
@@ -163,6 +187,7 @@ export default function App() {
       }
     }
   }, [fbUsers, user]);
+
 
   useEffect(() => {
     if (fbAccountMovements) {
@@ -442,6 +467,11 @@ export default function App() {
     ticketNumber?: string;
     branchId?: string;
   }) => {
+    if (!cashOpen) {
+      await showAlert('⚠️ No se puede realizar la venta: La caja se encuentra CERRADA. Debe abrir la caja primero.');
+      return;
+    }
+
     const partyName = saleData.employee
       ? `${saleData.employee.name} (EMPLEADO Leg. ${saleData.employee.legajo || saleData.employee.code})`
       : saleData.customer
@@ -625,6 +655,7 @@ export default function App() {
             employees={employees}
             currentBranch={currentBranch}
             currentUser={activeUser}
+            cashOpen={cashOpen}
             onSaleComplete={handleSaleComplete}
             onOpenCustomerModal={() => setIsCustomerSearchModalOpen(true)}
             onNavigateToAccount={(c) => {
@@ -719,6 +750,7 @@ export default function App() {
             movements={cashMovements}
             onConfirmClosure={handleConfirmClosure}
             onCancel={() => handleNavigateScreen('POS')}
+            cashOpen={cashOpen}
           />
         )}
 
