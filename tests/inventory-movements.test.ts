@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { StockMovement, BranchStock } from '../src/types/pos';
+import { classifyStockMovementBatch } from '../src/utils/stockHelper';
 
 /**
  * Función pura que modela la lógica de consolidación y cálculo continuo de kardex
@@ -327,5 +328,108 @@ describe('15.1 y 15.5 Auditoría de Movimientos de Stock y Ventas', () => {
     expect(result.skippedMovements).toHaveLength(2);
     // Stock no fue alterado
     expect(result.updatedStocks.find((s) => s.id === 'NECO 1_101')?.currentStock).toBe(20.0);
+  });
+
+  describe('Regla 3: Auditoría y Clasificación de Idempotencia en Lotes de Stock', () => {
+    const validBatch: StockMovement[] = [
+      {
+        id: 'SM-101',
+        date: '2026-10-12',
+        time: '12:00:00',
+        timestamp: 1000,
+        branchId: 'NECO 1',
+        productCode: '101',
+        productDescription: 'ASADO',
+        category: 'CARNES',
+        unitType: 'Kg',
+        type: 'VENTA',
+        quantity: 2.5,
+        factor: -1,
+        previousStock: 10,
+        newStock: 7.5,
+        unitPrice: 5000,
+        totalValue: 12500,
+        idempotencyKey: 'IDEMP_KEY_1',
+        operator: 'Admin',
+      },
+      {
+        id: 'SM-102',
+        date: '2026-10-12',
+        time: '12:00:01',
+        timestamp: 1001,
+        branchId: 'NECO 1',
+        productCode: '103',
+        productDescription: 'VACÍO',
+        category: 'CARNES',
+        unitType: 'Kg',
+        type: 'VENTA',
+        quantity: 1.5,
+        factor: -1,
+        previousStock: 15,
+        newStock: 13.5,
+        unitPrice: 6000,
+        totalValue: 9000,
+        idempotencyKey: 'IDEMP_KEY_2',
+        operator: 'Admin',
+      },
+    ];
+
+    it('Lote no aplicado: todas las claves son nuevas, se clasifica como NO_APLICADO y es válido', () => {
+      const classification = classifyStockMovementBatch(validBatch, new Set());
+      expect(classification.status).toBe('NO_APLICADO');
+      expect(classification.valid).toBe(true);
+      expect(classification.existingKeysCount).toBe(0);
+      expect(classification.totalKeysCount).toBe(2);
+    });
+
+    it('Lote completamente aplicado: todas las claves ya existen, se clasifica como COMPLETAMENTE_APLICADO sin re-descontar', () => {
+      const existingKeys = new Set(['IDEMP_KEY_1', 'IDEMP_KEY_2']);
+      const classification = classifyStockMovementBatch(validBatch, existingKeys);
+      expect(classification.status).toBe('COMPLETAMENTE_APLICADO');
+      expect(classification.valid).toBe(true);
+      expect(classification.existingKeysCount).toBe(2);
+      expect(classification.totalKeysCount).toBe(2);
+    });
+
+    it('Lote parcialmente aplicado: solo 1 de 2 claves existe, se clasifica como PARCIALMENTE_APLICADO y se rechaza la operación incompleta', () => {
+      const existingKeys = new Set(['IDEMP_KEY_1']); // Solo 1 de 2 existe
+      const classification = classifyStockMovementBatch(validBatch, existingKeys);
+      expect(classification.status).toBe('PARCIALMENTE_APLICADO');
+      expect(classification.valid).toBe(false); // No considerar exitosa una operación incompleta
+      expect(classification.existingKeysCount).toBe(1);
+      expect(classification.totalKeysCount).toBe(2);
+      expect(classification.reason).toContain('parcialmente aplicado');
+    });
+
+    it('Lote inválido: lote vacío o con cantidades negativas/NaN se clasifica como INVALIDO', () => {
+      const emptyClassification = classifyStockMovementBatch([], new Set());
+      expect(emptyClassification.status).toBe('INVALIDO');
+      expect(emptyClassification.valid).toBe(false);
+
+      const invalidBatch: StockMovement[] = [
+        {
+          id: 'SM-INV',
+          date: '2026-10-12',
+          time: '12:00:00',
+          timestamp: 1000,
+          branchId: 'NECO 1',
+          productCode: '101',
+          productDescription: 'ASADO',
+          category: 'CARNES',
+          unitType: 'Kg',
+          type: 'VENTA',
+          quantity: -10, // Cantidad inválida
+          factor: -1,
+          previousStock: 0,
+          newStock: 0,
+          unitPrice: 5000,
+          totalValue: 0,
+          operator: 'Admin',
+        },
+      ];
+      const invClassification = classifyStockMovementBatch(invalidBatch, new Set());
+      expect(invClassification.status).toBe('INVALIDO');
+      expect(invClassification.valid).toBe(false);
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory } from '../types/pos';
+import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory, StockMovement } from '../types/pos';
 
 export { ANIMAL_CATEGORIES };
 export type { AnimalCategory };
@@ -285,3 +285,124 @@ export function printTransferRemito(
     }, 400);
   }
 }
+
+// ==========================================
+// AUDITORÍA Y CLASIFICACIÓN DE LOTES DE STOCK (Regla D)
+// ==========================================
+
+export type BatchStockStatus =
+  | 'COMPLETAMENTE_APLICADO'
+  | 'PARCIALMENTE_APLICADO'
+  | 'NO_APLICADO'
+  | 'INVALIDO';
+
+export interface BatchStockClassification {
+  status: BatchStockStatus;
+  valid: boolean;
+  reason?: string;
+  existingKeysCount: number;
+  totalKeysCount: number;
+  validMovements: StockMovement[];
+}
+
+/**
+ * Clasifica y audita un lote de movimientos de stock según la Regla D de idempotencia y validación.
+ * Distingue explícitamente entre:
+ * - Lote completamente aplicado (todas las claves ya existen, no se re-descuenta).
+ * - Lote parcialmente aplicado (inconsistencia: algunas claves existen y otras no; se rechaza por incompleto).
+ * - Lote no aplicado (ninguna clave existe; listo para aplicar).
+ * - Lote inválido (datos incompletos, vacíos o cantidades no numéricas / no positivas).
+ */
+export function classifyStockMovementBatch(
+  movements: StockMovement[],
+  existingIdempotencyKeys: Set<string> | string[] = new Set()
+): BatchStockClassification {
+  if (!movements || !Array.isArray(movements) || movements.length === 0) {
+    return {
+      status: 'INVALIDO',
+      valid: false,
+      reason: 'Regla D: Lote inválido: el lote de movimientos está vacío.',
+      existingKeysCount: 0,
+      totalKeysCount: 0,
+      validMovements: [],
+    };
+  }
+
+  const keysSet =
+    existingIdempotencyKeys instanceof Set
+      ? existingIdempotencyKeys
+      : new Set(existingIdempotencyKeys);
+
+  // 1. Validar integridad de cada movimiento del lote
+  for (const m of movements) {
+    if (!m || !m.productCode || !m.branchId || !m.id) {
+      return {
+        status: 'INVALIDO',
+        valid: false,
+        reason: `Regla D: Lote inválido: movimiento ${m?.id || 'sin ID'} carece de sucursal, código de producto o ID.`,
+        existingKeysCount: 0,
+        totalKeysCount: 0,
+        validMovements: [],
+      };
+    }
+    const qty = Number(m.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return {
+        status: 'INVALIDO',
+        valid: false,
+        reason: `Regla D: Lote inválido: movimiento con código "${m.productCode}" tiene cantidad no numérica o menor/igual a cero (${m.quantity}).`,
+        existingKeysCount: 0,
+        totalKeysCount: 0,
+        validMovements: [],
+      };
+    }
+  }
+
+  const movementsWithKey = movements.filter((m) => !!m.idempotencyKey);
+  const totalKeysCount = movementsWithKey.length;
+  let existingKeysCount = 0;
+
+  for (const m of movementsWithKey) {
+    if (keysSet.has(m.idempotencyKey!)) {
+      existingKeysCount++;
+    }
+  }
+
+  // 2. Evaluar estado de idempotencia del lote
+  if (totalKeysCount > 0) {
+    // Si todas las claves ya existen
+    if (existingKeysCount === totalKeysCount) {
+      return {
+        status: 'COMPLETAMENTE_APLICADO',
+        valid: true,
+        reason: 'Lote completamente aplicado previamente. No se re-descuenta para evitar duplicación.',
+        existingKeysCount,
+        totalKeysCount,
+        validMovements: movements,
+      };
+    }
+
+    // Si existen algunas pero faltan otras -> Inconsistencia / lote incompleto
+    if (existingKeysCount > 0 && existingKeysCount < totalKeysCount) {
+      return {
+        status: 'PARCIALMENTE_APLICADO',
+        valid: false,
+        reason: `Regla D: Lote parcialmente aplicado detectado (${existingKeysCount} de ${totalKeysCount} claves ya existen). Operación incompleta rechazada.`,
+        existingKeysCount,
+        totalKeysCount,
+        validMovements: movements,
+      };
+    }
+  }
+
+  // Si ninguna clave existe o no tienen claves
+  return {
+    status: 'NO_APLICADO',
+    valid: true,
+    reason: 'Lote no aplicado previamente; listo para procesamiento atómico.',
+    existingKeysCount: 0,
+    totalKeysCount,
+    validMovements: movements,
+  };
+}
+

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Printer,
@@ -11,11 +11,13 @@ import {
   DollarSign,
   AlertCircle,
   Truck,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { MeatDeboning } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateDeboningVoucherHtml } from '../../utils/deboningHelper';
 import { useFirebase } from '../../context/FirebaseContext';
+import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
 
 interface DeboningDetailModalProps {
   deboning: MeatDeboning;
@@ -29,6 +31,7 @@ export const DeboningDetailModal: React.FC<DeboningDetailModalProps> = ({
   onFinalizeDraft,
 }) => {
   const { branchConfigs } = useFirebase();
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
 
   const handlePrint = () => {
     const branchConfig = branchConfigs ? branchConfigs[deboning.branchId] : null;
@@ -238,6 +241,17 @@ export const DeboningDetailModal: React.FC<DeboningDetailModalProps> = ({
           </button>
 
           <div className="flex space-x-2">
+            {deboning.status === 'FINALIZADO' && !deboning.isEstimated && (
+              <button
+                type="button"
+                onClick={() => setShowSaveTemplateModal(true)}
+                className="px-3 py-1 bg-white hover:bg-indigo-50 border border-indigo-400 text-indigo-900 font-bold flex items-center space-x-1 shadow-sm text-xs"
+                title="Guardar coeficientes reales de este desposte como planilla de rendimiento (Regla A.1)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-700" />
+                <span>Guardar como Planilla</span>
+              </button>
+            )}
             {deboning.status === 'BORRADOR' && onFinalizeDraft && (
               <button
                 type="button"
@@ -258,6 +272,14 @@ export const DeboningDetailModal: React.FC<DeboningDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {showSaveTemplateModal && (
+        <SaveYieldTemplateModal
+          isOpen={showSaveTemplateModal}
+          onClose={() => setShowSaveTemplateModal(false)}
+          deboning={deboning}
+        />
+      )}
     </div>
   );
 };

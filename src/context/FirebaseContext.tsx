@@ -48,8 +48,8 @@ import {
   CarcassStatus,
   CarcassUnit,
 } from '../types/pos';
-import { calculateDeboningMassBalance } from '../utils/deboningHelper';
-import { formatKg } from '../utils/stockHelper';
+import { calculateDeboningMassBalance, prepareNextTemplateVersion } from '../utils/deboningHelper';
+import { formatKg, classifyStockMovementBatch } from '../utils/stockHelper';
 import { INITIAL_BRANCH_CONFIGS, INITIAL_USERS } from '../data/mockData';
 
 export function sanitizeForFirestore<T>(data: T): T {
@@ -1098,35 +1098,60 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const recordStockMovementsBatch = async (movements: StockMovement[]) => {
-    if (!movements || movements.length === 0) return;
+    // 1. Regla D: Validación estricta del lote (Lote inválido)
+    if (!movements || !Array.isArray(movements) || movements.length === 0) {
+      throw new Error('Regla D: Lote inválido: el lote de movimientos está vacío.');
+    }
+
+    for (const mov of movements) {
+      if (!mov || !mov.productCode || !mov.branchId || !mov.id) {
+        throw new Error(
+          `Regla D: Lote inválido: movimiento ${mov?.id || 'sin ID'} carece de datos obligatorios (código de producto, sucursal o ID faltante).`
+        );
+      }
+      const qty = Number(mov.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new Error(
+          `Regla D: Lote inválido: movimiento "${mov.productCode}" tiene cantidad no numérica o menor/igual a cero (${mov.quantity}).`
+        );
+      }
+    }
 
     try {
-      // 1. Pre-filtrado básico (datos inválidos)
-      const sanitizedMovements = movements.filter(m => 
-        m && m.productCode && m.branchId && Number(m.quantity) > 0 && isFinite(Number(m.quantity))
-      );
-
-      if (sanitizedMovements.length === 0) return;
-
       await runTransaction(db, async (transaction) => {
         // 2. Verificar idempotencia de forma robusta (Regla D)
-        // Buscamos si alguno de los movimientos con idempotencyKey ya fue procesado
-        // Nota: En transacciones de Firestore para Web, no podemos hacer queries dinámicas fácilmente.
-        // Usaremos una técnica de "Documento de Idempotencia" para cada clave.
-        for (const mov of sanitizedMovements) {
-          if (mov.idempotencyKey) {
-            const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey);
-            const idempDoc = await transaction.get(idempRef);
-            if (idempDoc.exists()) {
-              console.warn(`Regla D (Idempotencia): La operación con clave "${mov.idempotencyKey}" ya fue procesada. Se omite el lote completo para evitar duplicación.`);
-              return; // Salir de la transacción (no hace nada)
-            }
+        const movementsWithKey = movements.filter((m) => !!m.idempotencyKey);
+        const existingKeys = new Set<string>();
+
+        for (const mov of movementsWithKey) {
+          const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey!);
+          const idempDoc = await transaction.get(idempRef);
+          if (idempDoc.exists()) {
+            existingKeys.add(mov.idempotencyKey!);
           }
         }
 
-        // 3. Agrupar por producto/sucursal para lectura consistente
+        if (movementsWithKey.length > 0) {
+          // Lote completamente aplicado previamente: no se duplican movimientos ni saldo de stock
+          if (existingKeys.size === movementsWithKey.length) {
+            console.warn(
+              `Regla D (Idempotencia): Lote completamente aplicado previamente (${existingKeys.size} claves). Se omite el procesamiento para evitar duplicación.`
+            );
+            return;
+          }
+
+          // Lote parcialmente aplicado: inconsistencia detectada, rechazar operación incompleta
+          if (existingKeys.size > 0 && existingKeys.size < movementsWithKey.length) {
+            throw new Error(
+              `Regla D (Idempotencia): Lote parcialmente aplicado detectado (${existingKeys.size} de ${movementsWithKey.length} movimientos ya registrados). No se considera exitosa una operación incompleta.`
+            );
+          }
+        }
+
+        // 3. Lote no aplicado: procesar todos los movimientos de forma continua
+        // Agrupar por producto/sucursal para lectura consistente
         const groups = new Map<string, StockMovement[]>();
-        for (const mov of sanitizedMovements) {
+        for (const mov of movements) {
           const key = `${mov.branchId}_${mov.productCode}`;
           const list = groups.get(key) || [];
           list.push(mov);
@@ -1134,23 +1159,26 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         const processedMovements: StockMovement[] = [];
-        const stockUpdates: Array<{ ref: any, data: any }> = [];
+        const stockUpdates: Array<{ ref: any; data: any }> = [];
 
         // 4. Procesar cada grupo leyendo el stock actual del backend (Regla D)
         for (const [stockKey, groupMovs] of groups.entries()) {
           const stockRef = doc(db, 'branchStock', stockKey);
           const stockSnap = await transaction.get(stockRef);
-          
+
           let runningStock = stockSnap.exists() ? Number(stockSnap.data().currentStock) || 0 : 0;
           let minStock = stockSnap.exists() ? stockSnap.data().minStock ?? 20 : 20;
-          let chamberName = stockSnap.exists() ? stockSnap.data().chamberName : 
-            (groupMovs[0].branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
+          let chamberName = stockSnap.exists()
+            ? stockSnap.data().chamberName
+            : groupMovs[0].branchId === 'NECO 1'
+            ? 'Cámara Central NECO 1'
+            : 'Cámara Frigorífica NECO 2';
 
           for (const mov of groupMovs) {
             const qty = Number(mov.quantity) || 0;
             const factor = mov.factor || 1;
             const prev = runningStock;
-            runningStock = Number((runningStock + (qty * factor)).toFixed(3));
+            runningStock = Number((runningStock + qty * factor).toFixed(3));
 
             processedMovements.push({
               ...mov,
@@ -1174,7 +1202,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               minStock,
               lastUpdated: new Date().toISOString(),
               chamberName,
-            }
+            },
           });
         }
 
@@ -1182,14 +1210,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         for (const mov of processedMovements) {
           const movRef = doc(db, 'stockMovements', mov.id);
           transaction.set(movRef, sanitizeForFirestore(mov));
-          
+
           // Registrar la clave de idempotencia
           if (mov.idempotencyKey) {
             const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey);
-            transaction.set(idempRef, { 
-              timestamp: Date.now(), 
+            transaction.set(idempRef, {
+              timestamp: Date.now(),
               movementId: mov.id,
-              reference: mov.referenceDoc || ''
+              reference: mov.referenceDoc || '',
             });
           }
         }
@@ -1798,67 +1826,55 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const saveDeboningTemplate = async (template: DeboningYieldTemplate) => {
     const path = `deboningTemplates/${template.id}`;
     try {
-      const now = new Date().toISOString();
-      const existingDoc = deboningTemplates.find((t) => t.id === template.id);
+      await runTransaction(db, async (transaction) => {
+        // Regla 2: Recuperar el documento y el historial existentes desde Firestore antes de crear la nueva versión
+        const templateRef = doc(db, 'deboningTemplates', template.id);
+        const templateSnap = await transaction.get(templateRef);
 
-      let versionHistory = template.versionHistory ? [...template.versionHistory] : [];
-      let newVersion = template.version || 1;
+        const existingDoc = templateSnap.exists()
+          ? (templateSnap.data() as DeboningYieldTemplate)
+          : null;
 
-      if (existingDoc) {
-        // Si ya existía, archivar la versión previa en el historial si cambió algún dato de rendimiento
-        const previousVersionEntry: YieldTemplateVersionHistory = {
-          version: existingDoc.version || 1,
-          updatedAt: existingDoc.updatedAt || existingDoc.createdAt || now,
-          operator: existingDoc.operator || 'Operador',
-          referenceInitialWeightKg: existingDoc.referenceInitialWeightKg,
-          items: existingDoc.items,
-          shrinkageWeightKg: existingDoc.shrinkageWeightKg,
-          shrinkagePercent: existingDoc.shrinkagePercent,
-          totalYieldPercent: existingDoc.totalYieldPercent,
-          notes: existingDoc.notes,
-        };
+        // Preparar nueva versión preservando todas las versiones anteriores e impidiendo sobrescrituras concurrentes
+        const templateToSave = prepareNextTemplateVersion(existingDoc, template);
 
-        // Evitar duplicar la misma versión en el historial
-        const alreadyInHistory = versionHistory.some((vh) => vh.version === previousVersionEntry.version);
-        if (!alreadyInHistory) {
-          versionHistory.push(previousVersionEntry);
-        }
-
-        newVersion = (existingDoc.version || 1) + 1;
-      }
-
-      const templateToSave: DeboningYieldTemplate = {
-        ...template,
-        version: newVersion,
-        createdAt: template.createdAt || existingDoc?.createdAt || now,
-        updatedAt: now,
-        isActive: template.isActive !== undefined ? template.isActive : true,
-        versionHistory,
-      };
-
-      await setDoc(doc(db, 'deboningTemplates', template.id), sanitizeForFirestore(templateToSave));
+        transaction.set(templateRef, sanitizeForFirestore(templateToSave), { merge: true });
+      });
     } catch (error) {
+      console.error('Error en saveDeboningTemplate (Transaction):', error);
       handleFirestoreError(error, OperationType.WRITE, path);
+      throw error;
     }
   };
 
   const deleteDeboningTemplate = async (id: string) => {
     const path = `deboningTemplates/${id}`;
     try {
-      // Regla A.3: Desactivar una plantilla no debe borrar el documento ni invalidar despostes históricos que la utilizaron
-      const existingDoc = deboningTemplates.find((t) => t.id === id);
-      if (existingDoc) {
+      // Regla A.3 y Regla 2: Mantener el comportamiento de desactivación sin borrado físico
+      const templateRef = doc(db, 'deboningTemplates', id);
+      const snap = await getDoc(templateRef);
+      if (snap.exists()) {
+        const existingDoc = snap.data() as DeboningYieldTemplate;
         const deactivated: DeboningYieldTemplate = {
           ...existingDoc,
           isActive: false,
           updatedAt: new Date().toISOString(),
         };
-        await setDoc(doc(db, 'deboningTemplates', id), sanitizeForFirestore(deactivated));
+        await setDoc(templateRef, sanitizeForFirestore(deactivated), { merge: true });
       } else {
-        await deleteDoc(doc(db, 'deboningTemplates', id));
+        const localDoc = deboningTemplates.find((t) => t.id === id);
+        if (localDoc) {
+          const deactivated: DeboningYieldTemplate = {
+            ...localDoc,
+            isActive: false,
+            updatedAt: new Date().toISOString(),
+          };
+          await setDoc(templateRef, sanitizeForFirestore(deactivated), { merge: true });
+        }
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
+      throw error;
     }
   };
 

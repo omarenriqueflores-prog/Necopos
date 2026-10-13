@@ -562,51 +562,6 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     );
   };
 
-  // Guardar coeficientes de este desposte como nueva planilla de rendimiento personalizada (Regla A.1 y A.2)
-  const handleSaveAsYieldTemplate = async () => {
-    // Regla A.2: Una planilla solo puede crearse a partir de un desposte finalizado que tenga pesajes reales verificables.
-    const deboningToValidate = existingDeboning || buildDeboningObject('FINALIZADO');
-
-    if (deboningToValidate.status !== 'FINALIZADO') {
-      setErrorMessage('Regla A.2: Una planilla de rendimiento solo puede crearse a partir de un desposte FINALIZADO con pesajes reales verificados.');
-      return;
-    }
-
-    if (deboningToValidate.isEstimated) {
-      setErrorMessage('Regla A.2: No se puede guardar como planilla de rendimiento un desposte generado mediante estimaciones.');
-      return;
-    }
-
-    if (!customTemplateName.trim()) {
-      setErrorMessage('El nombre de la planilla es obligatorio.');
-      return;
-    }
-
-    try {
-      setIsSubmitting(true);
-      setErrorMessage(null);
-
-      // Usar createYieldTemplateFromDeboning que ahora tiene las validaciones de la Regla A.2
-      const template = createYieldTemplateFromDeboning(
-        deboningToValidate,
-        customTemplateName.trim(),
-        1,
-        undefined,
-        customTemplateNotes.trim()
-      );
-
-      await saveDeboningTemplate(template);
-      setFeedbackMessage(`✓ Planilla de rendimiento "${template.name}" guardada exitosamente (${template.items.length} cortes).`);
-      setShowTemplateNameModal(false);
-      setCustomTemplateName('');
-      setCustomTemplateNotes('');
-    } catch (err: any) {
-      console.error('Error al guardar planilla de rendimiento:', err);
-      setErrorMessage(`Error al guardar planilla: ${err.message}`);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   // Guardar como Borrador
   const handleSaveDraft = async () => {
@@ -1394,15 +1349,20 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
               type="button"
               onClick={() => {
                 setErrorMessage(null);
-                // Validar requisitos previos antes de abrir el modal
-                const deboningToValidate = existingDeboning || buildDeboningObject('FINALIZADO');
-                if (deboningToValidate.status !== 'FINALIZADO' && !existingDeboning) {
-                   setErrorMessage('Regla A.2: La planilla debe basarse en pesajes reales de un desposte que esté listo para finalizar o ya finalizado.');
-                   return;
+                // Regla 1: Bloquear el guardado de planillas no finalizadas
+                if (!existingDeboning || existingDeboning.status !== 'FINALIZADO') {
+                  setErrorMessage(
+                    'Regla A.2: Solo es posible guardar una planilla de rendimiento a partir de una orden de desposte cuya finalización real esté confirmada y persistida en el sistema. Finalice e impacte en stock la orden primero.'
+                  );
+                  return;
                 }
-                if (deboningToValidate.isEstimated) {
-                   setErrorMessage('Regla A.2: No se puede guardar como planilla un desposte que use pesos estimados.');
-                   return;
+                if (existingDeboning.status === 'ANULADO') {
+                  setErrorMessage('Regla A.2: No se puede generar una planilla a partir de una orden de desposte anulada.');
+                  return;
+                }
+                if (existingDeboning.isEstimated) {
+                  setErrorMessage('Regla A.2: No se puede guardar como planilla un desposte que use pesos estimados.');
+                  return;
                 }
                 setShowSaveTemplateModal(true);
               }}
@@ -1490,11 +1450,11 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
         </div>
       )}
       {/* MODAL DE GUARDAR COMO PLANILLA DE RENDIMIENTO (Regla A.1 y A.2) */}
-      {showSaveTemplateModal && (
+      {showSaveTemplateModal && existingDeboning && existingDeboning.status === 'FINALIZADO' && (
         <SaveYieldTemplateModal
           isOpen={showSaveTemplateModal}
           onClose={() => setShowSaveTemplateModal(false)}
-          deboning={existingDeboning || buildDeboningObject('FINALIZADO')}
+          deboning={existingDeboning}
           onSuccess={(tmpl) => {
             setFeedbackMessage(`✓ Planilla de rendimiento "${tmpl.name}" guardada exitosamente (${tmpl.items.length} cortes).`);
           }}

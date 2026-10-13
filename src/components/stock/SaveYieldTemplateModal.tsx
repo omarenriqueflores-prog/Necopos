@@ -37,7 +37,7 @@ export const SaveYieldTemplateModal: React.FC<SaveYieldTemplateModalProps> = ({
   existingTemplate,
   onSuccess,
 }) => {
-  const { deboningTemplates, saveDeboningTemplate, localUser, user } = useFirebase();
+  const { deboningTemplates, meatDebonings, saveDeboningTemplate, localUser, user } = useFirebase();
 
   // Estados del formulario (Regla A.1)
   const [templateName, setTemplateName] = useState<string>(
@@ -95,46 +95,94 @@ export const SaveYieldTemplateModal: React.FC<SaveYieldTemplateModalProps> = ({
     };
   }, [deboning.cuts, initialWeightKg]);
 
-  // Manejo de envío con validación estricta (Regla A.2 y A.3)
+  // Manejo de envío con validación estricta (Regla 1, A.2 y A.3)
   const handleSubmit = async (forceNewVersionOfId?: string) => {
     setErrorMessage(null);
 
-    // Regla A.2: Validar que sea un desposte finalizado
-    if (deboning.status !== 'FINALIZADO') {
+    // 1. Verificar si la orden está persistida en el sistema
+    const persistedDeboning = meatDebonings?.find(
+      (d) => d.id === deboning.id || (d.code && d.code === deboning.code)
+    );
+    const isConfirmedAndPersisted = Boolean(
+      persistedDeboning || deboning.appliedAt || deboning.confirmedAt
+    );
+
+    if (!isConfirmedAndPersisted) {
       setErrorMessage(
-        'Regla A.2: Una planilla de rendimiento solo puede crearse a partir de un desposte FINALIZADO con pesajes reales de balanza.'
+        'Regla 1: La orden de desposte no se encuentra persistida y confirmada en la base de datos. Solo se puede guardar una planilla a partir de una orden cuya finalización real esté confirmada y persistida.'
       );
       return;
     }
 
-    // Regla A.2: Validar que no provenga de estimaciones
-    if (deboning.isEstimated) {
+    // 2. Validar que la orden esté efectivamente FINALIZADA
+    if (deboning.status !== 'FINALIZADO' || (persistedDeboning && persistedDeboning.status !== 'FINALIZADO')) {
+      setErrorMessage(
+        'Regla 1: Una planilla de rendimiento solo puede crearse a partir de un desposte FINALIZADO con pesajes reales verificados de balanza.'
+      );
+      return;
+    }
+
+    // 3. Validar que la orden NO esté anulada
+    if (deboning.status === 'ANULADO' || (persistedDeboning && persistedDeboning.status === 'ANULADO')) {
+      setErrorMessage(
+        'Regla 1: No se puede generar una planilla de rendimiento a partir de una orden de desposte anulada.'
+      );
+      return;
+    }
+
+    // 4. Validar que no provenga de estimaciones teóricas
+    if (deboning.isEstimated || (persistedDeboning && persistedDeboning.isEstimated)) {
       setErrorMessage(
         'Regla A.2: No se puede guardar como rendimiento real un desposte generado mediante estimaciones o proyecciones teóricas.'
       );
       return;
     }
 
-    // Regla A.1: Nombre obligatorio
+    // 5. Validar pesajes reales verificables (no aceptar simples booleanos falsos por defecto)
+    const cuts = deboning.cuts || [];
+    if (cuts.length === 0) {
+      setErrorMessage('Regla A.2: El desposte debe contener cortes válidos con pesajes reales de balanza.');
+      return;
+    }
+
+    const invalidCut = cuts.find((c) => !c.weightKg || !Number.isFinite(Number(c.weightKg)) || Number(c.weightKg) <= 0);
+    if (invalidCut) {
+      setErrorMessage(
+        `Regla A.2: El corte "${invalidCut.description || invalidCut.productCode}" carece de un pesaje real positivo válido (${invalidCut.weightKg}).`
+      );
+      return;
+    }
+
+    // Evidencia de pesaje de balanza: no convertir registros antiguos o ficticios automáticamente en pesajes verificados
+    const hasWeighingEvidence = Boolean(
+      deboning.appliedAt ||
+      deboning.confirmedAt ||
+      persistedDeboning?.appliedAt ||
+      persistedDeboning?.confirmedAt ||
+      (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0)
+    );
+
+    if (!hasWeighingEvidence) {
+      setErrorMessage(
+        'Regla 1 y A.2: El registro no dispone de evidencia suficiente de pesajes reales de balanza confirmados en el sistema (falta confirmación de ingreso a stock o pesaje individual trazable). Rechazado para evitar rendimientos ficticios.'
+      );
+      return;
+    }
+
+    // 6. Regla A.1: Nombre obligatorio
     const cleanName = templateName.trim();
     if (!cleanName) {
       setErrorMessage('El nombre personalizado de la planilla es obligatorio.');
       return;
     }
 
-    // Regla A.2: Peso inicial positivo
+    // 7. Regla A.2: Peso inicial positivo
     if (!Number.isFinite(initialWeightKg) || initialWeightKg <= 0) {
       setErrorMessage('El peso inicial de la media res debe ser un valor positivo mayor a 0 Kg.');
       return;
     }
 
-    // Regla A.2: Cortes válidos
-    if (!deboning.cuts || deboning.cuts.length === 0) {
-      setErrorMessage('El desposte debe contener cortes válidos registrados.');
-      return;
-    }
-
-    // Regla A.2: Salidas no pueden superar la entrada
+    // 8. Regla A.2: Salidas no pueden superar la entrada
     if (cutsSummary.totalOutputKg > initialWeightKg + 0.001) {
       setErrorMessage(
         `Regla A.2: Los kilos de salida medidos (${formatKg(cutsSummary.totalOutputKg)}) no pueden superar el peso inicial de entrada (${formatKg(initialWeightKg)}).`

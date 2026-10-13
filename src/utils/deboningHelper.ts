@@ -6,6 +6,7 @@ import {
   BranchConfig,
   DeboningYieldTemplate,
   YieldCoefficientItem,
+  YieldTemplateVersionHistory,
 } from '../types/pos';
 import { formatKg, formatCurrency } from './stockHelper';
 
@@ -300,41 +301,50 @@ export function createYieldTemplateFromDeboning(
     operator?: string;
   }
 ): DeboningYieldTemplate {
-  // A.2.1 Validar que no sea borrador
+  // A.2.1 Validar que no esté anulado
+  if (deboning.status === 'ANULADO') {
+    throw new Error('Regla A.2: No se puede crear una plantilla de rendimiento a partir de una orden de desposte anulada.');
+  }
+
+  // A.2.2 Validar que no sea borrador o no finalizado
   if (deboning.status !== 'FINALIZADO') {
-    throw new Error('No se puede crear una plantilla de rendimiento desde un desposte en estado BORRADOR o no finalizado.');
+    throw new Error('Regla A.2: No se puede crear una plantilla de rendimiento desde un desposte en estado BORRADOR o no finalizado.');
   }
 
-  // A.2.2 Validar que no provenga de estimaciones
+  // A.2.3 Validar que no provenga de estimaciones
   if (deboning.isEstimated) {
-    throw new Error('No se puede guardar como plantilla de rendimiento un desposte generado mediante estimaciones.');
+    throw new Error('Regla A.2: No se puede guardar como plantilla de rendimiento un desposte generado mediante estimaciones.');
   }
 
-  // A.2.3 Validar peso inicial positivo
+  // A.2.4 Validar peso inicial positivo
   const initialWeight = Number(overrides?.referenceInitialWeightKg ?? deboning.initialWeightKg) || 0;
   if (!Number.isFinite(initialWeight) || initialWeight <= 0) {
-    throw new Error('El peso inicial de la media res de referencia debe ser un valor numérico mayor a 0 Kg.');
+    throw new Error('Regla A.2: El peso inicial de la media res de referencia debe ser un valor numérico mayor a 0 Kg.');
   }
 
-  // A.2.4 Validar existencia de cortes válidos
+  // A.2.5 Validar existencia de cortes válidos y pesajes reales
   if (!deboning.cuts || deboning.cuts.length === 0) {
-    throw new Error('El desposte no tiene cortes cargados.');
+    throw new Error('Regla A.2: El desposte no tiene cortes cargados.');
   }
 
-  // A.2.5 Validar que la suma de cortes de salida no supere el peso de entrada
+  for (const cut of deboning.cuts) {
+    const weight = Number(cut.weightKg);
+    if (!Number.isFinite(weight) || weight <= 0) {
+      throw new Error(`Regla A.2: El corte "${cut.description || cut.productCode}" carece de un pesaje real positivo válido (${cut.weightKg}).`);
+    }
+  }
+
+  // A.2.6 Validar que la suma de cortes de salida no supere el peso de entrada
   const totalOutputWeight = deboning.cuts.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
   if (totalOutputWeight > initialWeight + 0.001) {
-    throw new Error(`Los kilos de salida (${formatKg(totalOutputWeight)}) no pueden superar el peso inicial de entrada (${formatKg(initialWeight)}).`);
+    throw new Error(`Regla A.2: Los kilos de salida (${formatKg(totalOutputWeight)}) no pueden superar el peso inicial de entrada (${formatKg(initialWeight)}).`);
   }
 
   const items: YieldCoefficientItem[] = deboning.cuts.map((cut) => {
     const weight = Number(cut.weightKg) || 0;
-    if (!Number.isFinite(weight) || weight < 0) {
-      throw new Error(`El corte "${cut.description || cut.productCode}" tiene un peso inválido (${weight}).`);
-    }
     const coefficient = Number((weight / initialWeight).toFixed(6));
     if (!Number.isFinite(coefficient) || coefficient < 0) {
-      throw new Error(`Coeficiente inválido calculado para "${cut.description}".`);
+      throw new Error(`Regla A.2: Coeficiente inválido calculado para "${cut.description}".`);
     }
     const yieldPercent = Number((coefficient * 100).toFixed(3));
 
@@ -378,6 +388,87 @@ export function createYieldTemplateFromDeboning(
     version,
     isActive: true,
     notes: customNotes || `Creada a partir de desposte real de res ref. ${formatKg(initialWeight)} (Orden ${deboning.code || deboning.id})`,
+  };
+}
+
+/**
+ * Prepara la siguiente versión de una plantilla de rendimiento preservando todo el historial.
+ * Regla 2:
+ * - Conserva todas las versiones anteriores.
+ * - Agrega al historial la versión que efectivamente se está reemplazando.
+ * - No reemplaza un historial existente por un arreglo vacío recibido del exterior.
+ * - Evita versiones duplicadas en el historial.
+ * - Preserva ID, nombre, fecha de creación y referencias históricas.
+ */
+export function prepareNextTemplateVersion(
+  existingTemplate: DeboningYieldTemplate | null | undefined,
+  incomingData: DeboningYieldTemplate
+): DeboningYieldTemplate {
+  const now = new Date().toISOString();
+
+  if (!existingTemplate) {
+    // Primera versión
+    return {
+      ...incomingData,
+      id: incomingData.id || `YIELD-${Date.now()}`,
+      version: 1,
+      createdAt: incomingData.createdAt || now,
+      updatedAt: now,
+      isActive: incomingData.isActive !== undefined ? incomingData.isActive : true,
+      versionHistory: Array.isArray(incomingData.versionHistory) ? [...incomingData.versionHistory] : [],
+    };
+  }
+
+  // 1. Recuperar historial existente (no confiar en un arreglo vacío recibido del exterior)
+  let history: YieldTemplateVersionHistory[] = [];
+  if (Array.isArray(existingTemplate.versionHistory)) {
+    history = [...existingTemplate.versionHistory];
+  } else if (Array.isArray(incomingData.versionHistory) && incomingData.versionHistory.length > 0) {
+    history = [...incomingData.versionHistory];
+  }
+
+  // 2. Archivar la versión que se está reemplazando
+  const replacingVersionNumber = existingTemplate.version || 1;
+  const alreadyArchived = history.some((vh) => vh.version === replacingVersionNumber);
+
+  if (!alreadyArchived) {
+    const replacingEntry: YieldTemplateVersionHistory = {
+      version: replacingVersionNumber,
+      updatedAt: existingTemplate.updatedAt || existingTemplate.createdAt || now,
+      operator: existingTemplate.operator || 'Operador',
+      referenceInitialWeightKg: Number(existingTemplate.referenceInitialWeightKg) || 0,
+      items: existingTemplate.items || [],
+      shrinkageWeightKg: Number(existingTemplate.shrinkageWeightKg) || 0,
+      shrinkagePercent: Number(existingTemplate.shrinkagePercent) || 0,
+      totalYieldPercent: Number(existingTemplate.totalYieldPercent) || 0,
+      notes: existingTemplate.notes || '',
+    };
+    history.push(replacingEntry);
+  }
+
+  // Ordenar el historial por número de versión ascendente
+  history.sort((a, b) => a.version - b.version);
+
+  // 3. Determinar número de nueva versión estrictamente incremental
+  const maxVersionInHistory = history.reduce((max, vh) => Math.max(max, vh.version), 0);
+  const nextVersion = Math.max(existingTemplate.version || 1, maxVersionInHistory) + 1;
+
+  // 4. Preservar ID, fecha de creación, nombre y referencias históricas
+  return {
+    ...incomingData,
+    id: existingTemplate.id, // Preservar ID permanente
+    name: incomingData.name?.trim() || existingTemplate.name,
+    version: nextVersion,
+    createdAt: existingTemplate.createdAt || incomingData.createdAt || now,
+    updatedAt: now,
+    isActive: incomingData.isActive !== undefined ? incomingData.isActive : (existingTemplate.isActive !== undefined ? existingTemplate.isActive : true),
+    receptionId: incomingData.receptionId || existingTemplate.receptionId,
+    referenceCarcassId: incomingData.referenceCarcassId || existingTemplate.referenceCarcassId,
+    tropaNumber: incomingData.tropaNumber || existingTemplate.tropaNumber,
+    species: incomingData.species || existingTemplate.species,
+    animalCategory: incomingData.animalCategory || existingTemplate.animalCategory,
+    carcassType: incomingData.carcassType || existingTemplate.carcassType,
+    versionHistory: history,
   };
 }
 

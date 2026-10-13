@@ -18,6 +18,7 @@ import {
   Building2,
   Calendar,
   X,
+  FileSpreadsheet,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
@@ -27,6 +28,7 @@ import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateDeboningVoucherHtml } from '../../utils/deboningHelper';
 import { NewDeboningModal } from './NewDeboningModal';
 import { DeboningDetailModal } from './DeboningDetailModal';
+import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
 import { WindowsModal } from '../common/WindowsModal';
 import { Lock, ShieldAlert } from 'lucide-react';
 
@@ -43,6 +45,7 @@ export const MeatDeboningTab: React.FC = () => {
   const [showNewModal, setShowNewModal] = useState(false);
   const [editingDeboning, setEditingDeboning] = useState<MeatDeboning | null>(null);
   const [viewingDeboning, setViewingDeboning] = useState<MeatDeboning | null>(null);
+  const [savingTemplateDeboning, setSavingTemplateDeboning] = useState<MeatDeboning | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [password, setPassword] = useState('');
   const [deboningToDelete, setDeboningToDelete] = useState<MeatDeboning | null>(null);
@@ -460,6 +463,16 @@ export const MeatDeboningTab: React.FC = () => {
                         >
                           <Printer className="w-3.5 h-3.5" />
                         </button>
+                        {deb.status === 'FINALIZADO' && !deb.isEstimated && (
+                          <button
+                            type="button"
+                            onClick={() => setSavingTemplateDeboning(deb)}
+                            className="p-1 text-indigo-700 hover:bg-indigo-100 rounded"
+                            title="Guardar como Planilla de Rendimiento Personalizada (Regla A.1)"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {deb.status === 'BORRADOR' && (
                           <button
                             type="button"
@@ -627,6 +640,17 @@ export const MeatDeboningTab: React.FC = () => {
             </div>
           </form>
         </WindowsModal>
+      )}
+
+      {savingTemplateDeboning && (
+        <SaveYieldTemplateModal
+          isOpen={!!savingTemplateDeboning}
+          onClose={() => setSavingTemplateDeboning(null)}
+          deboning={savingTemplateDeboning}
+          onSuccess={() => {
+            setSavingTemplateDeboning(null);
+          }}
+        />
       )}
     </div>
   );
