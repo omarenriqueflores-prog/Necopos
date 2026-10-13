@@ -95,102 +95,107 @@ export const SaveYieldTemplateModal: React.FC<SaveYieldTemplateModalProps> = ({
     };
   }, [deboning.cuts, initialWeightKg]);
 
-  // Manejo de envío con validación estricta (Regla 1, A.2 y A.3)
+  // Manejo de envío con validación estricta de pesajes persistidos
   const handleSubmit = async (forceNewVersionOfId?: string) => {
     setErrorMessage(null);
 
-    // 1. Verificar si la orden está persistida en el sistema
+    // 1. Obtener el desposte finalizado desde la fuente persistida autoritativa
     const persistedDeboning = meatDebonings?.find(
       (d) => d.id === deboning.id || (d.code && d.code === deboning.code)
     );
-    const isConfirmedAndPersisted = Boolean(
-      persistedDeboning || deboning.appliedAt || deboning.confirmedAt
-    );
 
-    if (!isConfirmedAndPersisted) {
+    if (!persistedDeboning) {
       setErrorMessage(
-        'Regla 1: La orden de desposte no se encuentra persistida y confirmada en la base de datos. Solo se puede guardar una planilla a partir de una orden cuya finalización real esté confirmada y persistida.'
+        'La orden de desposte no se encuentra persistida en la base de datos. Solo se puede guardar una planilla a partir de una orden cuya finalización real esté confirmada y persistida.'
       );
       return;
     }
 
-    // 2. Validar que la orden esté efectivamente FINALIZADA
-    if (deboning.status !== 'FINALIZADO' || (persistedDeboning && persistedDeboning.status !== 'FINALIZADO')) {
+    // 2. Comprobar que el desposte exista y que su estado persistido sea exactamente FINALIZADO
+    if (persistedDeboning.status !== 'FINALIZADO') {
       setErrorMessage(
-        'Regla 1: Una planilla de rendimiento solo puede crearse a partir de un desposte FINALIZADO con pesajes reales verificados de balanza.'
+        `La orden de desposte no está finalizada en la base de datos (estado actual: ${persistedDeboning.status}). Solo órdenes en estado FINALIZADO pueden generar planillas de rendimiento.`
       );
       return;
     }
 
-    // 3. Validar que la orden NO esté anulada
-    if (deboning.status === 'ANULADO' || (persistedDeboning && persistedDeboning.status === 'ANULADO')) {
+    // 3. Verificar que no esté anulado, borrador ni marcado como estimado
+    if (persistedDeboning.status === 'ANULADO') {
       setErrorMessage(
-        'Regla 1: No se puede generar una planilla de rendimiento a partir de una orden de desposte anulada.'
+        'No se puede generar una planilla de rendimiento a partir de una orden de desposte anulada.'
       );
       return;
     }
 
-    // 4. Validar que no provenga de estimaciones teóricas
-    if (deboning.isEstimated || (persistedDeboning && persistedDeboning.isEstimated)) {
+    if (persistedDeboning.isEstimated) {
       setErrorMessage(
-        'Regla A.2: No se puede guardar como rendimiento real un desposte generado mediante estimaciones o proyecciones teóricas.'
+        'No se puede guardar como rendimiento real un desposte generado mediante estimaciones o proyecciones teóricas.'
       );
       return;
     }
 
-    // 5. Validar pesajes reales verificables (no aceptar simples booleanos falsos por defecto)
-    const cuts = deboning.cuts || [];
+    // 4. Comprobar que la operación de stock no tenga movimientos pendientes
+    if (persistedDeboning.hasPendingStockMovements) {
+      setErrorMessage(
+        'La orden de desposte posee movimientos de stock pendientes o incompletos. No se puede generar la planilla hasta que la operación de stock esté completada.'
+      );
+      return;
+    }
+
+    // 5. Verificar trazabilidad de origen de la materia prima (Modalidad A o Modalidad B)
+    const hasTraceableOrigin =
+      Boolean(persistedDeboning.sourceProductCode && persistedDeboning.sourceProductCode.trim()) ||
+      Boolean(persistedDeboning.selectedCarcassIds && persistedDeboning.selectedCarcassIds.length > 0);
+
+    if (!hasTraceableOrigin) {
+      setErrorMessage(
+        'La orden de desposte carece de trazabilidad de materia prima de origen verificable (sin código de stock ni medias reses identificadas). Rechazado.'
+      );
+      return;
+    }
+
+    // 6. Verificar que los pesos iniciales y los pesos de cada corte sean numéricos, finitos y mayores que cero
+    const initialWeightPersisted = Number(persistedDeboning.initialWeightKg);
+    if (!Number.isFinite(initialWeightPersisted) || initialWeightPersisted <= 0) {
+      setErrorMessage(
+        'El peso inicial persistido de la orden de desposte no es un valor numérico positivo válido.'
+      );
+      return;
+    }
+
+    const cuts = persistedDeboning.cuts || [];
     if (cuts.length === 0) {
-      setErrorMessage('Regla A.2: El desposte debe contener cortes válidos con pesajes reales de balanza.');
+      setErrorMessage('El desposte persistido no contiene cortes cargados.');
       return;
     }
 
-    const invalidCut = cuts.find((c) => !c.weightKg || !Number.isFinite(Number(c.weightKg)) || Number(c.weightKg) <= 0);
+    const invalidCut = cuts.find(
+      (c) => !c.weightKg || !Number.isFinite(Number(c.weightKg)) || Number(c.weightKg) <= 0
+    );
     if (invalidCut) {
       setErrorMessage(
-        `Regla A.2: El corte "${invalidCut.description || invalidCut.productCode}" carece de un pesaje real positivo válido (${invalidCut.weightKg}).`
+        `El corte "${invalidCut.description || invalidCut.productCode}" carece de un pesaje real positivo válido (${invalidCut.weightKg}).`
       );
       return;
     }
 
-    // Evidencia de pesaje de balanza: no convertir registros antiguos o ficticios automáticamente en pesajes verificados
-    const hasWeighingEvidence = Boolean(
-      deboning.appliedAt ||
-      deboning.confirmedAt ||
-      persistedDeboning?.appliedAt ||
-      persistedDeboning?.confirmedAt ||
-      (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0)
-    );
-
-    if (!hasWeighingEvidence) {
+    // 7. Verificar balance de masas persistido (salidas no pueden superar entrada)
+    const totalOutputPersisted = cuts.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
+    if (totalOutputPersisted > initialWeightPersisted + 0.001) {
       setErrorMessage(
-        'Regla 1 y A.2: El registro no dispone de evidencia suficiente de pesajes reales de balanza confirmados en el sistema (falta confirmación de ingreso a stock o pesaje individual trazable). Rechazado para evitar rendimientos ficticios.'
+        `Los kilos de salida persistidos (${formatKg(totalOutputPersisted)}) no pueden superar el peso inicial (${formatKg(initialWeightPersisted)}).`
       );
       return;
     }
 
-    // 6. Regla A.1: Nombre obligatorio
+    // 8. Nombre obligatorio de la planilla
     const cleanName = templateName.trim();
     if (!cleanName) {
       setErrorMessage('El nombre personalizado de la planilla es obligatorio.');
       return;
     }
 
-    // 7. Regla A.2: Peso inicial positivo
-    if (!Number.isFinite(initialWeightKg) || initialWeightKg <= 0) {
-      setErrorMessage('El peso inicial de la media res debe ser un valor positivo mayor a 0 Kg.');
-      return;
-    }
-
-    // 8. Regla A.2: Salidas no pueden superar la entrada
-    if (cutsSummary.totalOutputKg > initialWeightKg + 0.001) {
-      setErrorMessage(
-        `Regla A.2: Los kilos de salida medidos (${formatKg(cutsSummary.totalOutputKg)}) no pueden superar el peso inicial de entrada (${formatKg(initialWeightKg)}).`
-      );
-      return;
-    }
-
-    // Regla A.3: Detección de duplicado por nombre si no se ha forzado versionado
+    // Detección de duplicado por nombre si no se ha forzado versionado
     if (!forceNewVersionOfId) {
       const nameConflict = deboningTemplates.find(
         (t) =>
@@ -207,25 +212,26 @@ export const SaveYieldTemplateModal: React.FC<SaveYieldTemplateModalProps> = ({
     try {
       setIsSubmitting(true);
       const operatorName =
-        localUser?.fullName || user?.displayName || user?.email || deboning.operator || 'Operador';
+        localUser?.fullName || user?.displayName || user?.email || persistedDeboning.operator || 'Operador';
 
       const targetTemplateId = forceNewVersionOfId || existingTemplate?.id;
       const targetVersion = forceNewVersionOfId
         ? (duplicateConflict?.existing.version || 1) + 1
         : existingTemplate?.version || 1;
 
+      // 9. Calcular coeficientes EXCLUSIVAMENTE a partir del desposte real persistido (no de valores mutados del modal)
       const template = createYieldTemplateFromDeboning(
-        deboning,
+        persistedDeboning,
         cleanName,
         targetVersion,
         targetTemplateId,
         notes.trim(),
         {
           species,
-          animalCategory,
-          carcassType,
-          tropaNumber: tropaNumber.trim(),
-          referenceInitialWeightKg: initialWeightKg,
+          animalCategory: persistedDeboning.animalCategory,
+          carcassType: persistedDeboning.carcassType,
+          tropaNumber: persistedDeboning.tropaNumber,
+          referenceInitialWeightKg: initialWeightPersisted,
           operator: operatorName,
         }
       );

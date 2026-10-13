@@ -16,9 +16,11 @@ import {
   Truck,
   Building2,
   Calendar,
+  Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 import { MeatReception, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
@@ -27,6 +29,7 @@ import { ReceptionDetailModal } from './ReceptionDetailModal';
 
 export const MeatReceptionTab: React.FC = () => {
   const { meatReceptions, branchConfigs, finalizeMeatReception, deleteOrCancelMeatReception, localUser, user } = useFirebase();
+  const { showAlert, showConfirm, showAdminAuth } = useDialog();
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
 
@@ -117,14 +120,53 @@ export const MeatReceptionTab: React.FC = () => {
     }
   };
 
-  // Anular recepción
-  const handleCancelReception = async (reception: MeatReception) => {
-    const reason = window.prompt(`Ingrese el motivo de anulación para la recepción ${reception.code}:`);
-    if (reason === null) return;
+  // Eliminar recepción con autorización de administrador
+  const handleDeleteReception = async (reception: MeatReception) => {
     try {
-      await deleteOrCancelMeatReception(reception.id, operatorName, reason);
+      const authorized = await showAdminAuth(
+        `¿Desea eliminar la recepción ${reception.code} (Tropa SENASA ${reception.tropaNumber}, ${formatKg(reception.totalWeightKg)})?\n\nEsta operación revertirá el stock de medias reses en cámara y eliminará el comprobante del sistema. Ingrese la clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR RECEPCIÓN'
+      );
+
+      if (!authorized) return;
+
+      const operator = localUser?.fullName || user?.displayName || localUser?.username || 'Administrador';
+      await deleteOrCancelMeatReception(reception.id, operator, 'Eliminación autorizada con clave de Administrador', true);
+      await showAlert(
+        `La recepción ${reception.code} (Tropa ${reception.tropaNumber}) fue eliminada exitosamente y el stock ha sido revertido.`,
+        'RECEPCIÓN ELIMINADA'
+      );
     } catch (err: any) {
-      alert(`Error al anular recepción: ${err.message}`);
+      console.error('Error al eliminar recepción:', err);
+      await showAlert(
+        `No se pudo eliminar la recepción: ${err.message || 'Error desconocido'}`,
+        'ERROR AL ELIMINAR'
+      );
+    }
+  };
+
+  // Anular recepción con autorización de administrador
+  const handleCancelReception = async (reception: MeatReception) => {
+    try {
+      const authorized = await showAdminAuth(
+        `¿Desea anular la recepción ${reception.code} (Tropa SENASA ${reception.tropaNumber}, ${formatKg(reception.totalWeightKg)})?\n\nEsta operación revertirá el stock ingresado en cámara y marcará el acta como anulada. Ingrese la clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ANULAR RECEPCIÓN'
+      );
+
+      if (!authorized) return;
+
+      const operator = localUser?.fullName || user?.displayName || localUser?.username || 'Administrador';
+      await deleteOrCancelMeatReception(reception.id, operator, 'Anulación autorizada con clave de Administrador', false);
+      await showAlert(
+        `La recepción ${reception.code} fue anulada correctamente y el stock en cámara ha sido revertido.`,
+        'RECEPCIÓN ANULADA'
+      );
+    } catch (err: any) {
+      console.error('Error al anular recepción:', err);
+      await showAlert(
+        `No se pudo anular la recepción: ${err.message || 'Error desconocido'}`,
+        'ERROR AL ANULAR'
+      );
     }
   };
 
@@ -422,12 +464,20 @@ export const MeatReceptionTab: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleCancelReception(r)}
-                          className="p-1 hover:bg-red-100 rounded text-red-600"
-                          title="Anular recepción"
+                          className="p-1 hover:bg-amber-100 rounded text-amber-700"
+                          title="Anular recepción (Requiere clave de Administrador)"
                         >
                           <AlertTriangle className="w-3.5 h-3.5" />
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteReception(r)}
+                        className="p-1 hover:bg-red-100 rounded text-red-700"
+                        title="Eliminar recepción de la base de datos (Requiere clave de Administrador)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </td>
                 </tr>

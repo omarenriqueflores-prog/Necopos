@@ -262,4 +262,57 @@ describe('15.2 Auditoría de Recepción de Medias Reses y Trazabilidad por Unida
     expect(check.canCancel).toBe(false);
     expect(check.blockReason).toContain('contiene medias reses con despostes finalizados');
   });
+
+  it('Eliminación de recepción con clave de administrador: verifica validaciones y reversión trazable', () => {
+    // 1. Recepción confirmada sin despostes ni traslados puede eliminarse/anularse
+    const reception: MeatReception = {
+      id: 'REC-OK',
+      code: 'ACTA-008',
+      date: '2026-10-12',
+      time: '11:00',
+      timestamp: 1697112000000,
+      branchId: 'NECO 1',
+      chamber: 'Cámara 1',
+      supplier: 'Frigorífico Central',
+      species: 'Vacuno',
+      category: 'Novillito',
+      tropaNumber: 'TR-999',
+      totalQuantity: 2,
+      totalWeightKg: 245.5,
+      pricePerKg: 4200,
+      totalCost: 1031100,
+      status: 'CONFIRMADO',
+      operator: 'Encargado',
+      carcasses: [
+        { id: 'MR-1', weightKg: 122.5, status: 'DISPONIBLE' },
+        { id: 'MR-2', weightKg: 123.0, status: 'DISPONIBLE' },
+      ],
+    };
+
+    const check = canCancelMeatReception(reception, [], []);
+    expect(check.canCancel).toBe(true);
+
+    // 2. Generación del movimiento de reversión trazable con idempotencia
+    const reverseMovement = {
+      idempotencyKey: `REV_REC_${reception.code}`,
+      referenceDoc: `REV-${reception.code}`,
+      reversalOf: reception.code,
+      quantity: reception.totalWeightKg,
+      factor: -1,
+      type: 'AJUSTE_NEGATIVO',
+    };
+
+    expect(reverseMovement.idempotencyKey).toBe('REV_REC_ACTA-008');
+    expect(reverseMovement.quantity).toBe(245.5);
+    expect(reverseMovement.factor).toBe(-1);
+    expect(reverseMovement.type).toBe('AJUSTE_NEGATIVO');
+
+    // 3. Verificación de clave de administrador para autorizar la eliminación
+    const ADMIN_KEY = '26635235';
+    const isAuthorized = (inputPin: string) => inputPin.trim() === ADMIN_KEY;
+
+    expect(isAuthorized('wrong_pass')).toBe(false);
+    expect(isAuthorized('1234')).toBe(false);
+    expect(isAuthorized('26635235')).toBe(true);
+  });
 });

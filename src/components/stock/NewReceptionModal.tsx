@@ -13,6 +13,7 @@ import {
   Info,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 import { MeatReception, CarcassUnit, CarcassStatus, Product, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
@@ -26,7 +27,8 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
   onClose,
   existingReception,
 }) => {
-  const { products, branchConfigs, localUser, user, saveMeatReception, finalizeMeatReception, updateConfirmedMeatReception } = useFirebase();
+  const { products, branchConfigs, localUser, user, saveMeatReception, finalizeMeatReception, updateConfirmedMeatReception, deleteOrCancelMeatReception } = useFirebase();
+  const { showAlert, showAdminAuth } = useDialog();
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
 
@@ -280,6 +282,39 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       setErrorMessage(err.message || 'Error al confirmar ingreso en cámara.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Eliminar recepción existente con clave de administrador
+  const handleDeleteExisting = async () => {
+    if (!existingReception) return;
+    try {
+      const authorized = await showAdminAuth(
+        `¿Desea eliminar la recepción ${existingReception.code} (Tropa SENASA ${existingReception.tropaNumber}, ${formatKg(existingReception.totalWeightKg)})?\n\nEsta operación revertirá el stock de medias reses en cámara y eliminará el comprobante del sistema. Ingrese la clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR RECEPCIÓN'
+      );
+
+      if (!authorized) return;
+
+      setIsSubmitting(true);
+      await deleteOrCancelMeatReception(
+        existingReception.id,
+        operatorName,
+        'Eliminación autorizada con clave de Administrador',
+        true
+      );
+      await showAlert(
+        `La recepción ${existingReception.code} fue eliminada exitosamente y el stock ha sido revertido.`,
+        'RECEPCIÓN ELIMINADA'
+      );
+      onClose();
+    } catch (err: any) {
+      setIsSubmitting(false);
+      console.error('Error al eliminar recepción:', err);
+      await showAlert(
+        `No se pudo eliminar la recepción: ${err.message || 'Error desconocido'}`,
+        'ERROR AL ELIMINAR'
+      );
     }
   };
 
@@ -686,6 +721,19 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
               <Printer className="w-3.5 h-3.5 text-gray-700" />
               <span>Imprimir Remito Oficial</span>
             </button>
+
+            {existingReception && (
+              <button
+                type="button"
+                onClick={handleDeleteExisting}
+                disabled={isSubmitting}
+                className="px-3 py-1 bg-[#ba1a1a] hover:bg-red-800 disabled:opacity-50 text-white font-bold flex items-center space-x-1 shadow-sm"
+                title="Eliminar esta recepción de la base de datos (Requiere clave de Administrador)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-white" />
+                <span>Eliminar Recepción (Clave Admin)</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">

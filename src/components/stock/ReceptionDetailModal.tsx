@@ -9,11 +9,13 @@ import {
   CheckCircle2,
   Truck,
   FileText,
+  Trash2,
 } from 'lucide-react';
 import { MeatReception } from '../../types/pos';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 
 interface ReceptionDetailModalProps {
   reception: MeatReception;
@@ -26,7 +28,8 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
   onClose,
   onConfirmDraft,
 }) => {
-  const { branchConfigs } = useFirebase();
+  const { branchConfigs, deleteOrCancelMeatReception, localUser, user } = useFirebase();
+  const { showAlert, showAdminAuth } = useDialog();
 
   const handlePrint = () => {
     const branchConfig = branchConfigs ? branchConfigs[reception.branchId] : null;
@@ -40,6 +43,30 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
       setTimeout(() => {
         win.print();
       }, 350);
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      const authorized = await showAdminAuth(
+        `¿Desea eliminar la recepción ${reception.code} (Tropa SENASA ${reception.tropaNumber}, ${formatKg(reception.totalWeightKg)})?\n\nEsta operación revertirá el stock de medias reses en cámara y eliminará el registro de recepción. Ingrese la clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR RECEPCIÓN'
+      );
+      if (!authorized) return;
+
+      const operator = localUser?.fullName || user?.displayName || localUser?.username || 'Administrador';
+      await deleteOrCancelMeatReception(reception.id, operator, 'Eliminación autorizada con clave de Administrador', true);
+      await showAlert(
+        `La recepción ${reception.code} (Tropa ${reception.tropaNumber}) fue eliminada exitosamente y el stock ha sido revertido.`,
+        'RECEPCIÓN ELIMINADA'
+      );
+      onClose();
+    } catch (err: any) {
+      console.error('Error al eliminar recepción:', err);
+      await showAlert(
+        `No se pudo eliminar la recepción: ${err.message || 'Error desconocido'}`,
+        'ERROR AL ELIMINAR'
+      );
     }
   };
 
@@ -210,14 +237,26 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
 
         {/* PIE */}
         <div className="bg-[#c0c0c0] border-t border-gray-400 p-2 flex justify-between items-center">
-          <button
-            type="button"
-            onClick={handlePrint}
-            className="px-3 py-1 bg-white hover:bg-gray-100 border border-gray-400 text-black font-bold flex items-center space-x-1.5"
-          >
-            <Printer className="w-3.5 h-3.5 text-gray-700" />
-            <span>Imprimir</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="px-3 py-1 bg-white hover:bg-gray-100 border border-gray-400 text-black font-bold flex items-center space-x-1.5 shadow-sm"
+            >
+              <Printer className="w-3.5 h-3.5 text-gray-700" />
+              <span>Imprimir</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="px-3 py-1 bg-[#ba1a1a] hover:bg-red-800 text-white font-bold flex items-center space-x-1.5 shadow-sm"
+              title="Eliminar esta recepción (Requiere clave de Administrador)"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-white" />
+              <span>Eliminar Recepción (Clave Admin)</span>
+            </button>
+          </div>
 
           <button
             type="button"

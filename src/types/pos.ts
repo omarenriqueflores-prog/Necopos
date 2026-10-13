@@ -564,6 +564,7 @@ export interface MeatDeboning {
   confirmedAt?: string;
   notes?: string;
   appliedAt?: string;
+  hasPendingStockMovements?: boolean;
 }
 
 // ==========================================

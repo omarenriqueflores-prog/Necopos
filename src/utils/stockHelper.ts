@@ -294,7 +294,8 @@ export type BatchStockStatus =
   | 'COMPLETAMENTE_APLICADO'
   | 'PARCIALMENTE_APLICADO'
   | 'NO_APLICADO'
-  | 'INVALIDO';
+  | 'INVALIDO'
+  | 'INCONSISTENTE';
 
 export interface BatchStockClassification {
   status: BatchStockStatus;
@@ -303,35 +304,45 @@ export interface BatchStockClassification {
   existingKeysCount: number;
   totalKeysCount: number;
   validMovements: StockMovement[];
+  appliedMovements: StockMovement[];
+  missingMovements: StockMovement[];
 }
 
 /**
- * Clasifica y audita un lote de movimientos de stock según la Regla D de idempotencia y validación.
+ * Clasifica y audita un lote de movimientos de stock según la idempotencia y validación.
  * Distingue explícitamente entre:
- * - Lote completamente aplicado (todas las claves ya existen, no se re-descuenta).
- * - Lote parcialmente aplicado (inconsistencia: algunas claves existen y otras no; se rechaza por incompleto).
+ * - Lote completamente aplicado (todas las claves ya existen de forma compatible).
+ * - Lote parcialmente aplicado (algunas claves existen y otras faltan; identifica missingMovements para recuperación sin duplicar).
  * - Lote no aplicado (ninguna clave existe; listo para aplicar).
  * - Lote inválido (datos incompletos, vacíos o cantidades no numéricas / no positivas).
+ * - Lote inconsistente (clave de idempotencia existente con datos incompatibles).
  */
 export function classifyStockMovementBatch(
   movements: StockMovement[],
-  existingIdempotencyKeys: Set<string> | string[] = new Set()
+  existingIdempotencyKeys:
+    | Set<string>
+    | string[]
+    | Map<string, Partial<StockMovement>> = new Set()
 ): BatchStockClassification {
   if (!movements || !Array.isArray(movements) || movements.length === 0) {
     return {
       status: 'INVALIDO',
       valid: false,
-      reason: 'Regla D: Lote inválido: el lote de movimientos está vacío.',
+      reason: 'Lote inválido: el lote de movimientos está vacío.',
       existingKeysCount: 0,
       totalKeysCount: 0,
       validMovements: [],
+      appliedMovements: [],
+      missingMovements: [],
     };
   }
 
-  const keysSet =
-    existingIdempotencyKeys instanceof Set
-      ? existingIdempotencyKeys
-      : new Set(existingIdempotencyKeys);
+  const isMap = existingIdempotencyKeys instanceof Map;
+  const keysSet = isMap
+    ? new Set(existingIdempotencyKeys.keys())
+    : existingIdempotencyKeys instanceof Set
+    ? existingIdempotencyKeys
+    : new Set(existingIdempotencyKeys);
 
   // 1. Validar integridad de cada movimiento del lote
   for (const m of movements) {
@@ -339,10 +350,12 @@ export function classifyStockMovementBatch(
       return {
         status: 'INVALIDO',
         valid: false,
-        reason: `Regla D: Lote inválido: movimiento ${m?.id || 'sin ID'} carece de sucursal, código de producto o ID.`,
+        reason: `Lote inválido: movimiento ${m?.id || 'sin ID'} carece de sucursal, código de producto o ID.`,
         existingKeysCount: 0,
         totalKeysCount: 0,
         validMovements: [],
+        appliedMovements: [],
+        missingMovements: [],
       };
     }
     const qty = Number(m.quantity);
@@ -350,27 +363,54 @@ export function classifyStockMovementBatch(
       return {
         status: 'INVALIDO',
         valid: false,
-        reason: `Regla D: Lote inválido: movimiento con código "${m.productCode}" tiene cantidad no numérica o menor/igual a cero (${m.quantity}).`,
+        reason: `Lote inválido: movimiento con código "${m.productCode}" tiene cantidad no numérica o menor/igual a cero (${m.quantity}).`,
         existingKeysCount: 0,
         totalKeysCount: 0,
         validMovements: [],
+        appliedMovements: [],
+        missingMovements: [],
       };
+    }
+  }
+
+  // 2. Comprobar inconsistencias de datos en claves repetidas si se proporcionó detalle de claves
+  if (isMap) {
+    const map = existingIdempotencyKeys as Map<string, Partial<StockMovement>>;
+    for (const m of movements) {
+      if (m.idempotencyKey && map.has(m.idempotencyKey)) {
+        const existingData = map.get(m.idempotencyKey)!;
+        const diffProd = existingData.productCode && existingData.productCode !== m.productCode;
+        const diffBranch = existingData.branchId && existingData.branchId !== m.branchId;
+        const diffQty =
+          existingData.quantity !== undefined &&
+          Math.abs(Number(existingData.quantity) - Number(m.quantity)) > 0.001;
+        const diffFactor =
+          existingData.factor !== undefined && Number(existingData.factor) !== Number(m.factor);
+
+        if (diffProd || diffBranch || diffQty || diffFactor) {
+          return {
+            status: 'INCONSISTENTE',
+            valid: false,
+            reason: `Inconsistencia detectada en clave "${m.idempotencyKey}": los datos del movimiento no coinciden con el registro existente (producto o cantidad incompatible).`,
+            existingKeysCount: 1,
+            totalKeysCount: movements.length,
+            validMovements: [],
+            appliedMovements: [],
+            missingMovements: [],
+          };
+        }
+      }
     }
   }
 
   const movementsWithKey = movements.filter((m) => !!m.idempotencyKey);
   const totalKeysCount = movementsWithKey.length;
-  let existingKeysCount = 0;
+  const appliedMovements = movements.filter((m) => m.idempotencyKey && keysSet.has(m.idempotencyKey));
+  const missingMovements = movements.filter((m) => !m.idempotencyKey || !keysSet.has(m.idempotencyKey));
+  const existingKeysCount = appliedMovements.length;
 
-  for (const m of movementsWithKey) {
-    if (keysSet.has(m.idempotencyKey!)) {
-      existingKeysCount++;
-    }
-  }
-
-  // 2. Evaluar estado de idempotencia del lote
+  // 3. Evaluar estado de idempotencia del lote
   if (totalKeysCount > 0) {
-    // Si todas las claves ya existen
     if (existingKeysCount === totalKeysCount) {
       return {
         status: 'COMPLETAMENTE_APLICADO',
@@ -379,23 +419,25 @@ export function classifyStockMovementBatch(
         existingKeysCount,
         totalKeysCount,
         validMovements: movements,
+        appliedMovements,
+        missingMovements: [],
       };
     }
 
-    // Si existen algunas pero faltan otras -> Inconsistencia / lote incompleto
     if (existingKeysCount > 0 && existingKeysCount < totalKeysCount) {
       return {
         status: 'PARCIALMENTE_APLICADO',
-        valid: false,
-        reason: `Regla D: Lote parcialmente aplicado detectado (${existingKeysCount} de ${totalKeysCount} claves ya existen). Operación incompleta rechazada.`,
+        valid: false, // No considerar exitosa una operación incompleta
+        reason: `Lote parcialmente aplicado detectado (${existingKeysCount} de ${totalKeysCount} claves ya registradas). Se recuperan únicamente los ${missingMovements.length} movimientos faltantes.`,
         existingKeysCount,
         totalKeysCount,
         validMovements: movements,
+        appliedMovements,
+        missingMovements,
       };
     }
   }
 
-  // Si ninguna clave existe o no tienen claves
   return {
     status: 'NO_APLICADO',
     valid: true,
@@ -403,6 +445,8 @@ export function classifyStockMovementBatch(
     existingKeysCount: 0,
     totalKeysCount,
     validMovements: movements,
+    appliedMovements: [],
+    missingMovements: movements,
   };
 }
 

@@ -146,7 +146,8 @@ interface FirebaseContextType {
   deleteOrCancelMeatDeboning: (deboningId: string, operator: string, reason?: string) => Promise<void>;
   saveMeatReception: (reception: MeatReception) => Promise<void>;
   finalizeMeatReception: (reception: MeatReception, operator: string) => Promise<void>;
-  deleteOrCancelMeatReception: (receptionId: string, operator: string, reason?: string) => Promise<void>;
+  deleteOrCancelMeatReception: (receptionId: string, operator: string, reason?: string, hardDelete?: boolean) => Promise<void>;
+  deleteMeatReception: (receptionId: string, operator: string, reason?: string) => Promise<void>;
   initializeChamberStock: (
     branchId: 'NECO 1' | 'NECO 2',
     items: Array<{ productCode: string; stock: number; minStock?: number }>,
@@ -1119,33 +1120,58 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     try {
       await runTransaction(db, async (transaction) => {
-        // 2. Verificar idempotencia de forma robusta (Regla D)
+        // 2. Verificar idempotencia de forma robusta
         const movementsWithKey = movements.filter((m) => !!m.idempotencyKey);
-        const existingKeys = new Set<string>();
+        const existingKeyDocs = new Map<string, any>();
 
         for (const mov of movementsWithKey) {
           const idempRef = doc(db, 'idempotencyKeys', mov.idempotencyKey!);
           const idempDoc = await transaction.get(idempRef);
           if (idempDoc.exists()) {
-            existingKeys.add(mov.idempotencyKey!);
+            existingKeyDocs.set(mov.idempotencyKey!, idempDoc.data());
           }
         }
 
-        if (movementsWithKey.length > 0) {
-          // Lote completamente aplicado previamente: no se duplican movimientos ni saldo de stock
-          if (existingKeys.size === movementsWithKey.length) {
-            console.warn(
-              `Regla D (Idempotencia): Lote completamente aplicado previamente (${existingKeys.size} claves). Se omite el procesamiento para evitar duplicación.`
-            );
-            return;
-          }
+        const alreadyAppliedKeys = new Set<string>();
 
-          // Lote parcialmente aplicado: inconsistencia detectada, rechazar operación incompleta
-          if (existingKeys.size > 0 && existingKeys.size < movementsWithKey.length) {
-            throw new Error(
-              `Regla D (Idempotencia): Lote parcialmente aplicado detectado (${existingKeys.size} de ${movementsWithKey.length} movimientos ya registrados). No se considera exitosa una operación incompleta.`
-            );
+        for (const mov of movementsWithKey) {
+          const saved = existingKeyDocs.get(mov.idempotencyKey!);
+          if (saved) {
+            // Comprobar consistencia: producto, sucursal, cantidad y factor
+            const isSameProduct = !saved.productCode || saved.productCode === mov.productCode;
+            const isSameBranch = !saved.branchId || saved.branchId === mov.branchId;
+            const isSameQty =
+              saved.quantity === undefined ||
+              Math.abs(Number(saved.quantity) - Number(mov.quantity)) < 0.001;
+            const isSameFactor =
+              saved.factor === undefined || Number(saved.factor) === Number(mov.factor);
+
+            if (!isSameProduct || !isSameBranch || !isSameQty || !isSameFactor) {
+              throw new Error(
+                `Inconsistencia detectada en clave de idempotencia "${mov.idempotencyKey}": los datos del movimiento no coinciden con el registro existente. Producto: ${saved.productCode} vs ${mov.productCode}, Cantidad: ${saved.quantity} vs ${mov.quantity}. Operación bloqueada para evitar corrupción de stock.`
+              );
+            }
+            alreadyAppliedKeys.add(mov.idempotencyKey!);
           }
+        }
+
+        // Determinar qué movimientos faltan por procesar
+        const missingMovements = movements.filter(
+          (m) => !m.idempotencyKey || !alreadyAppliedKeys.has(m.idempotencyKey)
+        );
+
+        // Caso C: Lote completamente aplicado previamente (todas las claves ya existen)
+        if (missingMovements.length === 0) {
+          console.warn(
+            `Idempotencia: Todos los movimientos del lote (${alreadyAppliedKeys.size}) ya fueron aplicados previamente. No se modifica el stock.`
+          );
+          return;
+        }
+
+        if (alreadyAppliedKeys.size > 0) {
+          console.info(
+            `Recuperación de lote parcial: ${alreadyAppliedKeys.size} movimientos ya existían; aplicando únicamente los ${missingMovements.length} movimientos faltantes.`
+          );
         }
 
         // 3. Lote no aplicado: procesar todos los movimientos de forma continua
@@ -2029,13 +2055,25 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const deleteOrCancelMeatReception = async (receptionId: string, operator: string, reason?: string) => {
+  const deleteOrCancelMeatReception = async (
+    receptionId: string,
+    operator: string,
+    reason?: string,
+    hardDelete: boolean = false
+  ) => {
     try {
       const reception = meatReceptions.find((r) => r.id === receptionId);
       if (!reception) return;
 
       if (reception.status === 'PENDIENTE') {
         await deleteDoc(doc(db, 'meatReceptions', receptionId));
+        return;
+      }
+
+      if (reception.status === 'ANULADO') {
+        if (hardDelete) {
+          await deleteDoc(doc(db, 'meatReceptions', receptionId));
+        }
         return;
       }
 
@@ -2049,7 +2087,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       );
       if (hasDebonings) {
         throw new Error(
-          `No es posible anular la recepción ${reception.code}: contiene medias reses con despostes finalizados en el sistema. Debe anular primero los despostes asociados.`
+          `No es posible eliminar o anular la recepción ${reception.code}: contiene medias reses con despostes finalizados en el sistema. Debe anular primero los despostes asociados.`
         );
       }
 
@@ -2058,7 +2096,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       );
       if (hasConsumedCarcasses) {
         throw new Error(
-          `No es posible anular la recepción ${reception.code}: una o más medias reses ya han sido despostadas o trasladadas.`
+          `No es posible eliminar o anular la recepción ${reception.code}: una o más medias reses ya han sido despostadas o trasladadas.`
         );
       }
 
@@ -2070,7 +2108,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       );
       if (hasTransfers) {
         throw new Error(
-          `No es posible anular la recepción ${reception.code}: existen traslados de mercadería asociados a la Tropa ${reception.tropaNumber}.`
+          `No es posible eliminar o anular la recepción ${reception.code}: existen traslados de mercadería asociados a la Tropa ${reception.tropaNumber}.`
         );
       }
 
@@ -2103,30 +2141,38 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           referenceDoc: `REV-${reception.code}`,
           reversalOf: reception.code,
           operator,
-          notes: `Reversión por anulación de Recepción ${reception.code} Tropa ${reception.tropaNumber}: ${reason || 'Sin motivo'}`,
+          notes: `Reversión por ${hardDelete ? 'eliminación' : 'anulación'} de Recepción ${reception.code} Tropa ${reception.tropaNumber}: ${reason || 'Eliminación con clave de Administrador'}`,
         };
 
         await recordStockMovementsBatch([reverseMovement]);
       }
 
-      // 4. Actualizar estado de las medias reses y de la recepción a ANULADO
-      const updatedCarcasses = (reception.carcasses || []).map((c) => ({
-        ...c,
-        status: 'ANULADO' as CarcassStatus,
-      }));
+      if (hardDelete) {
+        await deleteDoc(doc(db, 'meatReceptions', receptionId));
+      } else {
+        // 4. Actualizar estado de las medias reses y de la recepción a ANULADO
+        const updatedCarcasses = (reception.carcasses || []).map((c) => ({
+          ...c,
+          status: 'ANULADO' as CarcassStatus,
+        }));
 
-      const updated: MeatReception = {
-        ...reception,
-        carcasses: updatedCarcasses,
-        status: 'ANULADO',
-        notes: (reception.notes ? `${reception.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
-        updatedAt: new Date().toISOString(),
-      };
-      await saveMeatReception(updated);
+        const updated: MeatReception = {
+          ...reception,
+          carcasses: updatedCarcasses,
+          status: 'ANULADO',
+          notes: (reception.notes ? `${reception.notes} | ` : '') + `Anulado por ${operator}: ${reason || 'Sin motivo'}`,
+          updatedAt: new Date().toISOString(),
+        };
+        await saveMeatReception(updated);
+      }
     } catch (error) {
       console.error('Error deleting or cancelling meat reception:', error);
       throw error;
     }
+  };
+
+  const deleteMeatReception = async (receptionId: string, operator: string, reason?: string) => {
+    return deleteOrCancelMeatReception(receptionId, operator, reason, true);
   };
 
   const initializeChamberStock = async (
@@ -2418,6 +2464,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveMeatReception,
         finalizeMeatReception,
         deleteOrCancelMeatReception,
+        deleteMeatReception,
         initializeChamberStock,
         revertCreditNoteStock,
         updateProductMinStock,

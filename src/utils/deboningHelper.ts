@@ -316,8 +316,22 @@ export function createYieldTemplateFromDeboning(
     throw new Error('Regla A.2: No se puede guardar como plantilla de rendimiento un desposte generado mediante estimaciones.');
   }
 
-  // A.2.4 Validar peso inicial positivo
-  const initialWeight = Number(overrides?.referenceInitialWeightKg ?? deboning.initialWeightKg) || 0;
+  // A.2.3b Validar que no tenga movimientos de stock pendientes
+  if (deboning.hasPendingStockMovements) {
+    throw new Error('Regla A.2: El desposte tiene movimientos de stock pendientes o incompletos. No se puede crear la planilla.');
+  }
+
+  // A.2.3c Validar trazabilidad de origen (código de stock, medias reses identificadas o registro histórico con tropa SENASA)
+  const hasOriginTrace =
+    Boolean(deboning.sourceProductCode) ||
+    (Array.isArray(deboning.selectedCarcassIds) && deboning.selectedCarcassIds.length > 0) ||
+    Boolean(deboning.tropaNumber);
+  if (!hasOriginTrace) {
+    throw new Error('Regla A.2: El desposte carece de trazabilidad de materia prima de origen verificable.');
+  }
+
+  // A.2.4 Validar peso inicial positivo (basado en el peso persistido)
+  const initialWeight = Number(deboning.initialWeightKg) || 0;
   if (!Number.isFinite(initialWeight) || initialWeight <= 0) {
     throw new Error('Regla A.2: El peso inicial de la media res de referencia debe ser un valor numérico mayor a 0 Kg.');
   }
