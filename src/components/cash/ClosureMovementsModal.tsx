@@ -524,7 +524,7 @@ export const ClosureMovementsModal: React.FC<ClosureMovementsModalProps> = ({
                     const isPositive = m.type === 'FONDO' || m.type === 'INGRESO';
                     return (
                       <tr
-                        key={idx}
+                        key={`mov-${m.id || idx}-${idx}`}
                         className={`border-b border-[#ebeef2] hover:bg-[#f1f4f8] transition-colors ${
                           idx % 2 === 1 ? 'bg-[#fafbfc]' : 'bg-white'
                         }`}
@@ -593,7 +593,7 @@ export const ClosureMovementsModal: React.FC<ClosureMovementsModalProps> = ({
                 ) : (
                   filteredCtaCte.map((c, idx) => (
                     <tr
-                      key={idx}
+                      key={`cta-${c.ticketNumber || idx}-${idx}`}
                       className={`border-b border-[#ebeef2] hover:bg-[#f1f4f8] transition-colors ${
                         idx % 2 === 1 ? 'bg-[#fafbfc]' : 'bg-white'
                       }`}
@@ -659,7 +659,7 @@ export const ClosureMovementsModal: React.FC<ClosureMovementsModalProps> = ({
 
                     return (
                       <tr
-                        key={idx}
+                        key={`sale-${sale.id || sale.ticketNumber || idx}-${idx}`}
                         onClick={() => setInspectingSale(sale)}
                         className={`border-b border-[#ebeef2] hover:bg-[#e8effd] cursor-pointer transition-colors ${
                           idx % 2 === 1 ? 'bg-[#fafbfc]' : 'bg-white'

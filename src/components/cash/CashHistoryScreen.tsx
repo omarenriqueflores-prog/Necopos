@@ -580,7 +580,7 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
                 <div className="mt-1 bg-white p-1 border border-[#c4c6cf] text-[10px]">
                   <div className="font-bold mb-0.5 text-[#44474e]">Detalle de Clientes ({selectedClosure.currentAccountDetails.length}):</div>
                   {selectedClosure.currentAccountDetails.map((cad, idx) => (
-                    <div key={idx} className="flex justify-between border-b border-[#f1f4f8] py-0.5">
+                    <div key={`hist-cad-${cad.ticketNumber || idx}-${idx}`} className="flex justify-between border-b border-[#f1f4f8] py-0.5">
                       <span className="truncate max-w-[170px]">{cad.customerName}</span>
                       <span className="font-bold">{formatCurrency(cad.amount)}</span>
                     </div>

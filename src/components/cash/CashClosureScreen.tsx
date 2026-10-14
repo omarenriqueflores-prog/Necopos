@@ -684,7 +684,7 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
                   </thead>
                   <tbody>
                     {currentAccountDetails.map((cad, idx) => (
-                      <tr key={idx} className="border-b border-[#ebeef2] hover:bg-[#f1f4f8]">
+                      <tr key={`cad-${cad.ticketNumber || idx}-${idx}`} className="border-b border-[#ebeef2] hover:bg-[#f1f4f8]">
                         <td className="p-1 font-mono text-[10px] border-r border-[#ebeef2]">{cad.ticketNumber || '-'}</td>
                         <td className="p-1 font-mono text-[10px] border-r border-[#ebeef2]">{cad.time || '-'}</td>
                         <td className="p-1 font-semibold text-[#002046] border-r border-[#ebeef2]">{cad.customerName}</td>
@@ -728,7 +728,7 @@ export const CashClosureScreen: React.FC<CashClosureScreenProps> = ({
                   </thead>
                   <tbody>
                     {employeeValesMovements.map((ev, idx) => (
-                      <tr key={idx} className="border-b border-[#ebeef2] hover:bg-[#f1f4f8]">
+                      <tr key={`ev-${ev.voucher || idx}-${idx}`} className="border-b border-[#ebeef2] hover:bg-[#f1f4f8]">
                         <td className="p-1 font-mono text-[10px] border-r border-[#ebeef2]">{ev.voucher || '-'}</td>
                         <td className="p-1 font-mono text-[10px] border-r border-[#ebeef2]">{ev.time || '-'}</td>
                         <td className="p-1 font-semibold text-[#002046] border-r border-[#ebeef2]">{ev.concept}</td>

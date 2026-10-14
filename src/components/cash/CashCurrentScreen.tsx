@@ -53,7 +53,8 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
     accountMovements,
     saveCustomer,
     saveEmployee,
-    deleteAccountMovement
+    deleteAccountMovement,
+    purgeDatabase
   } = useFirebase();
   console.log("Debug: FirebaseContext contents:", { cancelSaleRecord, deleteSaleRecord });
 
@@ -320,15 +321,43 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
           </button>
 
           {isAdminOrSuperadmin && (
-            <button
-              onClick={handlePurgeCurrentShift}
-              disabled={branchSales.length === 0 && branchMovements.length === 0}
-              className="h-[26px] px-2.5 bg-[#ffdad6] hover:bg-[#ffb4ab] border border-[#ba1a1a] text-[#aa3531] text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40 shadow-2xs"
-              title="Eliminar de la base de datos todas las ventas y movimientos registrados en el turno activo (Requiere clave de Administrador)"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-[#aa3531]" />
-              <span>Limpiar Ventas / Caja Actual</span>
-            </button>
+            <div className="flex items-center gap-1 ml-1">
+              <button
+                onClick={handlePurgeCurrentShift}
+                disabled={branchSales.length === 0 && branchMovements.length === 0}
+                className="h-[26px] px-2.5 bg-[#ffdad6] hover:bg-[#ffb4ab] border border-[#ba1a1a] text-[#aa3531] text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40 shadow-2xs"
+                title="Eliminar de la base de datos todas las ventas y movimientos registrados en el turno activo (Requiere clave de Administrador)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-[#aa3531]" />
+                <span>Limpiar Turno</span>
+              </button>
+              <button
+                onClick={async () => {
+                  const authorized = await showAdminAuth(
+                    'ATENCIÓN: Está a punto de BORRAR TODA LA BASE DE DATOS del sistema (productos, clientes, ventas, stock, movimientos, etc.).\n\nEsta acción es irreversible y dejará el sistema completamente en cero. ¿Desea continuar?',
+                    '⚠️ ZONA DE PELIGRO - VACIAR TODA LA BASE DE DATOS'
+                  );
+                  if (authorized) {
+                    const doubleCheck = await showConfirm(
+                      '¿CONFIRMA ABSOLUTAMENTE que desea eliminar TODO el contenido de la base de datos de Firestore?'
+                    );
+                    if (doubleCheck) {
+                      try {
+                        await purgeDatabase();
+                        await showAlert('Base de datos vaciada y reiniciada a cero correctamente.');
+                      } catch (err: any) {
+                        await showAlert(`Error al vaciar la base de datos: ${err?.message || 'Error desconocido'}`);
+                      }
+                    }
+                  }
+                }}
+                className="h-[26px] px-2.5 bg-[#ba1a1a] hover:bg-[#891c1d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
+                title="Vaciar absolutamente toda la base de datos de Firestore (Productos, Stock, Ventas, Clientes)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-white" />
+                <span>LIMPIEZA TOTAL BD</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -869,7 +898,7 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                         ? `${item.quantity} Unid`
                         : '1 Unid';
                       return (
-                        <tr key={item.id || idx} className="h-6 hover:bg-gray-50">
+                        <tr key={`curr-item-${item.id || item.code || idx}-${idx}`} className="h-6 hover:bg-gray-50">
                           <td className="px-2 text-[#555]">{item.code || '--'}</td>
                           <td className="px-2 font-sans font-bold">{item.description}</td>
                           <td className="px-2 text-right font-bold">{qtyStr}</td>

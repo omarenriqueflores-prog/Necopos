@@ -455,7 +455,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-[#ebeef2]">
                   {parsedProducts.slice(0, 10).map((p, i) => (
-                    <tr key={i} className="h-6 hover:bg-[#f1f4f8]">
+                    <tr key={`imp-${p.code || i}-${i}`} className="h-6 hover:bg-[#f1f4f8]">
                       <td className="px-2 font-mono font-bold text-[#002046] border-r border-[#c4c6cf]">
                         {p.code}
                       </td>

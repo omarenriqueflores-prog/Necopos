@@ -637,7 +637,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ currentUser }) => 
               </thead>
               <tbody className="divide-y divide-[#ebeef2]">
                 {paymentBreakdown.map((pb, idx) => (
-                  <tr key={idx} className="h-[26px]">
+                  <tr key={`pb-${pb.method}-${idx}`} className="h-[26px]">
                     <td className="px-2 font-semibold border-r border-[#c4c6cf]">{pb.method}</td>
                     <td className="px-2 text-center font-mono border-r border-[#c4c6cf]">{pb.count}</td>
                     <td className="px-2 text-right font-mono font-bold text-[12px] border-r border-[#c4c6cf] text-[#002046]">

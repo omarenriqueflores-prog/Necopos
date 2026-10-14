@@ -1420,7 +1420,7 @@ export const CurrentAccountsScreen: React.FC<CurrentAccountsScreenProps> = ({
                         ? `${item.quantity} Unid`
                         : '1 Unid';
                       return (
-                        <tr key={item.id || idx} className="h-6 hover:bg-gray-50">
+                        <tr key={`act-item-${item.id || item.code || idx}-${idx}`} className="h-6 hover:bg-gray-50">
                           <td className="px-2 text-[#555]">{item.code || '--'}</td>
                           <td className="px-2 font-sans font-bold">{item.description}</td>
                           <td className="px-2 text-right font-bold">{qtyStr}</td>

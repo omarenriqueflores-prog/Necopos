@@ -176,7 +176,7 @@ export const DeboningDetailModal: React.FC<DeboningDetailModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-gray-200 text-[11px]">
                   {deboning.cuts.map((cut, idx) => (
-                    <tr key={idx} className="hover:bg-blue-50">
+                    <tr key={`deb-cut-${cut.productCode || idx}-${idx}`} className="hover:bg-blue-50">
                       <td className="p-1.5 font-mono font-bold text-gray-700 border-r border-gray-200">
                         {cut.productCode}
                       </td>

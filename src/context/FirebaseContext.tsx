@@ -447,12 +447,24 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setUsers(INITIAL_USERS);
         } else {
           const loaded = snapshot.docs.map((docItem) => docItem.data() as UserAccount);
-          setUsers(loaded);
+          const map = new Map<string, UserAccount>();
+          for (const u of loaded) {
+            if (u.username) {
+              map.set(u.username.trim().toLowerCase(), u);
+            }
+          }
+          setUsers(Array.from(map.values()));
         }
       },
       (error) => {
         console.warn('Firestore Users sync error:', error);
-        setUsers(INITIAL_USERS);
+        const map = new Map<string, UserAccount>();
+        for (const u of INITIAL_USERS) {
+          if (u.username) {
+            map.set(u.username.trim().toLowerCase(), u);
+          }
+        }
+        setUsers(Array.from(map.values()));
       }
     );
     return () => unsub();
