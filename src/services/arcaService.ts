@@ -17,6 +17,9 @@ export interface ArcaStatusResponse {
   vatCondition: string;
   hasCert: boolean;
   hasKey: boolean;
+  missingEnvVars?: string[];
+  envWarnings?: string[];
+  configSource?: string;
   authMethod: string;
   activePvs: Array<{ branch: string; pv: string; address: string; status: string }>;
   timestamp: string;
@@ -43,7 +46,8 @@ export interface CuitLookupResponse {
 
 export interface GenerateCsrResponse {
   success: boolean;
-  privateKey: string;
+  privateKey?: string;
+  hasPrivateKey?: boolean;
   csr: string;
   subject: string;
   alias: string;
@@ -60,6 +64,9 @@ export interface ParseCertResponse {
   validFrom: string;
   validTo: string;
   serial: string;
+  cuit?: string;
+  detectedEnvironment?: 'homologacion' | 'produccion';
+  hasCertificate?: boolean;
   isExpired: boolean;
   isValid: boolean;
   message: string;
@@ -92,8 +99,6 @@ export interface AuthorizeInvoicePayload {
   creditNoteReason?: string;
   creditNoteType?: 'TOTAL' | 'PARCIAL';
   simulateError?: boolean;
-  certificate?: string;
-  privateKey?: string;
   cuit?: string;
   environment?: string;
 }
@@ -112,35 +117,124 @@ export interface AuthorizeInvoiceResponse {
   message?: string;
 }
 
+interface ActiveAuthUser {
+  id: string;
+  username: string;
+  role: string;
+  active?: boolean;
+}
+
+let currentAuthUser: ActiveAuthUser | null = null;
+let cachedSessionToken: string | null = null;
+let cachedSessionUserKey: string | null = null;
+
+function purgeLegacyLocalSecrets(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem('necopos_arca_certificate');
+    localStorage.removeItem('necopos_arca_private_key');
+    localStorage.removeItem('necopos_arca_generated_key');
+  } catch (_) {}
+}
+
 export const arcaService = {
-  // Get stored ARCA config from localStorage (merging dedicated cert/key backups) or defaults
+  // Set current authenticated POS user for server RBAC token issuance
+  setAuthUser(user: ActiveAuthUser | null): void {
+    const nextKey = user ? `${user.id}:${user.role}` : null;
+    if (nextKey !== cachedSessionUserKey) {
+      cachedSessionToken = null;
+      cachedSessionUserKey = nextKey;
+    }
+    currentAuthUser = user;
+  },
+
+  getEffectiveAuthUser(): ActiveAuthUser | null {
+    if (currentAuthUser && currentAuthUser.id && currentAuthUser.role) {
+      return currentAuthUser;
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem('neco_pos_local_user');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.id && parsed.role && parsed.active !== false) {
+            return {
+              id: String(parsed.id),
+              username: String(parsed.username || parsed.id),
+              role: String(parsed.role).toUpperCase(),
+              active: parsed.active !== false,
+            };
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  },
+
+  async getAdminAuthHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const effUser = this.getEffectiveAuthUser();
+    if (!effUser) {
+      return headers;
+    }
+
+    const userKey = `${effUser.id}:${effUser.role}`;
+    if (!cachedSessionToken || cachedSessionUserKey !== userKey) {
+      try {
+        const res = await fetch('/api/arca/auth-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: effUser.id,
+            username: effUser.username,
+            role: effUser.role,
+            active: effUser.active !== false,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.token) {
+            cachedSessionToken = data.token;
+            cachedSessionUserKey = userKey;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (cachedSessionToken) {
+      headers['Authorization'] = `Bearer ${cachedSessionToken}`;
+      headers['X-User-Role'] = effUser.role;
+    }
+    return headers;
+  },
+
+  // Get stored non-sensitive ARCA config metadata from localStorage (secrets are never stored in browser)
   getStoredConfig(): ArcaConfig {
+    purgeLegacyLocalSecrets();
     let parsed: Partial<ArcaConfig> = {};
     try {
-      const saved = localStorage.getItem('necopos_arca_config');
-      if (saved) parsed = JSON.parse(saved) || {};
+      if (typeof localStorage !== 'undefined') {
+        const saved = localStorage.getItem('necopos_arca_config');
+        if (saved) parsed = JSON.parse(saved) || {};
+      }
     } catch (_) {}
 
-    let savedCert = '';
-    let savedKey = '';
-    try {
-      savedCert =
-        localStorage.getItem('necopos_arca_certificate') ||
-        (parsed.certificate && parsed.certificate.includes('BEGIN CERTIFICATE') ? parsed.certificate : '') ||
-        '';
-      savedKey =
-        localStorage.getItem('necopos_arca_private_key') ||
-        localStorage.getItem('necopos_arca_generated_key') ||
-        (parsed.privateKey && parsed.privateKey.includes('PRIVATE KEY') ? parsed.privateKey : '') ||
-        '';
-    } catch (_) {}
+    const hasCert = Boolean(parsed.hasCertificate);
+    const hasKey = Boolean(parsed.hasPrivateKey);
 
-    const cert = (parsed.certificate && parsed.certificate.includes('BEGIN CERTIFICATE'))
-      ? parsed.certificate
-      : savedCert;
-    const key = (parsed.privateKey && parsed.privateKey.includes('PRIVATE KEY'))
-      ? parsed.privateKey
-      : savedKey;
+    // If legacy config had embedded PEM strings, scrub them from localStorage immediately
+    if (parsed.certificate || parsed.privateKey) {
+      try {
+        const sanitized = { ...parsed };
+        delete sanitized.certificate;
+        delete sanitized.privateKey;
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('necopos_arca_config', JSON.stringify(sanitized));
+        }
+      } catch (_) {}
+    }
 
     return {
       cuit: parsed.cuit || '20-25506516-6',
@@ -149,11 +243,9 @@ export const arcaService = {
       environment: parsed.environment || 'produccion',
       pointsOfSale: parsed.pointsOfSale || { 'NECO 1': '0017', 'NECO 2': '0018' },
       connected: parsed.connected ?? true,
-      certificateLinked: Boolean(cert && key) || Boolean(parsed.certificateLinked),
-      hasCertificate: Boolean(cert) || Boolean(parsed.hasCertificate),
-      hasPrivateKey: Boolean(key) || Boolean(parsed.hasPrivateKey),
-      certificate: cert || undefined,
-      privateKey: key || undefined,
+      certificateLinked: Boolean(hasCert && hasKey) || Boolean(parsed.certificateLinked),
+      hasCertificate: hasCert,
+      hasPrivateKey: hasKey,
       alias: parsed.alias || 'necopos',
       csr: parsed.csr,
       certificateSubject: parsed.certificateSubject,
@@ -163,78 +255,89 @@ export const arcaService = {
     };
   },
 
-  // Persist credentials across all localStorage keys and backend storage
+  // Persist non-sensitive metadata in localStorage and forward any newly uploaded secrets exclusively to server
   persistCredentials(partial: Partial<ArcaConfig>): ArcaConfig {
+    purgeLegacyLocalSecrets();
     const current = this.getStoredConfig();
-    const nextCert =
+    const uploadedCert =
       partial.certificate && partial.certificate.includes('BEGIN CERTIFICATE')
         ? partial.certificate.trim()
-        : current.certificate;
-    const nextKey =
+        : undefined;
+    const uploadedKey =
       partial.privateKey && partial.privateKey.includes('PRIVATE KEY')
         ? partial.privateKey.trim()
-        : current.privateKey;
+        : undefined;
 
-    const merged: ArcaConfig = {
+    const hasCert = Boolean(uploadedCert) || Boolean(partial.hasCertificate ?? current.hasCertificate);
+    const hasKey = Boolean(uploadedKey) || Boolean(partial.hasPrivateKey ?? current.hasPrivateKey);
+
+    const sanitizedMetadata: ArcaConfig = {
       ...current,
       ...partial,
-      certificate: nextCert,
-      privateKey: nextKey,
-      hasCertificate: Boolean(nextCert),
-      hasPrivateKey: Boolean(nextKey),
-      certificateLinked: Boolean(nextCert && nextKey),
+      hasCertificate: hasCert,
+      hasPrivateKey: hasKey,
+      certificateLinked: Boolean(hasCert && hasKey),
     };
+    delete sanitizedMetadata.certificate;
+    delete sanitizedMetadata.privateKey;
 
     try {
-      if (nextCert) {
-        localStorage.setItem('necopos_arca_certificate', nextCert);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('necopos_arca_config', JSON.stringify(sanitizedMetadata));
       }
-      if (nextKey) {
-        localStorage.setItem('necopos_arca_private_key', nextKey);
-        localStorage.setItem('necopos_arca_generated_key', nextKey);
-      }
-      localStorage.setItem('necopos_arca_config', JSON.stringify(merged));
     } catch (_) {}
 
-    // Fire-and-forget sync to backend disk storage
-    fetch('/api/arca/save-credentials', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cuit: merged.cuit,
-        companyName: merged.companyName,
-        environment: merged.environment,
-        alias: merged.alias,
-        certificate: merged.certificate,
-        privateKey: merged.privateKey,
-        pointsOfSale: merged.pointsOfSale,
-      }),
-    }).catch(() => {});
+    // Only sync to protected server endpoint if an authenticated ADMIN/SUPERADMIN session is active
+    const effUser = this.getEffectiveAuthUser();
+    if (effUser && (effUser.role === 'SUPERADMIN' || effUser.role === 'ADMIN')) {
+      this.getAdminAuthHeaders()
+        .then((headers) =>
+          fetch('/api/arca/save-credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              cuit: sanitizedMetadata.cuit,
+              companyName: sanitizedMetadata.companyName,
+              environment: sanitizedMetadata.environment,
+              alias: sanitizedMetadata.alias,
+              ...(uploadedCert ? { certificate: uploadedCert } : {}),
+              ...(uploadedKey ? { privateKey: uploadedKey } : {}),
+              pointsOfSale: sanitizedMetadata.pointsOfSale,
+            }),
+          })
+        )
+        .catch(() => {});
+    }
 
-    return merged;
+    return sanitizedMetadata;
   },
 
-  // Fetch server-stored ARCA credentials (if any) to recover after browser/DB resets
+  // Fetch non-sensitive ARCA credential status from protected server endpoint
   async fetchServerCredentials(): Promise<Partial<ArcaConfig> | null> {
     try {
-      const res = await fetch('/api/arca/credentials');
+      const headers = await this.getAdminAuthHeaders();
+      const res = await fetch('/api/arca/credentials', { headers });
       if (!res.ok) return null;
       const data = await res.json();
       if (data?.success && data.credentials) {
-        return data.credentials;
+        const creds = { ...data.credentials };
+        delete creds.certificate;
+        delete creds.privateKey;
+        return creds;
       }
     } catch (_) {}
     return null;
   },
 
-  // Check connection status with ARCA backend
+  // Check connection status with ARCA backend (never sends secrets from browser)
   async checkStatus(cfg?: Partial<ArcaConfig>): Promise<ArcaStatusResponse> {
     const stored = this.getStoredConfig();
     const mergedCfg = {
-      ...stored,
-      ...(cfg || {}),
-      certificate: cfg?.certificate || stored.certificate,
-      privateKey: cfg?.privateKey || stored.privateKey,
+      cuit: cfg?.cuit || stored.cuit,
+      companyName: cfg?.companyName || stored.companyName,
+      vatCondition: cfg?.vatCondition || stored.vatCondition,
+      environment: cfg?.environment || stored.environment,
+      pointsOfSale: cfg?.pointsOfSale || stored.pointsOfSale,
     };
     try {
       const res = await fetch('/api/arca/status', {
@@ -254,8 +357,8 @@ export const arcaService = {
         cuit: mergedCfg.cuit || '20-25506516-6',
         companyName: mergedCfg.companyName || 'MOYA CARLOS HUGO',
         vatCondition: mergedCfg.vatCondition || 'Responsable Inscripto',
-        hasCert: Boolean(mergedCfg.certificate || mergedCfg.hasCertificate),
-        hasKey: Boolean(mergedCfg.privateKey || mergedCfg.hasPrivateKey),
+        hasCert: Boolean(stored.hasCertificate),
+        hasKey: Boolean(stored.hasPrivateKey),
         authMethod: 'Offline / En espera',
         activePvs: [
           { branch: 'NECO 1', pv: mergedCfg.pointsOfSale?.['NECO 1'] || '0017', address: '24 de Septiembre', status: 'PENDIENTE' },
@@ -267,12 +370,10 @@ export const arcaService = {
     }
   },
 
-  // Query CUIT or DNI from ARCA / AFIP Padrón
+  // Query CUIT or DNI from ARCA / AFIP Padrón (server resolves its own credentials)
   async lookupCuit(cuitOrDni: string, config?: ArcaConfig): Promise<CuitLookupResponse> {
     const stored = this.getStoredConfig();
     const extraParams = {
-      certificate: config?.certificate || stored.certificate,
-      privateKey: config?.privateKey || stored.privateKey,
       cuitRepresentada: config?.cuit || stored.cuit,
       environment: config?.environment || stored.environment,
     };
@@ -295,15 +396,13 @@ export const arcaService = {
     }
   },
 
-  // Authorize invoice or credit note via ARCA WSFEv1
+  // Authorize invoice or credit note via ARCA WSFEv1 (server resolves its own credentials)
   async authorize(payload: AuthorizeInvoicePayload): Promise<AuthorizeInvoiceResponse> {
     try {
       const stored = this.getStoredConfig();
 
-      const fullPayload: AuthorizeInvoicePayload = {
+      const cleanPayload: AuthorizeInvoicePayload = {
         ...payload,
-        certificate: payload.certificate || stored.certificate || '',
-        privateKey: payload.privateKey || stored.privateKey || '',
         cuit: payload.cuit || stored.cuit || '20-25506516-6',
         environment: payload.environment || stored.environment || 'produccion',
       };
@@ -311,7 +410,7 @@ export const arcaService = {
       const res = await fetch('/api/arca/authorize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fullPayload),
+        body: JSON.stringify(cleanPayload),
       });
 
       const data = await res.json();
@@ -415,16 +514,17 @@ export const arcaService = {
     return `https://www.afip.gob.ar/fe/qr/?p=${b64}`;
   },
 
-  // Generates 2048-bit RSA Private Key & Certificate Signing Request (CSR) via OpenSSL on backend
+  // Generates 2048-bit RSA Private Key & Certificate Signing Request (CSR) via OpenSSL on backend (Private key remains on server)
   async generateKeyAndCsr(
     cuit: string,
     companyName: string,
     alias: string,
     format: 'exact' | 'full' = 'exact'
   ): Promise<GenerateCsrResponse> {
+    const headers = await this.getAdminAuthHeaders();
     const res = await fetch('/api/arca/generate-csr', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ cuit, companyName, alias, format }),
     });
     if (!res.ok) {
@@ -432,17 +532,22 @@ export const arcaService = {
       throw new Error(errData.error || `Error ${res.status} al generar clave y CSR`);
     }
     const data = await res.json();
-    if (data?.privateKey) {
-      this.persistCredentials({ privateKey: data.privateKey, cuit, companyName, alias });
-    }
+    this.persistCredentials({
+      hasPrivateKey: true,
+      cuit,
+      companyName,
+      alias,
+      csr: data?.csr,
+    });
     return data;
   },
 
   // Parses and verifies an X.509 certificate PEM via OpenSSL on backend
   async parseCertificate(certText: string): Promise<ParseCertResponse> {
+    const headers = await this.getAdminAuthHeaders();
     const res = await fetch('/api/arca/parse-cert', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ certText }),
     });
     if (!res.ok) {
@@ -456,9 +561,7 @@ export const arcaService = {
   async getLastVouchers(
     pointOfSale: string = '0017',
     environment: string = 'produccion',
-    cuit?: string,
-    certificate?: string,
-    privateKey?: string
+    cuit?: string
   ): Promise<{
     success: boolean;
     pointOfSale: string;
@@ -486,8 +589,6 @@ export const arcaService = {
     const stored = this.getStoredConfig();
     const ptoVtaNum = parseInt(String(pointOfSale).replace(/\D/g, ''), 10) || 17;
     const pvFormatted = ptoVtaNum.toString().padStart(4, '0');
-    const effCert = certificate || stored.certificate;
-    const effKey = privateKey || stored.privateKey;
     const effCuit = cuit || stored.cuit || '20-25506516-6';
     const effEnv = environment || stored.environment || 'produccion';
 
@@ -510,8 +611,6 @@ export const arcaService = {
           pointOfSale: pvFormatted,
           environment: effEnv,
           cuit: effCuit,
-          certificate: effCert,
-          privateKey: effKey,
         }),
       });
 
@@ -528,7 +627,7 @@ export const arcaService = {
         environment: effEnv,
         cuit: effCuit,
         hasCredentials: false,
-        hasUploadedFiles: Boolean(effCert && effKey),
+        hasUploadedFiles: Boolean(stored.hasCertificate && stored.hasPrivateKey),
         wsaaError: err.message,
         vouchers: typesToQuery.map((t) => ({
           cbteTipo: t.cbteTipo,

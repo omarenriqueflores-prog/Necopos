@@ -259,8 +259,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsubscribe();
   }, []);
 
-  // Sync localUser to localStorage
+  // Sync localUser to localStorage and arcaService
   useEffect(() => {
+    arcaService.setAuthUser(localUser);
     if (typeof window !== 'undefined') {
       try {
         if (localUser) {
@@ -637,7 +638,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
-  // Sync ARCA Config from Firestore (with bootstrapping and credential recovery)
+  // Sync ARCA Config from Firestore (non-sensitive status only; secrets remain on server)
   useEffect(() => {
     const unsub = onSnapshot(
       doc(db, 'arcaConfig', 'main'),
@@ -651,9 +652,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               ...DEFAULT_ARCA_CONFIG,
               ...localStored,
               ...(serverStored || {}),
-              certificate: localStored.certificate || serverStored?.certificate,
-              privateKey: localStored.privateKey || serverStored?.privateKey,
+              hasCertificate: Boolean(serverStored?.hasCertificate ?? localStored.hasCertificate),
+              hasPrivateKey: Boolean(serverStored?.hasPrivateKey ?? localStored.hasPrivateKey),
+              certificateLinked: Boolean(
+                (serverStored?.hasCertificate ?? localStored.hasCertificate) &&
+                  (serverStored?.hasPrivateKey ?? localStored.hasPrivateKey)
+              ),
             };
+            delete initialCfg.certificate;
+            delete initialCfg.privateKey;
             await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(initialCfg), { merge: true });
             setArcaConfig(initialCfg);
             arcaService.persistCredentials(initialCfg);
@@ -662,44 +669,26 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           }
         } else {
           const data = docSnap.data() as ArcaConfig;
-          const recoveredCert =
-            (data.certificate && data.certificate.includes('BEGIN CERTIFICATE') ? data.certificate : undefined) ||
-            (localStored.certificate && localStored.certificate.includes('BEGIN CERTIFICATE') ? localStored.certificate : undefined) ||
-            (serverStored?.certificate && serverStored.certificate.includes('BEGIN CERTIFICATE') ? serverStored.certificate : undefined);
-          const recoveredKey =
-            (data.privateKey && data.privateKey.includes('PRIVATE KEY') ? data.privateKey : undefined) ||
-            (localStored.privateKey && localStored.privateKey.includes('PRIVATE KEY') ? localStored.privateKey : undefined) ||
-            (serverStored?.privateKey && serverStored.privateKey.includes('PRIVATE KEY') ? serverStored.privateKey : undefined);
+          const hasCert = Boolean(
+            serverStored?.hasCertificate ?? data.hasCertificate ?? localStored.hasCertificate
+          );
+          const hasKey = Boolean(
+            serverStored?.hasPrivateKey ?? data.hasPrivateKey ?? localStored.hasPrivateKey
+          );
 
           const merged: ArcaConfig = {
             ...DEFAULT_ARCA_CONFIG,
             ...data,
-            certificate: recoveredCert,
-            privateKey: recoveredKey,
-            hasCertificate: Boolean(recoveredCert),
-            hasPrivateKey: Boolean(recoveredKey),
-            certificateLinked: Boolean(recoveredCert && recoveredKey),
+            ...(serverStored || {}),
+            hasCertificate: hasCert,
+            hasPrivateKey: hasKey,
+            certificateLinked: Boolean(hasCert && hasKey),
           };
+          delete merged.certificate;
+          delete merged.privateKey;
 
           setArcaConfig(merged);
           arcaService.persistCredentials(merged);
-
-          // If Firestore was missing cert or key that we recovered locally/from server, heal Firestore automatically
-          if ((!data.certificate && recoveredCert) || (!data.privateKey && recoveredKey)) {
-            try {
-              await setDoc(
-                doc(db, 'arcaConfig', 'main'),
-                sanitizeForFirestore({
-                  certificate: recoveredCert,
-                  privateKey: recoveredKey,
-                  hasCertificate: Boolean(recoveredCert),
-                  hasPrivateKey: Boolean(recoveredKey),
-                  certificateLinked: Boolean(recoveredCert && recoveredKey),
-                }),
-                { merge: true }
-              );
-            } catch (_) {}
-          }
         }
       },
       (error) => {
@@ -1239,25 +1228,27 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const path = `arcaConfig/main`;
     try {
       const stored = arcaService.getStoredConfig();
-      const merged: ArcaConfig = {
+      const hasCert = Boolean(cfg.certificate || cfg.hasCertificate || arcaConfig.hasCertificate || stored.hasCertificate);
+      const hasKey = Boolean(cfg.privateKey || cfg.hasPrivateKey || arcaConfig.hasPrivateKey || stored.hasPrivateKey);
+
+      const mergedWithUpload: ArcaConfig = {
         ...stored,
         ...arcaConfig,
         ...cfg,
-        certificate: cfg.certificate || arcaConfig.certificate || stored.certificate,
-        privateKey: cfg.privateKey || arcaConfig.privateKey || stored.privateKey,
+        hasCertificate: hasCert,
+        hasPrivateKey: hasKey,
+        certificateLinked: Boolean(hasCert && hasKey),
       };
-      merged.hasCertificate = Boolean(merged.certificate);
-      merged.hasPrivateKey = Boolean(merged.privateKey);
-      merged.certificateLinked = Boolean(merged.certificate && merged.privateKey);
 
-      arcaService.persistCredentials(merged);
-      setArcaConfig(merged);
-      await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(merged), { merge: true });
+      // Forward any uploaded certificate/privateKey to the server and persist only sanitized metadata locally
+      const sanitized = arcaService.persistCredentials(mergedWithUpload);
+      setArcaConfig(sanitized);
+      await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(sanitized), { merge: true });
 
       // Sync points of sale back to branches if they were updated in arcaConfig
-      if (merged.pointsOfSale) {
+      if (sanitized.pointsOfSale) {
         const batch = writeBatch(db);
-        for (const [branchKey, ptoVta] of Object.entries(merged.pointsOfSale)) {
+        for (const [branchKey, ptoVta] of Object.entries(sanitized.pointsOfSale)) {
           const branchRef = doc(db, 'branches', branchKey);
           batch.set(branchRef, { pointOfSale: ptoVta }, { merge: true });
         }

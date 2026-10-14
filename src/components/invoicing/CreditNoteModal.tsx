@@ -126,8 +126,6 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
         },
         creditNoteReason: reason,
         creditNoteType: creditType,
-        certificate: fb?.arcaConfig?.certificate || arcaService.getStoredConfig().certificate,
-        privateKey: fb?.arcaConfig?.privateKey || arcaService.getStoredConfig().privateKey,
         cuit: fb?.arcaConfig?.cuit || arcaService.getStoredConfig().cuit,
         environment: fb?.arcaConfig?.environment || arcaService.getStoredConfig().environment,
       });

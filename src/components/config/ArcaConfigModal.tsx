@@ -51,10 +51,12 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
   const [formConfig, setFormConfig] = useState<ArcaConfig>(() => ({
     ...storedInitial,
     ...config,
-    certificate: config.certificate || storedInitial.certificate,
-    privateKey: config.privateKey || storedInitial.privateKey,
-    hasCertificate: Boolean(config.certificate || storedInitial.certificate),
-    hasPrivateKey: Boolean(config.privateKey || storedInitial.privateKey),
+    hasCertificate: Boolean(config.hasCertificate || storedInitial.hasCertificate),
+    hasPrivateKey: Boolean(config.hasPrivateKey || storedInitial.hasPrivateKey),
+    certificateLinked: Boolean(
+      (config.hasCertificate || storedInitial.hasCertificate) &&
+        (config.hasPrivateKey || storedInitial.hasPrivateKey)
+    ),
     pointsOfSale: {
       'NECO 1':
         config.pointsOfSale?.['NECO 1'] ||
@@ -80,32 +82,28 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
   const [copiedCsr, setCopiedCsr] = useState<boolean>(false);
 
-  // Etapa 2.3 Certificate & Key Upload State
-  const initialKey = config.privateKey || storedInitial.privateKey || '';
-  const initialCert = config.certificate || storedInitial.certificate || '';
-  const [certInput, setCertInput] = useState<string>(initialCert);
-  const [keyInput, setKeyInput] = useState<string>(initialKey);
+  // Etapa 2.3 Certificate & Key Upload State (write-only inputs; secrets are never fetched back to the browser)
+  const [certInput, setCertInput] = useState<string>('');
+  const [keyInput, setKeyInput] = useState<string>('');
   const [isParsingCert, setIsParsingCert] = useState<boolean>(false);
   const [parsedCert, setParsedCert] = useState<ParseCertResponse | null>(null);
 
   const wasOpenRef = useRef<boolean>(false);
 
-  // Sync state ONLY when modal transitions from closed to open (never wipe user's in-progress uploads on parent re-renders)
+  // Sync state ONLY when modal transitions from closed to open
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true;
       const latestStored = arcaService.getStoredConfig();
-      const mergedCert = config.certificate || latestStored.certificate || '';
-      const mergedKey = config.privateKey || latestStored.privateKey || '';
+      const hasCert = Boolean(config.hasCertificate || latestStored.hasCertificate);
+      const hasKey = Boolean(config.hasPrivateKey || latestStored.hasPrivateKey);
 
       setFormConfig({
         ...latestStored,
         ...config,
-        certificate: mergedCert,
-        privateKey: mergedKey,
-        hasCertificate: Boolean(mergedCert),
-        hasPrivateKey: Boolean(mergedKey),
-        certificateLinked: Boolean(mergedCert && mergedKey),
+        hasCertificate: hasCert,
+        hasPrivateKey: hasKey,
+        certificateLinked: Boolean(hasCert && hasKey),
         pointsOfSale: {
           'NECO 1':
             config.pointsOfSale?.['NECO 1'] ||
@@ -117,27 +115,29 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
             '0018',
         },
       });
-      setCertInput(mergedCert);
-      setKeyInput(mergedKey);
+      setCertInput('');
+      setKeyInput('');
       setAlias(config.alias || latestStored.alias || 'necopos');
 
-      // Also check server credentials if missing locally
-      if (!mergedCert || !mergedKey) {
-        arcaService.fetchServerCredentials().then((srv) => {
-          if (srv && (srv.certificate || srv.privateKey)) {
-            setFormConfig((prev) => ({
+      // Query non-sensitive credential status from protected server endpoint
+      arcaService.fetchServerCredentials().then((srv) => {
+        if (srv) {
+          setFormConfig((prev) => {
+            const nextHasCert = Boolean(srv.hasCertificate ?? prev.hasCertificate);
+            const nextHasKey = Boolean(srv.hasPrivateKey ?? prev.hasPrivateKey);
+            return {
               ...prev,
-              certificate: prev.certificate || srv.certificate,
-              privateKey: prev.privateKey || srv.privateKey,
-              hasCertificate: Boolean(prev.certificate || srv.certificate),
-              hasPrivateKey: Boolean(prev.privateKey || srv.privateKey),
-              certificateLinked: Boolean((prev.certificate || srv.certificate) && (prev.privateKey || srv.privateKey)),
-            }));
-            if (srv.certificate) setCertInput((prev) => prev || srv.certificate || '');
-            if (srv.privateKey) setKeyInput((prev) => prev || srv.privateKey || '');
-          }
-        });
-      }
+              ...(srv.cuit ? { cuit: srv.cuit } : {}),
+              ...(srv.companyName ? { companyName: srv.companyName } : {}),
+              ...(srv.environment ? { environment: srv.environment } : {}),
+              ...(srv.alias ? { alias: srv.alias } : {}),
+              hasCertificate: nextHasCert,
+              hasPrivateKey: nextHasKey,
+              certificateLinked: Boolean(nextHasCert && nextHasKey),
+            };
+          });
+        }
+      });
     } else if (!isOpen) {
       wasOpenRef.current = false;
     }
@@ -206,7 +206,7 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
     }
   };
 
-  // Generate Key and CSR directly via OpenSSL on backend
+  // Generate Key and CSR directly via OpenSSL on backend (Private key stays exclusively on server)
   const handleGenerateKeyAndCsr = async (overrideFormat?: 'exact' | 'full') => {
     setIsGenerating(true);
     const fmt = overrideFormat || csrFormat;
@@ -218,14 +218,13 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
         fmt
       );
       setGeneratedData(res);
-      setKeyInput(res.privateKey);
+      setKeyInput('');
 
       const updated: ArcaConfig = {
         ...formConfig,
         alias: res.alias,
-        privateKey: res.privateKey,
         hasPrivateKey: true,
-        certificateLinked: Boolean((certInput.trim() || formConfig.certificate) && res.privateKey),
+        certificateLinked: Boolean(formConfig.hasCertificate),
       };
       setFormConfig(updated);
       arcaService.persistCredentials(updated);
@@ -234,7 +233,7 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
       } catch (_) {}
 
       await showAlert(
-        `¡Clave Privada y Pedido CSR generados con éxito!\n\nFormato: ${fmt === 'exact' ? 'Exacto ARCA (Recomendado)' : 'Completo con Organización'}\nAlias: ${res.alias}\nSujeto: ${res.subject}\n\nDescargue "${res.alias}_pedido.csr" para subirlo al portal de ARCA.`
+        `¡Clave Privada y Pedido CSR generados con éxito en el servidor!\n\nFormato: ${fmt === 'exact' ? 'Exacto ARCA (Recomendado)' : 'Completo con Organización'}\nAlias: ${res.alias}\nSujeto: ${res.subject}\n\nLa clave privada quedó resguardada exclusivamente en el servidor. Descargue "${res.alias}_pedido.csr" para subirlo al portal de ARCA.`
       );
     } catch (err: any) {
       await showAlert(`Error al generar con OpenSSL: ${err.message}`);
@@ -320,23 +319,16 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
     setIsTesting(true);
     setTestResult(null);
     try {
-      const currentCert = certInput.trim() || formConfig.certificate || '';
-      const currentKey = keyInput.trim() || formConfig.privateKey || '';
-      const cfgToTest: ArcaConfig = {
-        ...formConfig,
-        certificate: currentCert,
-        privateKey: currentKey,
-        hasCertificate: Boolean(currentCert),
-        hasPrivateKey: Boolean(currentKey),
-      };
-      const res = await arcaService.checkStatus(cfgToTest);
+      const res = await arcaService.checkStatus(formConfig);
       setTestResult(res);
       if (res.connected) {
         const nextCfg: ArcaConfig = {
-          ...cfgToTest,
-          environment: res.environment || cfgToTest.environment,
+          ...formConfig,
+          environment: res.environment || formConfig.environment,
           connected: true,
-          certificateLinked: true,
+          hasCertificate: res.hasCert,
+          hasPrivateKey: res.hasKey,
+          certificateLinked: Boolean(res.hasCert && res.hasKey),
           lastChecked: new Date().toISOString(),
         };
         setFormConfig(nextCfg);
@@ -369,16 +361,18 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
       const pv2 = (formConfig.pointsOfSale?.['NECO 2'] || '0018').padStart(4, '0');
 
       const stored = arcaService.getStoredConfig();
-      const finalCert = certInput.trim() || formConfig.certificate || stored.certificate || '';
-      const finalKey = keyInput.trim() || formConfig.privateKey || stored.privateKey || '';
+      const uploadedCert = certInput.trim() || undefined;
+      const uploadedKey = keyInput.trim() || undefined;
+      const hasCert = Boolean(uploadedCert || formConfig.hasCertificate || stored.hasCertificate);
+      const hasKey = Boolean(uploadedKey || formConfig.hasPrivateKey || stored.hasPrivateKey);
 
       const cleanedConfig: ArcaConfig = {
         ...formConfig,
-        certificate: finalCert,
-        privateKey: finalKey,
-        hasCertificate: Boolean(finalCert),
-        hasPrivateKey: Boolean(finalKey),
-        certificateLinked: Boolean(finalCert && finalKey),
+        ...(uploadedCert ? { certificate: uploadedCert } : {}),
+        ...(uploadedKey ? { privateKey: uploadedKey } : {}),
+        hasCertificate: hasCert,
+        hasPrivateKey: hasKey,
+        certificateLinked: Boolean(hasCert && hasKey),
         pointsOfSale: {
           'NECO 1': pv1,
           'NECO 2': pv2,
@@ -387,7 +381,9 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
 
       arcaService.persistCredentials(cleanedConfig);
       await onSaveConfig(cleanedConfig);
-      await showAlert('✅ Configuración ARCA, Certificados Digitales y Puntos de Venta guardados exitosamente.');
+      setCertInput('');
+      setKeyInput('');
+      await showAlert('✅ Configuración ARCA, Certificados Digitales y Puntos de Venta guardados exitosamente en el servidor.');
       onClose();
     } catch (err: any) {
       await showAlert(`Error al guardar configuración: ${err.message}`);
@@ -851,12 +847,12 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
               </div>
 
               {/* Display Result of Generation */}
-              {(generatedData || formConfig.privateKey) && (
+              {(generatedData || formConfig.hasPrivateKey) && (
                 <div className="bg-emerald-50 border border-emerald-300 p-2 text-[11px] text-emerald-950 flex flex-col gap-2 mt-1">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 font-bold">
                       <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0" />
-                      <span>Clave Privada RSA 2048-bit y Pedido CSR generados y protegidos en el sistema.</span>
+                      <span>Clave Privada RSA 2048-bit resguardada en el servidor y Pedido CSR listo.</span>
                     </div>
                     {generatedData?.subject && (
                       <span className="font-mono text-[10px] bg-emerald-100 text-emerald-900 px-1.5 py-0.5 border border-emerald-400">
@@ -865,37 +861,22 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDownloadFile(
-                          `${alias || 'necopos'}_pedido.csr`,
-                          generatedData?.csr || ''
-                        )
-                      }
-                      disabled={!generatedData?.csr}
-                      className="h-[26px] px-3 bg-white hover:bg-emerald-100 border border-emerald-500 text-emerald-900 font-bold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-40"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Descargar {alias || 'necopos'}_pedido.csr</span>
-                    </button>
+                  {generatedData?.csr && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDownloadFile(
+                            `${alias || 'necopos'}_pedido.csr`,
+                            generatedData?.csr || ''
+                          )
+                        }
+                        className="h-[26px] px-3 bg-white hover:bg-emerald-100 border border-emerald-500 text-emerald-900 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Descargar {alias || 'necopos'}_pedido.csr</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDownloadFile(
-                          `${alias || 'necopos'}_privada.key`,
-                          generatedData?.privateKey || formConfig.privateKey || ''
-                        )
-                      }
-                      className="h-[26px] px-3 bg-white hover:bg-emerald-100 border border-emerald-500 text-emerald-900 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Descargar {alias || 'necopos'}_privada.key (Copia de Respaldo)</span>
-                    </button>
-
-                    {generatedData?.csr && (
                       <button
                         type="button"
                         onClick={() => handleCopy(generatedData.csr, 'csr')}
@@ -904,8 +885,8 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                         {copiedCsr ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedCsr ? 'Copiado' : 'Copiar CSR'}</span>
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -988,26 +969,24 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                     const val = e.target.value;
                     setKeyInput(val);
                     if (val.trim()) {
-                      try {
-                        localStorage.setItem('necopos_arca_private_key', val.trim());
-                      } catch (_) {}
                       setFormConfig((prev) => ({
                         ...prev,
                         privateKey: val.trim(),
                         hasPrivateKey: true,
                       }));
                     } else {
-                      try {
-                        localStorage.removeItem('necopos_arca_private_key');
-                      } catch (_) {}
                       setFormConfig((prev) => ({
                         ...prev,
-                        privateKey: '',
-                        hasPrivateKey: false,
+                        privateKey: undefined,
+                        hasPrivateKey: Boolean(prev.hasPrivateKey),
                       }));
                     }
                   }}
-                  placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;MIIEowIBAAKCAQEA...&#10;-----END RSA PRIVATE KEY-----"
+                  placeholder={
+                    formConfig.hasPrivateKey
+                      ? '🔒 Clave privada resguardada en el servidor (pegue una nueva solo si desea reemplazarla)'
+                      : '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----'
+                  }
                   rows={2}
                   className="w-full p-2 bg-white border border-[#74777f] font-mono text-[10px] text-[#002046] resize-none"
                 />

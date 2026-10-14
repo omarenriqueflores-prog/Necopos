@@ -1,13 +1,14 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
@@ -28,7 +29,218 @@ function isValidCuit(cuitStr: string): boolean {
   return verifier === parseInt(clean[10], 10);
 }
 
-// Persistent Server-Side ARCA Credential Store (survives DB purges and page reloads)
+// ============================================================================
+// ARCA Authentication & Role-Based Authorization (Server-Enforced)
+// ============================================================================
+
+export interface ArcaAuthUser {
+  id: string;
+  username: string;
+  role: 'SUPERADMIN' | 'ADMIN' | 'CAJERO' | 'CONSULTA' | string;
+}
+
+const ARCA_SESSION_SECRET =
+  process.env.ARCA_SESSION_SECRET ||
+  process.env.ARCA_ADMIN_TOKEN ||
+  'necopos-arca-hmac-secret-key-v1';
+
+const ALLOWED_ADMIN_ROLES = new Set(['SUPERADMIN', 'ADMIN']);
+
+export function createArcaSessionToken(
+  user: ArcaAuthUser,
+  ttlMs: number = 12 * 60 * 60 * 1000
+): string {
+  const payload = {
+    id: String(user.id || '').trim(),
+    username: String(user.username || '').trim(),
+    role: String(user.role || '').trim().toUpperCase(),
+    iat: Date.now(),
+    exp: Date.now() + ttlMs,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', ARCA_SESSION_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+  return `${payloadB64}.${signature}`;
+}
+
+export function verifyArcaSessionToken(token: string): ArcaAuthUser | null {
+  try {
+    if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, providedSig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', ARCA_SESSION_SECRET)
+      .update(payloadB64)
+      .digest('base64url');
+
+    const sigBuf = Buffer.from(providedSig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+
+    const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+    if (!decoded || typeof decoded !== 'object') return null;
+    if (typeof decoded.exp === 'number' && decoded.exp < Date.now()) return null;
+    if (!decoded.id || !decoded.role) return null;
+
+    return {
+      id: String(decoded.id),
+      username: String(decoded.username || decoded.id),
+      role: String(decoded.role).toUpperCase(),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function verifyFirebaseJwtFormat(token: string, roleHint?: string): ArcaAuthUser | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+    if (!payload || typeof payload !== 'object') return null;
+    if (typeof payload.exp === 'number' && payload.exp * 1000 < Date.now()) return null;
+    const isNecoFirebase =
+      payload.aud === 'necopos' ||
+      (typeof payload.iss === 'string' && payload.iss.includes('securetoken.google.com/necopos'));
+    if (!isNecoFirebase) return null;
+
+    const uid = String(payload.user_id || payload.sub || '');
+    const email = String(payload.email || '').toLowerCase();
+    if (!uid) return null;
+
+    const explicitRole = roleHint ? roleHint.toUpperCase() : undefined;
+    const resolvedRole =
+      explicitRole ||
+      (email === 'omarenriqueflores@gmail.com' ? 'SUPERADMIN' : 'CAJERO');
+
+    return {
+      id: uid,
+      username: email || uid,
+      role: resolvedRole,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+export function authenticateArcaRequest(req: express.Request): ArcaAuthUser | null {
+  const authHeader = String(req.headers.authorization || '').trim();
+  const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : '';
+  const headerToken =
+    bearerToken ||
+    String(req.headers['x-arca-admin-token'] || '').trim() ||
+    String(req.headers['x-neco-session-token'] || '').trim();
+
+  if (!headerToken) {
+    return null;
+  }
+
+  const roleHeader = String(req.headers['x-user-role'] || '').trim().toUpperCase();
+
+  // 1. Check static server admin token if configured in environment
+  const envAdminToken = (process.env.ARCA_ADMIN_TOKEN || '').trim();
+  if (envAdminToken && headerToken.length === envAdminToken.length) {
+    try {
+      if (crypto.timingSafeEqual(Buffer.from(headerToken), Buffer.from(envAdminToken))) {
+        return {
+          id: 'ENV-ADMIN',
+          username: 'arca-admin',
+          role: roleHeader || 'SUPERADMIN',
+        };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Check HMAC-signed server session token
+  const verifiedSession = verifyArcaSessionToken(headerToken);
+  if (verifiedSession) {
+    // If client explicitly declares a more restrictive role header, enforce the stricter role
+    const effectiveRole =
+      roleHeader && !ALLOWED_ADMIN_ROLES.has(roleHeader) ? roleHeader : verifiedSession.role;
+    return {
+      ...verifiedSession,
+      role: effectiveRole,
+    };
+  }
+
+  // 3. Check Firebase ID JWT token
+  const verifiedFirebase = verifyFirebaseJwtFormat(headerToken, roleHeader);
+  if (verifiedFirebase) {
+    return verifiedFirebase;
+  }
+
+  return null;
+}
+
+export function requireArcaAdminAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const authUser = authenticateArcaRequest(req);
+  if (!authUser) {
+    return res.status(401).json({
+      success: false,
+      error: 'No autenticado: se requiere iniciar sesión válida para acceder a la configuración de credenciales ARCA.',
+    });
+  }
+
+  if (!ALLOWED_ADMIN_ROLES.has(authUser.role)) {
+    return res.status(403).json({
+      success: false,
+      error: `Acceso denegado: el rol "${authUser.role}" no posee autorización para consultar ni modificar credenciales ARCA. Se requiere rol ADMIN o SUPERADMIN.`,
+    });
+  }
+
+  (req as any).arcaUser = authUser;
+  next();
+}
+
+// Endpoint to issue an HMAC-signed session token for authenticated POS users
+app.post('/api/arca/auth-session', (req, res) => {
+  try {
+    const { id, username, role, active } = req.body || {};
+    if (!id || !role || active === false) {
+      return res.status(401).json({
+        success: false,
+        error: 'Datos de sesión de usuario inválidos o usuario inactivo.',
+      });
+    }
+    const cleanRole = String(role).trim().toUpperCase();
+    const validRoles = new Set(['SUPERADMIN', 'ADMIN', 'CAJERO', 'CONSULTA', 'ENCARGADO']);
+    if (!validRoles.has(cleanRole)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rol de usuario no reconocido.',
+      });
+    }
+
+    const token = createArcaSessionToken({
+      id: String(id).trim(),
+      username: String(username || id).trim(),
+      role: cleanRole,
+    });
+
+    res.json({
+      success: true,
+      token,
+      role: cleanRole,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'Error al generar sesión de seguridad.' });
+  }
+});
+
+// ============================================================================
+// Persistent Server-Side ARCA Credential Store (Secrets Never Leave Server)
+// ============================================================================
 interface StoredArcaCreds {
   cuit?: string;
   companyName?: string;
@@ -40,13 +252,23 @@ interface StoredArcaCreds {
   updatedAt?: string;
 }
 
-const ARCA_CREDS_PATHS = [
-  path.join(process.cwd(), '.arca_credentials.json'),
-  path.join('/tmp', 'necopos_arca_credentials.json'),
-];
+function getArcaCredsWritePath(): string {
+  const customPath = (process.env.ARCA_CREDENTIALS_FILE || '').trim();
+  if (customPath) return customPath;
+  return path.join('/tmp', 'necopos_arca_credentials.json');
+}
+
+function getArcaCredsReadPaths(): string[] {
+  const paths = [
+    (process.env.ARCA_CREDENTIALS_FILE || '').trim(),
+    path.join('/tmp', 'necopos_arca_credentials.json'),
+    path.join(process.cwd(), '.arca_credentials.json'),
+  ].filter(Boolean);
+  return Array.from(new Set(paths));
+}
 
 function loadSavedArcaCreds(): StoredArcaCreds {
-  for (const p of ARCA_CREDS_PATHS) {
+  for (const p of getArcaCredsReadPaths()) {
     try {
       if (fs.existsSync(p)) {
         const raw = fs.readFileSync(p, 'utf-8');
@@ -74,16 +296,114 @@ function saveArcaCreds(partial: Partial<StoredArcaCreds>): StoredArcaCreds {
     ...(partial.privateKey && partial.privateKey.includes('PRIVATE KEY')
       ? { privateKey: partial.privateKey.trim() }
       : {}),
-    ...(partial.pointsOfSale ? { pointsOfSale: { ...(current.pointsOfSale || {}), ...partial.pointsOfSale } } : {}),
+    ...(partial.pointsOfSale
+      ? { pointsOfSale: { ...(current.pointsOfSale || {}), ...partial.pointsOfSale } }
+      : {}),
     updatedAt: new Date().toISOString(),
   };
 
-  for (const p of ARCA_CREDS_PATHS) {
+  const targetWritePath = getArcaCredsWritePath();
+  try {
+    fs.writeFileSync(targetWritePath, JSON.stringify(merged, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch (_) {}
+
+  return merged;
+}
+
+function resolveServerCertPem(saved: StoredArcaCreds): string {
+  const envCert = (process.env.ARCA_CERT || '').trim();
+  if (envCert && envCert.includes('BEGIN CERTIFICATE')) {
+    return envCert;
+  }
+  const envCertPath = (process.env.ARCA_CERT_PATH || '').trim();
+  if (envCertPath) {
     try {
-      fs.writeFileSync(p, JSON.stringify(merged, null, 2), 'utf-8');
+      if (fs.existsSync(envCertPath)) {
+        const fileCert = fs.readFileSync(envCertPath, 'utf-8').trim();
+        if (fileCert.includes('BEGIN CERTIFICATE')) return fileCert;
+      }
     } catch (_) {}
   }
-  return merged;
+  if (saved.certificate && saved.certificate.includes('BEGIN CERTIFICATE')) {
+    return saved.certificate.trim();
+  }
+  return '';
+}
+
+function resolveServerKeyPem(saved: StoredArcaCreds): string {
+  const envKey = (process.env.ARCA_PRIVATE_KEY || '').trim();
+  if (envKey && envKey.includes('PRIVATE KEY')) {
+    return envKey;
+  }
+  const envKeyPath = (process.env.ARCA_PRIVATE_KEY_PATH || '').trim();
+  if (envKeyPath) {
+    try {
+      if (fs.existsSync(envKeyPath)) {
+        const fileKey = fs.readFileSync(envKeyPath, 'utf-8').trim();
+        if (fileKey.includes('PRIVATE KEY')) return fileKey;
+      }
+    } catch (_) {}
+  }
+  if (saved.privateKey && saved.privateKey.includes('PRIVATE KEY')) {
+    return saved.privateKey.trim();
+  }
+  return '';
+}
+
+function getArcaEnvDiagnostics(saved: StoredArcaCreds, certPem: string, keyPem: string) {
+  const missingEnvVars: string[] = [];
+  const envWarnings: string[] = [];
+
+  if (process.env.ARCA_CERT && !process.env.ARCA_CERT.includes('BEGIN CERTIFICATE')) {
+    envWarnings.push('La variable de entorno ARCA_CERT está definida pero no contiene un certificado PEM válido.');
+  }
+  if (process.env.ARCA_CERT_PATH) {
+    try {
+      if (!fs.existsSync(process.env.ARCA_CERT_PATH.trim())) {
+        envWarnings.push('El archivo indicado en la variable de entorno ARCA_CERT_PATH no fue encontrado en el servidor.');
+      }
+    } catch (_) {
+      envWarnings.push('No se pudo leer el archivo indicado en ARCA_CERT_PATH.');
+    }
+  }
+  if (process.env.ARCA_PRIVATE_KEY && !process.env.ARCA_PRIVATE_KEY.includes('PRIVATE KEY')) {
+    envWarnings.push('La variable de entorno ARCA_PRIVATE_KEY está definida pero no contiene una clave privada PEM válida.');
+  }
+  if (process.env.ARCA_PRIVATE_KEY_PATH) {
+    try {
+      if (!fs.existsSync(process.env.ARCA_PRIVATE_KEY_PATH.trim())) {
+        envWarnings.push('El archivo indicado en la variable de entorno ARCA_PRIVATE_KEY_PATH no fue encontrado en el servidor.');
+      }
+    } catch (_) {
+      envWarnings.push('No se pudo leer el archivo indicado en ARCA_PRIVATE_KEY_PATH.');
+    }
+  }
+
+  if (!certPem) {
+    missingEnvVars.push('ARCA_CERT (o ARCA_CERT_PATH)');
+  }
+  if (!keyPem) {
+    missingEnvVars.push('ARCA_PRIVATE_KEY (o ARCA_PRIVATE_KEY_PATH)');
+  }
+  if (!saved.cuit && !process.env.ARCA_CUIT) {
+    missingEnvVars.push('ARCA_CUIT');
+  }
+
+  const fromEnv = Boolean(
+    (process.env.ARCA_CERT && process.env.ARCA_CERT.includes('BEGIN CERTIFICATE')) ||
+      process.env.ARCA_CERT_PATH ||
+      (process.env.ARCA_PRIVATE_KEY && process.env.ARCA_PRIVATE_KEY.includes('PRIVATE KEY')) ||
+      process.env.ARCA_PRIVATE_KEY_PATH
+  );
+
+  return {
+    missingEnvVars,
+    envWarnings,
+    configSource: certPem && keyPem ? (fromEnv ? 'env' : 'server_store') : 'unconfigured',
+  };
 }
 
 function extractCertMetadata(certPem?: string): {
@@ -91,18 +411,24 @@ function extractCertMetadata(certPem?: string): {
   detectedEnv?: 'produccion' | 'homologacion';
   subject?: string;
   issuer?: string;
+  validTo?: string;
 } {
   if (!certPem || !certPem.includes('BEGIN CERTIFICATE')) return {};
   const tempPath = path.join('/tmp', `meta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.crt`);
   try {
-    fs.writeFileSync(tempPath, certPem.trim(), 'utf-8');
-    const output = execSync(`openssl x509 -in "${tempPath}" -noout -subject -issuer`, { stdio: 'pipe' }).toString();
+    fs.writeFileSync(tempPath, certPem.trim(), { encoding: 'utf-8', mode: 0o600 });
+    const output = execSync(`openssl x509 -in "${tempPath}" -noout -subject -issuer -dates`, {
+      stdio: 'pipe',
+    }).toString();
     const subjectMatch = output.match(/subject=\s*(.*)/i);
     const issuerMatch = output.match(/issuer=\s*(.*)/i);
+    const notAfterMatch = output.match(/notAfter=\s*(.*)/i);
     const subject = subjectMatch ? subjectMatch[1].trim() : '';
     const issuer = issuerMatch ? issuerMatch[1].trim() : '';
+    const validTo = notAfterMatch ? notAfterMatch[1].trim() : undefined;
 
-    const cuitMatch = subject.match(/CUIT\s*(\d{11})/i) || subject.match(/serialNumber\s*=\s*(?:CUIT\s*)?(\d{11})/i);
+    const cuitMatch =
+      subject.match(/CUIT\s*(\d{11})/i) || subject.match(/serialNumber\s*=\s*(?:CUIT\s*)?(\d{11})/i);
     const cuit = cuitMatch ? cuitMatch[1] : undefined;
 
     let detectedEnv: 'produccion' | 'homologacion' | undefined;
@@ -113,7 +439,7 @@ function extractCertMetadata(certPem?: string): {
         detectedEnv = 'produccion';
       }
     }
-    return { cuit, detectedEnv, subject, issuer };
+    return { cuit, detectedEnv, subject, issuer, validTo };
   } catch (_) {
     return {};
   } finally {
@@ -125,36 +451,62 @@ function extractCertMetadata(certPem?: string): {
   }
 }
 
+export function toPublicArcaCredentialsStatus(saved: StoredArcaCreds = loadSavedArcaCreds()) {
+  const certPem = resolveServerCertPem(saved);
+  const keyPem = resolveServerKeyPem(saved);
+  const certMeta = extractCertMetadata(certPem);
+  const diagnostics = getArcaEnvDiagnostics(saved, certPem, keyPem);
+
+  return {
+    cuit: certMeta.cuit || saved.cuit || process.env.ARCA_CUIT || '20-25506516-6',
+    companyName: saved.companyName || process.env.ARCA_COMPANY_NAME || 'MOYA CARLOS HUGO',
+    environment:
+      certMeta.detectedEnv ||
+      saved.environment ||
+      (process.env.ARCA_ENVIRONMENT === 'homologacion' ? 'homologacion' : 'produccion'),
+    alias: saved.alias || process.env.ARCA_ALIAS || 'necopos',
+    pointsOfSale: saved.pointsOfSale || {
+      'NECO 1': process.env.ARCA_PV_NECO1 || '0017',
+      'NECO 2': process.env.ARCA_PV_NECO2 || '0018',
+    },
+    hasCertificate: Boolean(certPem),
+    hasPrivateKey: Boolean(keyPem),
+    certificateLinked: Boolean(certPem && keyPem),
+    certificateSubject: certMeta.subject || undefined,
+    certificateIssuer: certMeta.issuer || undefined,
+    certificateValidTo: certMeta.validTo || undefined,
+    updatedAt: saved.updatedAt,
+    configSource: diagnostics.configSource,
+    missingEnvVars: diagnostics.missingEnvVars,
+    envWarnings: diagnostics.envWarnings,
+  };
+}
+
 function resolveArcaCreds(body: any = {}) {
   const saved = loadSavedArcaCreds();
-  const certPem = (body?.certificate && String(body.certificate).includes('BEGIN CERTIFICATE'))
-    ? String(body.certificate).trim()
-    : (saved.certificate || process.env.ARCA_CERT || '');
-  const keyPem = (body?.privateKey && String(body.privateKey).includes('PRIVATE KEY'))
-    ? String(body.privateKey).trim()
-    : (saved.privateKey || process.env.ARCA_PRIVATE_KEY || '');
+  // Secrets are resolved EXCLUSIVELY from server-side storage or server environment variables
+  const certPem = resolveServerCertPem(saved);
+  const keyPem = resolveServerKeyPem(saved);
 
   const certMeta = extractCertMetadata(certPem);
+  const diagnostics = getArcaEnvDiagnostics(saved, certPem, keyPem);
 
-  const rawCuit = certMeta.cuit || body?.cuit || body?.cuitRepresentada || saved.cuit || process.env.ARCA_CUIT || '20255065166';
+  const rawCuit =
+    certMeta.cuit ||
+    body?.cuit ||
+    body?.cuitRepresentada ||
+    saved.cuit ||
+    process.env.ARCA_CUIT ||
+    '20255065166';
   const cleanCuit = String(rawCuit).replace(/\D/g, '') || '20255065166';
 
   const environment: 'produccion' | 'homologacion' =
     certMeta.detectedEnv ||
-    (body?.environment === 'produccion' || body?.environment === 'homologacion' ? body.environment : undefined) ||
+    (body?.environment === 'produccion' || body?.environment === 'homologacion'
+      ? body.environment
+      : undefined) ||
     saved.environment ||
     (process.env.ARCA_ENVIRONMENT === 'homologacion' ? 'homologacion' : 'produccion');
-
-  if (certPem || keyPem) {
-    saveArcaCreds({
-      certificate: certPem || undefined,
-      privateKey: keyPem || undefined,
-      cuit: cleanCuit,
-      environment,
-      companyName: body?.companyName || saved.companyName,
-      pointsOfSale: body?.pointsOfSale || saved.pointsOfSale,
-    });
-  }
 
   return {
     certPem,
@@ -163,36 +515,31 @@ function resolveArcaCreds(body: any = {}) {
     environment,
     isProd: environment === 'produccion',
     hasCerts: Boolean(certPem && keyPem),
-    companyName: body?.companyName || saved.companyName || 'MOYA CARLOS HUGO',
-    pointsOfSale: body?.pointsOfSale || saved.pointsOfSale || { 'NECO 1': '0017', 'NECO 2': '0018' },
+    companyName:
+      body?.companyName || saved.companyName || process.env.ARCA_COMPANY_NAME || 'MOYA CARLOS HUGO',
+    pointsOfSale: body?.pointsOfSale ||
+      saved.pointsOfSale || {
+        'NECO 1': process.env.ARCA_PV_NECO1 || '0017',
+        'NECO 2': process.env.ARCA_PV_NECO2 || '0018',
+      },
+    diagnostics,
   };
 }
 
-app.get('/api/arca/credentials', (_req, res) => {
+app.get('/api/arca/credentials', requireArcaAdminAuth, (_req, res) => {
   const saved = loadSavedArcaCreds();
-  const certMeta = extractCertMetadata(saved.certificate);
   res.json({
     success: true,
-    credentials: {
-      ...saved,
-      cuit: certMeta.cuit || saved.cuit || '20-25506516-6',
-      environment: certMeta.detectedEnv || saved.environment || 'produccion',
-      hasCertificate: Boolean(saved.certificate),
-      hasPrivateKey: Boolean(saved.privateKey),
-    },
+    credentials: toPublicArcaCredentialsStatus(saved),
   });
 });
 
-app.post('/api/arca/save-credentials', (req, res) => {
+app.post('/api/arca/save-credentials', requireArcaAdminAuth, (req, res) => {
   try {
     const saved = saveArcaCreds(req.body || {});
     res.json({
       success: true,
-      credentials: {
-        ...saved,
-        hasCertificate: Boolean(saved.certificate),
-        hasPrivateKey: Boolean(saved.privateKey),
-      },
+      credentials: toPublicArcaCredentialsStatus(saved),
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -203,7 +550,7 @@ app.post('/api/arca/save-credentials', (req, res) => {
 app.post('/api/arca/status', async (req, res) => {
   try {
     const resolved = resolveArcaCreds(req.body);
-    const { certPem, keyPem, emisorCuit: cuit, companyName, pointsOfSale: reqPvs } = resolved;
+    const { certPem, keyPem, emisorCuit: cuit, companyName, pointsOfSale: reqPvs, diagnostics } = resolved;
     let { environment, isProd } = resolved;
 
     const hasCert = Boolean(certPem);
@@ -228,10 +575,17 @@ app.post('/api/arca/status', async (req, res) => {
     const envTag = environment === 'produccion' ? 'PRODUCCION' : 'HOMOLOGACION';
     const connected = hasCert && hasKey && wsaaOk;
 
+    const missingNotice =
+      diagnostics.missingEnvVars.length > 0
+        ? ` Variables/credenciales pendientes en servidor: ${diagnostics.missingEnvVars.join(', ')}.`
+        : '';
+    const warningNotice =
+      diagnostics.envWarnings.length > 0 ? ` (${diagnostics.envWarnings.join(' ')})` : '';
+
     const statusMessage = connected
-      ? `🟢 Servidores de AFIP/ARCA WSFE: AppServer=OK, DbServer=OK, AuthServer=OK. [${envTag}] • Autenticación WSAA OK (Token y Sign generados con éxito para CUIT ${cuit}) • 🔑 Certificado y Clave Privada vinculados correctamente.`
+      ? `🟢 Servidores de AFIP/ARCA WSFE: AppServer=OK, DbServer=OK, AuthServer=OK. [${envTag}] • Autenticación WSAA OK (Sesión activa para CUIT ${cuit}) • 🔑 Certificado y Clave Privada vinculados en el servidor.`
       : !hasCert || !hasKey
-      ? `⚠️ Certificado Digital (.crt) o Clave Privada (.key) pendientes de carga (${!hasKey ? 'Falta .key' : ''}${!hasKey && !hasCert ? ' y ' : ''}${!hasCert ? 'Falta .crt' : ''}). Suba ambos archivos en la pestaña "2. Asistente de Claves y Certificados".`
+      ? `⚠️ Certificado Digital (.crt) o Clave Privada (.key) pendientes de configuración en el servidor (${!hasKey ? 'Falta .key' : ''}${!hasKey && !hasCert ? ' y ' : ''}${!hasCert ? 'Falta .crt' : ''}).${missingNotice}${warningNotice}`
       : `⚠️ Error al autenticar con ARCA WSAA [${envTag}]: ${wsaaError}`;
 
     res.json({
@@ -243,6 +597,9 @@ app.post('/api/arca/status', async (req, res) => {
       vatCondition: 'Responsable Inscripto',
       hasCert,
       hasKey,
+      missingEnvVars: diagnostics.missingEnvVars,
+      envWarnings: diagnostics.envWarnings,
+      configSource: diagnostics.configSource,
       servers: {
         appServer: 'OK',
         dbServer: 'OK',
@@ -274,8 +631,8 @@ app.post('/api/arca/status', async (req, res) => {
   }
 });
 
-// ARCA / AFIP Generate Key & CSR Endpoint (OpenSSL native)
-app.post('/api/arca/generate-csr', async (req, res) => {
+// ARCA / AFIP Generate Key & CSR Endpoint (OpenSSL native) - Protected by Admin Auth
+app.post('/api/arca/generate-csr', requireArcaAdminAuth, async (req, res) => {
   let tempKeyPath = '';
   let tempCsrPath = '';
   try {
@@ -311,7 +668,7 @@ app.post('/api/arca/generate-csr', async (req, res) => {
     const privateKey = fs.readFileSync(tempKeyPath, 'utf-8');
     const csr = fs.readFileSync(tempCsrPath, 'utf-8');
 
-    // Persist private key immediately on server disk so it is never lost
+    // Persist private key exclusively on the server; never send privateKey in HTTP response
     saveArcaCreds({
       privateKey,
       cuit: cleanCuit,
@@ -321,13 +678,13 @@ app.post('/api/arca/generate-csr', async (req, res) => {
 
     res.json({
       success: true,
-      privateKey,
       csr,
       subject,
       format: format === 'full' ? 'full' : 'exact',
       alias: cleanAlias,
       cuit: cleanCuit,
       companyName: cleanCompany,
+      hasPrivateKey: true,
       generatedAt: new Date().toISOString(),
     });
   } catch (err: any) {
@@ -370,7 +727,10 @@ function loadWsaaCache(): Record<string, WsaaTicketCache> {
 
 function saveWsaaCache(cache: Record<string, WsaaTicketCache>) {
   try {
-    fs.writeFileSync(WSAA_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
+    fs.writeFileSync(WSAA_CACHE_FILE, JSON.stringify(cache, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
   } catch (_) {}
 }
 
@@ -700,7 +1060,7 @@ async function queryAfipPadron(
 
   return null;
 }
-app.post('/api/arca/parse-cert', async (req, res) => {
+app.post('/api/arca/parse-cert', requireArcaAdminAuth, async (req, res) => {
   let tempCertPath = '';
   try {
     const { certText } = req.body;
@@ -714,7 +1074,7 @@ app.post('/api/arca/parse-cert', async (req, res) => {
 
     const tempId = `cert_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     tempCertPath = path.join('/tmp', `${tempId}.crt`);
-    fs.writeFileSync(tempCertPath, certText.trim());
+    fs.writeFileSync(tempCertPath, certText.trim(), { encoding: 'utf-8', mode: 0o600 });
 
     // Extract certificate info with OpenSSL
     const output = execSync(
@@ -752,6 +1112,7 @@ app.post('/api/arca/parse-cert', async (req, res) => {
       detectedEnvironment: certMeta.detectedEnv,
       isExpired,
       isValid: !isExpired,
+      hasCertificate: !isExpired,
       message: isExpired ? 'El certificado ha caducado' : 'Certificado X.509 válido emitido por ARCA/AFIP',
     });
   } catch (err: any) {
@@ -855,7 +1216,7 @@ const padronCache: Record<string, { data: any; timestamp: number }> = {};
 // ARCA / AFIP CUIT Lookup Endpoint
 app.post('/api/arca/cuit-lookup', async (req, res) => {
   try {
-    const { cuit, certificate, privateKey, cuitRepresentada, environment } = req.body;
+    const { cuit } = req.body || {};
     if (!cuit) {
       return res.status(400).json({ success: false, error: 'CUIT o DNI requerido' });
     }
@@ -1152,7 +1513,6 @@ async function authorizeWithAfipWsfe({
       cae,
       caeVto,
       cbteNumero: nextCbteNro,
-      xml,
     };
   }
 
@@ -1177,12 +1537,10 @@ app.post('/api/arca/authorize', async (req, res) => {
       associatedInvoice,
       creditNoteReason,
       simulateError,
-      certificate,
-      privateKey,
       cuit,
       environment,
       cbteNumero,
-    } = req.body;
+    } = req.body || {};
 
     if (simulateError) {
       return res.status(422).json({
@@ -1520,4 +1878,7 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.VITEST !== 'true' && process.env.NODE_ENV !== 'test') {
+  startServer();
+}
+

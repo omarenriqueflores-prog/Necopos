@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+.arca_credentials.json
+*.key
+*.crt
+*.pem
+*.csr
+

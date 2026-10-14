@@ -515,8 +515,6 @@ export const CurrentAccountsScreen: React.FC<CurrentAccountsScreenProps> = ({
         netAmount,
         vatAmount,
         totalAmount,
-        certificate: arcaConfig?.certificate || storedCfg.certificate,
-        privateKey: arcaConfig?.privateKey || storedCfg.privateKey,
         cuit: arcaConfig?.cuit || storedCfg.cuit,
         environment: arcaConfig?.environment || storedCfg.environment,
       });

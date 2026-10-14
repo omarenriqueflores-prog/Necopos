@@ -305,13 +305,18 @@ export interface ArcaConfig {
     'NECO 2': string;
   };
   alias?: string;
+  csr?: string;
   hasPrivateKey?: boolean;
   privateKey?: string;
   hasCertificate?: boolean;
   certificate?: string;
+  certificateLinked?: boolean;
   certExpiration?: string;
   certIssuer?: string;
   certSubject?: string;
+  certificateSubject?: string;
+  certificateIssuer?: string;
+  certificateValidTo?: string;
 }
 
 export interface AuditLog {

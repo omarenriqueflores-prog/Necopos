@@ -334,8 +334,6 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
         netAmount,
         vatAmount,
         totalAmount,
-        certificate: fb?.arcaConfig?.certificate || storedCfg.certificate,
-        privateKey: fb?.arcaConfig?.privateKey || storedCfg.privateKey,
         cuit: fb?.arcaConfig?.cuit || storedCfg.cuit,
         environment: fb?.arcaConfig?.environment || storedCfg.environment,
       });

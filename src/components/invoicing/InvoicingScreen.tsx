@@ -292,8 +292,6 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
         netAmount: manualNetTotal,
         vatAmount: manualVat21 + manualVat105,
         totalAmount: manualTotal,
-        certificate: arcaConfig?.certificate || storedCfg.certificate,
-        privateKey: arcaConfig?.privateKey || storedCfg.privateKey,
         cuit: arcaConfig?.cuit || storedCfg.cuit,
         environment: arcaConfig?.environment || storedCfg.environment,
       });

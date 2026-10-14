@@ -57,26 +57,22 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
   const [hasLocalCert, setHasLocalCert] = useState<boolean>(false);
   const [hasLocalKey, setHasLocalKey] = useState<boolean>(false);
 
-  const fetchLastVouchers = async (pvToQuery: string, overrideCert?: string, overrideKey?: string) => {
+  const fetchLastVouchers = async (pvToQuery: string) => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
       const storedConfig = arcaService.getStoredConfig();
       const fbConfig = fb?.arcaConfig;
-      const cert = overrideCert || fbConfig?.certificate || storedConfig.certificate;
-      const key = overrideKey || fbConfig?.privateKey || storedConfig.privateKey;
       const cuit = fbConfig?.cuit || storedConfig.cuit || '20-25506516-6';
       const env = fbConfig?.environment || storedConfig.environment || 'produccion';
 
-      setHasLocalCert(Boolean(cert && cert.includes('BEGIN CERTIFICATE')));
-      setHasLocalKey(Boolean(key && key.includes('PRIVATE KEY')));
+      setHasLocalCert(Boolean(fbConfig?.hasCertificate || storedConfig.hasCertificate));
+      setHasLocalKey(Boolean(fbConfig?.hasPrivateKey || storedConfig.hasPrivateKey));
 
       const res = await arcaService.getLastVouchers(
         pvToQuery,
         env,
-        cuit,
-        cert,
-        key
+        cuit
       );
 
       if (res && res.vouchers) {
@@ -84,6 +80,10 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
         setCheckedAt(res.checkedAt);
         setServerMessage(res.message || '');
         setHasCredentials(Boolean(res.hasCredentials));
+        if (res.hasUploadedFiles) {
+          setHasLocalCert(true);
+          setHasLocalKey(true);
+        }
         if (!res.hasCredentials) {
           setErrorMsg(
             res.wsaaError
@@ -117,11 +117,11 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
     reader.onload = async (ev) => {
       const text = (ev.target?.result as string)?.trim() || '';
       if (text.includes('BEGIN CERTIFICATE')) {
-        const merged = arcaService.persistCredentials({ certificate: text });
+        const merged = arcaService.persistCredentials({ certificate: text, hasCertificate: true });
         if (fb?.saveArcaConfig) {
           await fb.saveArcaConfig(merged).catch(() => {});
         }
-        fetchLastVouchers(selectedPv, merged.certificate, merged.privateKey);
+        fetchLastVouchers(selectedPv);
       } else {
         setErrorMsg('El archivo seleccionado no es un Certificado Digital (.crt) válido en formato PEM.');
       }
@@ -137,11 +137,11 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
     reader.onload = async (ev) => {
       const text = (ev.target?.result as string)?.trim() || '';
       if (text.includes('PRIVATE KEY')) {
-        const merged = arcaService.persistCredentials({ privateKey: text });
+        const merged = arcaService.persistCredentials({ privateKey: text, hasPrivateKey: true });
         if (fb?.saveArcaConfig) {
           await fb.saveArcaConfig(merged).catch(() => {});
         }
-        fetchLastVouchers(selectedPv, merged.certificate, merged.privateKey);
+        fetchLastVouchers(selectedPv);
       } else {
         setErrorMsg('El archivo seleccionado no es una Clave Privada (.key) válida en formato PEM.');
       }
