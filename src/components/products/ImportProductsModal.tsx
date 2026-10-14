@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { Product } from '../../types/pos';
 import { WindowsModal } from '../common/WindowsModal';
-import { formatCurrency } from '../../utils/scaleParser';
+import { formatCurrency, isStoreUnitProduct } from '../../utils/scaleParser';
 
 interface ImportProductsModalProps {
   isOpen: boolean;
@@ -41,6 +41,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
     const templateData = [
       {
         CODIGO: '101',
+        CODIGO_BARRAS: '',
         DESCRIPCION: 'ASADO DE TIRA',
         RUBRO: 'Novillito',
         UNIDAD: 'Kg',
@@ -49,6 +50,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
       },
       {
         CODIGO: '102',
+        CODIGO_BARRAS: '',
         DESCRIPCION: 'VACIO ESPECIAL',
         RUBRO: 'Ternera',
         UNIDAD: 'Kg',
@@ -56,42 +58,29 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         PLU_BALANZA: '102',
       },
       {
-        CODIGO: '103',
-        DESCRIPCION: 'NALGA CORTADA / PECETO',
-        RUBRO: 'Vaca',
-        UNIDAD: 'Kg',
-        PRECIO: 10800,
-        PLU_BALANZA: '103',
+        CODIGO: '10112',
+        CODIGO_BARRAS: '7790895000997',
+        DESCRIPCION: 'COCA COLA X 2.250ML',
+        RUBRO: 'Bebidas',
+        UNIDAD: 'Unid',
+        PRECIO: 4500,
+        PLU_BALANZA: '',
       },
       {
-        CODIGO: '104',
-        DESCRIPCION: 'BIFE DE CHORIZO',
-        RUBRO: 'Novillo Pesado',
-        UNIDAD: 'Kg',
-        PRECIO: 13500,
-        PLU_BALANZA: '104',
-      },
-      {
-        CODIGO: '105',
-        DESCRIPCION: 'CUADRIL / COLITA',
-        RUBRO: 'Vaquillona',
-        UNIDAD: 'Kg',
-        PRECIO: 12500,
-        PLU_BALANZA: '105',
-      },
-      {
-        CODIGO: '106',
-        DESCRIPCION: 'COSTILLITA / PECHITO',
-        RUBRO: 'Cerdo',
-        UNIDAD: 'Kg',
-        PRECIO: 8900,
-        PLU_BALANZA: '106',
+        CODIGO: '10113',
+        CODIGO_BARRAS: '7790070411716',
+        DESCRIPCION: 'MAYONESA NATURA X 500G',
+        RUBRO: 'Almacén',
+        UNIDAD: 'Unid',
+        PRECIO: 2800,
+        PLU_BALANZA: '',
       },
     ];
 
     const ws = XLSX.utils.json_to_sheet(templateData);
     ws['!cols'] = [
       { wch: 12 }, // CODIGO
+      { wch: 18 }, // CODIGO_BARRAS
       { wch: 32 }, // DESCRIPCION
       { wch: 20 }, // RUBRO
       { wch: 10 }, // UNIDAD
@@ -180,6 +169,16 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           return undefined;
         };
 
+        const rawBarcode = getVal([
+          'codigobarras',
+          'codigodebarras',
+          'codbarras',
+          'barras',
+          'barcode',
+          'ean',
+          'ean13',
+          'gtin',
+        ]);
         const rawCode = getVal(['codigo', 'cod', 'code', 'id', 'articulo', 'item', 'plu']);
         const rawDesc = getVal(['descripcion', 'desc', 'nombre', 'detalle', 'producto', 'denominacion']);
         const rawRubro = getVal(['rubro', 'departamento', 'seccion']);
@@ -193,6 +192,12 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         if (!description) return; // Skip empty rows
 
         const code = String(rawCode || `00${idx + 101}`).trim();
+        const barcode =
+          rawBarcode !== undefined && rawBarcode !== null && String(rawBarcode).trim() !== ''
+            ? String(rawBarcode).trim()
+            : /^\d{8,14}$/.test(code) && !code.startsWith('20')
+            ? code
+            : null;
 
         const parseNum = (val: any, fallback = 0): number => {
           if (val === undefined || val === null || val === '') return fallback;
@@ -204,12 +209,27 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
 
         const price = parseNum(rawPrice, 0);
 
-        let rubro = String(rawRubro || 'Carnes Vacunas').trim();
+        let rubro = String(rawRubro || '').trim();
         let category = String(rawCategory || '').trim();
 
+        const isStoreItem = isStoreUnitProduct({
+          description,
+          rubro,
+          category,
+        });
+
         const catUpper = category.toUpperCase();
-        if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
-          rubro = 'Carnes Vacunas';
+        if (isStoreItem) {
+          if (!rubro || rubro.toUpperCase() === 'CARNES VACUNAS') {
+            rubro = category && !['NOVILLITO', 'NOVILLO', 'VACA', 'TERNERA', 'VAQUILLONA'].includes(catUpper)
+              ? category
+              : 'Almacén';
+          }
+          if (!category || ['NOVILLITO', 'CARNES VACUNAS', 'CARNE', 'VACUNO'].includes(catUpper)) {
+            category = rubro || 'Almacén';
+          }
+        } else if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
+          rubro = rubro || 'Carnes Vacunas';
           if (description.includes(' VACA') || description.endsWith('VACA') || description.includes(' - VACA')) {
             category = 'Vaca';
           } else if (description.includes(' TERNERA') || description.endsWith('TERNERA')) {
@@ -235,17 +255,8 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           .normalize('NFD')
           .replace(/[\u0300-\u036f]/g, '');
 
-        let unitType: 'Kg' | 'Unid' = 'Kg'; // Carnicería default is Kg
+        let unitType: 'Kg' | 'Unid' = isStoreItem || Boolean(barcode) ? 'Unid' : 'Kg';
         if (
-          unitValStr.includes('kg') ||
-          unitValStr.includes('kilo') ||
-          unitValStr === 'k' ||
-          unitValStr.includes('gram') ||
-          unitValStr.includes('pesable') ||
-          unitValStr.includes('peso')
-        ) {
-          unitType = 'Kg';
-        } else if (
           unitValStr.includes('unid') ||
           unitValStr.includes('uni') ||
           unitValStr === 'u' ||
@@ -254,19 +265,33 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           unitValStr.includes('pza') ||
           unitValStr.includes('pack') ||
           unitValStr.includes('lata') ||
-          unitValStr.includes('botella')
+          unitValStr.includes('botella') ||
+          isStoreItem ||
+          Boolean(barcode)
         ) {
           unitType = 'Unid';
-        } else {
-          // If empty or unrecognized, default to Kg
+        } else if (
+          unitValStr.includes('kg') ||
+          unitValStr.includes('kilo') ||
+          unitValStr === 'k' ||
+          unitValStr.includes('gram') ||
+          unitValStr.includes('pesable') ||
+          unitValStr.includes('peso')
+        ) {
           unitType = 'Kg';
         }
 
-        const scalePlu = rawPlu !== undefined && rawPlu !== '' ? String(rawPlu).trim() : code;
+        const scalePlu =
+          unitType === 'Unid'
+            ? null
+            : rawPlu !== undefined && rawPlu !== ''
+            ? String(rawPlu).trim()
+            : code;
         const active = rawActive === undefined || rawActive === '' ? true : !['no', 'false', '0', 'inactivo'].includes(String(rawActive).toLowerCase().trim());
 
         productsMapped.push({
           code,
+          barcode,
           description,
           rubro,
           category,
@@ -446,6 +471,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
                 <thead className="bg-[#e5e8ec] font-bold text-[#181c1f] sticky top-0 border-b border-[#c4c6cf]">
                   <tr className="h-6">
                     <th className="px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
+                    <th className="px-2 border-r border-[#c4c6cf]">CÓD. BARRAS</th>
                     <th className="px-2 border-r border-[#c4c6cf]">DESCRIPCIÓN</th>
                     <th className="px-2 border-r border-[#c4c6cf]">RUBRO</th>
                     <th className="px-2 text-center border-r border-[#c4c6cf]">UNIDAD (CLIC CAMBIAR)</th>
@@ -458,6 +484,9 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
                     <tr key={`imp-${p.code || i}-${i}`} className="h-6 hover:bg-[#f1f4f8]">
                       <td className="px-2 font-mono font-bold text-[#002046] border-r border-[#c4c6cf]">
                         {p.code}
+                      </td>
+                      <td className="px-2 font-mono text-[#002046] border-r border-[#c4c6cf]">
+                        {p.barcode || '-'}
                       </td>
                       <td className="px-2 font-bold border-r border-[#c4c6cf] truncate max-w-[200px]">
                         {p.description}

@@ -17,18 +17,21 @@ import {
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
 import { Product, UnitType, ANIMAL_CATEGORIES } from '../../types/pos';
-import { isMeatCategory, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
+import { isMeatProduct, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
+import { Store } from 'lucide-react';
 
 interface ChamberStockTabProps {
   onOpenNewTransfer: (defaultProduct?: Product) => void;
   onOpenInitModal: () => void;
   onOpenQuickAdjustment: (product: Product, branchId: 'NECO 1' | 'NECO 2') => void;
+  onSwitchToStoreStock?: () => void;
 }
 
 export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   onOpenNewTransfer,
   onOpenInitModal,
   onOpenQuickAdjustment,
+  onSwitchToStoreStock,
 }) => {
   const { products, branchStock, updateProductMinStock } = useFirebase();
 
@@ -39,14 +42,23 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   const [editingMinStockCode, setEditingMinStockCode] = useState<string | null>(null);
   const [tempMinStock, setTempMinStock] = useState<number>(20);
 
-  // Categorías disponibles (con las categorías animales oficiales primero)
+  // Filtrar estrictamente carnes y productos de cámara frigorífica (excluye Coca Cola, almacén, limpieza, carbón, huevos, fideos, etc.)
+  const meatProductsOnly = useMemo(() => {
+    return products.filter((p) => isMeatProduct(p));
+  }, [products]);
+
+  const storeProductsCount = useMemo(() => {
+    return products.filter((p) => !isMeatProduct(p)).length;
+  }, [products]);
+
+  // Categorías cárnicas disponibles en cámara
   const categories = useMemo(() => {
     const customCats = new Set<string>();
-    products.forEach((p) => {
+    meatProductsOnly.forEach((p) => {
       if (p.category) customCats.add(p.category);
     });
     return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
-  }, [products]);
+  }, [meatProductsOnly]);
 
   // Map rápido de existencias: `${branchId}_${productCode}` -> currentStock
   const stockMap = useMemo(() => {
@@ -60,13 +72,13 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
     return map;
   }, [branchStock]);
 
-  // Lista procesada de productos con sus stocks por sucursal
+  // Lista procesada de productos CÁRNICOS con sus stocks por cámara frigorífica
   const processedItems = useMemo(() => {
-    return products.map((p) => {
+    return meatProductsOnly.map((p) => {
       const neco1 = stockMap.get(`NECO 1_${p.code}`) || { currentStock: 0, minStock: 20 };
       const neco2 = stockMap.get(`NECO 2_${p.code}`) || { currentStock: 0, minStock: 20 };
       const totalStock = Number((neco1.currentStock + neco2.currentStock).toFixed(3));
-      const isMeat = isMeatCategory(p.category);
+      const isMeat = true;
       const minStockRef = Math.max(neco1.minStock, neco2.minStock);
 
       // Estado de stock
@@ -96,7 +108,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
         valorComercialTotal,
       };
     });
-  }, [products, stockMap]);
+  }, [meatProductsOnly, stockMap]);
 
   // Filtrado
   const filteredItems = useMemo(() => {
@@ -310,18 +322,29 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
 
         {/* Botones de acción */}
         <div className="flex items-center space-x-2">
+          {onSwitchToStoreStock && (
+            <button
+              onClick={onSwitchToStoreStock}
+              className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-emerald-900 bg-emerald-50 border-emerald-600 cursor-pointer"
+              title="Ver Stock de Almacén, Bebidas, Limpieza, Carbón, Huevos y Artículos Varios"
+            >
+              <Store className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Ir a Stock Almacén ({storeProductsCount})</span>
+            </button>
+          )}
+
           <button
             onClick={onOpenInitModal}
-            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-gray-800"
-            title="Cargar stock inicial de cortes en cámaras"
+            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-gray-800 cursor-pointer"
+            title="Cargar stock inicial de cortes cárnicos en cámaras"
           >
             <Boxes className="w-3.5 h-3.5 text-blue-700" />
-            <span>Apertura / Inicializar Stock</span>
+            <span>Apertura / Inicializar Cámara</span>
           </button>
 
           <button
             onClick={() => onOpenNewTransfer()}
-            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-blue-900"
+            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-blue-900 cursor-pointer"
             title="Iniciar transferencia de mercadería entre cámaras NECO 1 y NECO 2"
           >
             <ArrowRightLeft className="w-3.5 h-3.5 text-blue-700" />
@@ -330,7 +353,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
 
           <button
             onClick={exportToExcel}
-            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs text-gray-800"
+            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs text-gray-800 cursor-pointer"
             title="Descargar listado en formato Excel"
           >
             <Download className="w-3.5 h-3.5 text-green-700" />
@@ -569,7 +592,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
       {/* FOOTER BARRA DE ESTADO */}
       <div className="win-statusbar p-1.5 flex items-center justify-between text-[11px] text-gray-700">
         <div>
-          Mostrando <strong>{filteredItems.length}</strong> de <strong>{products.length}</strong> artículos en catálogo
+          Mostrando <strong>{filteredItems.length}</strong> de <strong>{meatProductsOnly.length}</strong> cortes cárnicos en Cámara Frigorífica (los {storeProductsCount} artículos de almacén y varios tienen su propio stock separado)
         </div>
         <div className="flex items-center space-x-4 font-mono">
           <span>

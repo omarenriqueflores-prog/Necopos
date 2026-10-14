@@ -1,37 +1,68 @@
-import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory, StockMovement } from '../types/pos';
+import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory, StockMovement, Product } from '../types/pos';
+import { isStoreUnitProduct } from './scaleParser';
 
 export { ANIMAL_CATEGORIES };
 export type { AnimalCategory };
 
+export const STORE_CATEGORIES = [
+  'Almacén',
+  'Bebidas',
+  'Limpieza',
+  'Carbón / Leña',
+  'Huevos',
+  'Fideos / Despensa',
+  'Lácteos',
+  'Panadería',
+  'Fiambrería',
+  'Artículos Varios',
+] as const;
+
 /**
- * Determina si una categoría pertenece de forma positiva y explícita al rubro cárnico.
- * (Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo, Cortes Vacunos, etc.)
- * Los artículos de almacén, bebidas, limpieza, fiambrería o sin clasificar quedan excluidos.
+ * Determina si una categoría pertenece de forma positiva y explícita al rubro cárnico de cámara.
+ * (Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo, Cortes Vacunos, Pollo, Achuras, Embutidos)
+ * Los artículos de almacén, bebidas, limpieza, carbón, huevos, fideos, fiambrería o varios quedan excluidos.
  */
 export function isMeatCategory(category: string | undefined | null): boolean {
   if (!category) return false;
-  const cat = category.trim().toLowerCase();
+  const cat = category
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
-  // Exclusiones explícitas de no cárnicos
-  if (
-    cat.includes('almacén') ||
-    cat.includes('almacen') ||
-    cat.includes('bebida') ||
-    cat.includes('limpieza') ||
-    cat.includes('verduleria') ||
-    cat.includes('verdulería') ||
-    cat.includes('kiosco') ||
-    cat.includes('fiambr') ||
-    cat.includes('lacteo') ||
-    cat.includes('lácteo') ||
-    cat.includes('panaderia') ||
-    cat.includes('panadería') ||
-    cat.includes('bazar')
-  ) {
+  // Exclusiones explícitas de artículos de almacén y varios (no van en cámara frigorífica cárnica)
+  const nonMeatTerms = [
+    'almacen',
+    'bebida',
+    'gaseosa',
+    'limpieza',
+    'carbon',
+    'lena',
+    'huevo',
+    'fideo',
+    'despensa',
+    'aderezo',
+    'verduleria',
+    'kiosco',
+    'fiambr',
+    'lacteo',
+    'panaderia',
+    'bazar',
+    'varios',
+    'otros',
+    'envase',
+    'galletita',
+    'arroz',
+    'aceite',
+    'yerba',
+    'azucar',
+  ];
+
+  if (nonMeatTerms.some((term) => cat.includes(term))) {
     return false;
   }
 
-  // Criterios positivos explícitos para productos cárnicos oficiales de NECO POS
+  // Criterios positivos explícitos para productos cárnicos oficiales de cámara frigorífica
   const positiveTerms = [
     'vaca',
     'ternera',
@@ -57,9 +88,107 @@ export function isMeatCategory(category: string | undefined | null): boolean {
     'grasa',
     'sebo',
     'picada',
+    'elaborado',
   ];
 
   return positiveTerms.some((term) => cat.includes(term));
+}
+
+/**
+ * Determina de forma integral si un artículo corresponde a Cámara Frigorífica (Carnes)
+ * o si pertenece a Stock de Almacén y Artículos Varios (Coca Cola, bebidas, limpieza, carbón, huevos, fideos, etc.)
+ */
+export function isMeatProduct(
+  p:
+    | {
+        code?: string;
+        description?: string;
+        rubro?: string;
+        category?: string;
+        unitType?: string;
+        barcode?: string | null;
+      }
+    | null
+    | undefined
+): boolean {
+  if (!p) return false;
+
+  // Todo producto de venta por unidad o detectado como artículo de almacén/bebidas/limpieza/carbón/huevos/fideos
+  // va al Stock de Almacén y Artículos Varios, NUNCA a la cámara frigorífica de carnes.
+  if (isStoreUnitProduct(p)) {
+    return false;
+  }
+
+  if (p.category && !isMeatCategory(p.category)) {
+    return false;
+  }
+  if (p.rubro && !isMeatCategory(p.rubro) && p.rubro.trim() !== '') {
+    return false;
+  }
+
+  return isMeatCategory(p.category) || isMeatCategory(p.rubro);
+}
+
+/**
+ * Devuelve el nombre del depósito correspondiente según si es carne (Cámara Frigorífica) o Almacén.
+ */
+export function getStorageLocationName(branchId: 'NECO 1' | 'NECO 2', isMeat: boolean): string {
+  if (isMeat) {
+    return branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2';
+  }
+  return branchId === 'NECO 1' ? 'Almacén / Depósito NECO 1' : 'Almacén / Depósito NECO 2';
+}
+
+/**
+ * Sugiere el rubro/categoría específico de almacén según la descripción o categoría actual
+ */
+export function getStoreRubroLabel(p: { description?: string; rubro?: string; category?: string }): string {
+  const norm = (s?: string) =>
+    (s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+
+  const desc = norm(p.description);
+  const rub = norm(p.rubro);
+  const cat = norm(p.category);
+  const combined = `${rub} ${cat} ${desc}`;
+
+  if (
+    /\b(coca|pepsi|fanta|sprite|manaos|schwe?ppes|7up|paso de los toros|gaseosa|agua|soda|jugo|cepita|baggio|citric|levite|aquarius|vino|cerveza|quilmes|brahma|stella|heineken|corona|patagonia|fernet|gancia|sidra|bebida)\b/.test(
+      combined
+    )
+  ) {
+    return 'Bebidas';
+  }
+  if (/\b(detergente|lavandina|jabon|esponja|papel|rollo|servilleta|limpieza|desinfectante|bolsa)\b/.test(combined)) {
+    return 'Limpieza';
+  }
+  if (/\b(carbon|lena|briqueta|fosforo|encendedor)\b/.test(combined)) {
+    return 'Carbón / Leña';
+  }
+  if (/\b(huevo|maple)\b/.test(combined)) {
+    return 'Huevos';
+  }
+  if (/\b(leche|manteca|margarina|crema|yogur|queso|lacteo)\b/.test(combined)) {
+    return 'Lácteos';
+  }
+  if (/\b(pan\b|lactal|galletita|panaderia|rallado|rebozador|tapa|empanada|pascualina)\b/.test(combined)) {
+    return 'Panadería';
+  }
+  if (/\b(fiambr|jamon|salame|mortadela|paleta cocida)\b/.test(combined)) {
+    return 'Fiambrería';
+  }
+
+  // Si ya tiene un rubro de almacén válido (que no sea carne), usarlo
+  if (p.category && !isMeatCategory(p.category)) {
+    return p.category;
+  }
+  if (p.rubro && !isMeatCategory(p.rubro)) {
+    return p.rubro;
+  }
+  return 'Almacén';
 }
 
 /**

@@ -8,7 +8,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
-import { isMeatCategory, formatKg } from '../../utils/stockHelper';
+import { isMeatProduct, formatKg } from '../../utils/stockHelper';
 
 interface ChamberInitModalProps {
   onClose: () => void;
@@ -29,9 +29,9 @@ export const ChamberInitModal: React.FC<ChamberInitModalProps> = ({ onClose }) =
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
 
-  // Solo productos cárnicos
+  // Solo productos cárnicos (excluye bebidas, almacén, limpieza, carbón, huevos, fideos, etc.)
   const meatProducts = useMemo(() => {
-    return products.filter((p) => isMeatCategory(p.category));
+    return products.filter((p) => isMeatProduct(p));
   }, [products]);
 
   // Inicializar estado con stock actual existente para cada sucursal si aún no se editó

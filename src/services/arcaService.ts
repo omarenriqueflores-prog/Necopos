@@ -103,6 +103,7 @@ export interface AuthorizeInvoiceResponse {
   status: 'AUTORIZADO' | 'RECHAZADO' | 'PENDIENTE';
   cae?: string;
   caeVto?: string;
+  cbteNumero?: number;
   qrUrl?: string;
   qrPayload?: Record<string, any>;
   environment?: 'homologacion' | 'produccion';
@@ -112,29 +113,134 @@ export interface AuthorizeInvoiceResponse {
 }
 
 export const arcaService = {
-  // Get stored ARCA config from localStorage or defaults
+  // Get stored ARCA config from localStorage (merging dedicated cert/key backups) or defaults
   getStoredConfig(): ArcaConfig {
+    let parsed: Partial<ArcaConfig> = {};
     try {
       const saved = localStorage.getItem('necopos_arca_config');
-      if (saved) return JSON.parse(saved);
+      if (saved) parsed = JSON.parse(saved) || {};
     } catch (_) {}
+
+    let savedCert = '';
+    let savedKey = '';
+    try {
+      savedCert =
+        localStorage.getItem('necopos_arca_certificate') ||
+        (parsed.certificate && parsed.certificate.includes('BEGIN CERTIFICATE') ? parsed.certificate : '') ||
+        '';
+      savedKey =
+        localStorage.getItem('necopos_arca_private_key') ||
+        localStorage.getItem('necopos_arca_generated_key') ||
+        (parsed.privateKey && parsed.privateKey.includes('PRIVATE KEY') ? parsed.privateKey : '') ||
+        '';
+    } catch (_) {}
+
+    const cert = (parsed.certificate && parsed.certificate.includes('BEGIN CERTIFICATE'))
+      ? parsed.certificate
+      : savedCert;
+    const key = (parsed.privateKey && parsed.privateKey.includes('PRIVATE KEY'))
+      ? parsed.privateKey
+      : savedKey;
+
     return {
-      cuit: '30714892019',
-      companyName: 'Carnicerías Neco S.R.L.',
-      vatCondition: 'Responsable Inscripto',
-      environment: 'homologacion',
-      pointsOfSale: { 'NECO 1': '0017', 'NECO 2': '0018' },
-      connected: true,
+      cuit: parsed.cuit || '20-25506516-6',
+      companyName: parsed.companyName || 'MOYA CARLOS HUGO',
+      vatCondition: parsed.vatCondition || 'Responsable Inscripto',
+      environment: parsed.environment || 'produccion',
+      pointsOfSale: parsed.pointsOfSale || { 'NECO 1': '0017', 'NECO 2': '0018' },
+      connected: parsed.connected ?? true,
+      certificateLinked: Boolean(cert && key) || Boolean(parsed.certificateLinked),
+      hasCertificate: Boolean(cert) || Boolean(parsed.hasCertificate),
+      hasPrivateKey: Boolean(key) || Boolean(parsed.hasPrivateKey),
+      certificate: cert || undefined,
+      privateKey: key || undefined,
+      alias: parsed.alias || 'necopos',
+      csr: parsed.csr,
+      certificateSubject: parsed.certificateSubject,
+      certificateIssuer: parsed.certificateIssuer,
+      certificateValidTo: parsed.certificateValidTo,
+      lastChecked: parsed.lastChecked,
     };
+  },
+
+  // Persist credentials across all localStorage keys and backend storage
+  persistCredentials(partial: Partial<ArcaConfig>): ArcaConfig {
+    const current = this.getStoredConfig();
+    const nextCert =
+      partial.certificate && partial.certificate.includes('BEGIN CERTIFICATE')
+        ? partial.certificate.trim()
+        : current.certificate;
+    const nextKey =
+      partial.privateKey && partial.privateKey.includes('PRIVATE KEY')
+        ? partial.privateKey.trim()
+        : current.privateKey;
+
+    const merged: ArcaConfig = {
+      ...current,
+      ...partial,
+      certificate: nextCert,
+      privateKey: nextKey,
+      hasCertificate: Boolean(nextCert),
+      hasPrivateKey: Boolean(nextKey),
+      certificateLinked: Boolean(nextCert && nextKey),
+    };
+
+    try {
+      if (nextCert) {
+        localStorage.setItem('necopos_arca_certificate', nextCert);
+      }
+      if (nextKey) {
+        localStorage.setItem('necopos_arca_private_key', nextKey);
+        localStorage.setItem('necopos_arca_generated_key', nextKey);
+      }
+      localStorage.setItem('necopos_arca_config', JSON.stringify(merged));
+    } catch (_) {}
+
+    // Fire-and-forget sync to backend disk storage
+    fetch('/api/arca/save-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cuit: merged.cuit,
+        companyName: merged.companyName,
+        environment: merged.environment,
+        alias: merged.alias,
+        certificate: merged.certificate,
+        privateKey: merged.privateKey,
+        pointsOfSale: merged.pointsOfSale,
+      }),
+    }).catch(() => {});
+
+    return merged;
+  },
+
+  // Fetch server-stored ARCA credentials (if any) to recover after browser/DB resets
+  async fetchServerCredentials(): Promise<Partial<ArcaConfig> | null> {
+    try {
+      const res = await fetch('/api/arca/credentials');
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data?.success && data.credentials) {
+        return data.credentials;
+      }
+    } catch (_) {}
+    return null;
   },
 
   // Check connection status with ARCA backend
   async checkStatus(cfg?: Partial<ArcaConfig>): Promise<ArcaStatusResponse> {
+    const stored = this.getStoredConfig();
+    const mergedCfg = {
+      ...stored,
+      ...(cfg || {}),
+      certificate: cfg?.certificate || stored.certificate,
+      privateKey: cfg?.privateKey || stored.privateKey,
+    };
     try {
       const res = await fetch('/api/arca/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfg || {}),
+        body: JSON.stringify(mergedCfg),
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
@@ -144,16 +250,16 @@ export const arcaService = {
       return {
         success: false,
         connected: false,
-        environment: cfg?.environment || 'homologacion',
-        cuit: cfg?.cuit || '20-25506516-6',
-        companyName: cfg?.companyName || 'Carlos Hugo Moya',
-        vatCondition: cfg?.vatCondition || 'Responsable Inscripto',
-        hasCert: Boolean(cfg?.certificate || cfg?.hasCertificate),
-        hasKey: Boolean(cfg?.privateKey || cfg?.hasPrivateKey),
+        environment: mergedCfg.environment || 'produccion',
+        cuit: mergedCfg.cuit || '20-25506516-6',
+        companyName: mergedCfg.companyName || 'MOYA CARLOS HUGO',
+        vatCondition: mergedCfg.vatCondition || 'Responsable Inscripto',
+        hasCert: Boolean(mergedCfg.certificate || mergedCfg.hasCertificate),
+        hasKey: Boolean(mergedCfg.privateKey || mergedCfg.hasPrivateKey),
         authMethod: 'Offline / En espera',
         activePvs: [
-          { branch: 'NECO 1', pv: cfg?.pointsOfSale?.['NECO 1'] || '0017', address: '24 de Septiembre', status: 'PENDIENTE' },
-          { branch: 'NECO 2', pv: cfg?.pointsOfSale?.['NECO 2'] || '0018', address: 'Villa Saavedra', status: 'PENDIENTE' },
+          { branch: 'NECO 1', pv: mergedCfg.pointsOfSale?.['NECO 1'] || '0017', address: '24 de Septiembre', status: 'PENDIENTE' },
+          { branch: 'NECO 2', pv: mergedCfg.pointsOfSale?.['NECO 2'] || '0018', address: 'Villa Saavedra', status: 'PENDIENTE' },
         ],
         timestamp: new Date().toISOString(),
         message: err.message || 'Servidor ARCA no disponible',
@@ -163,28 +269,13 @@ export const arcaService = {
 
   // Query CUIT or DNI from ARCA / AFIP Padrón
   async lookupCuit(cuitOrDni: string, config?: ArcaConfig): Promise<CuitLookupResponse> {
-    let extraParams: Record<string, any> = {};
-    if (config) {
-      extraParams = {
-        certificate: config.certificate,
-        privateKey: config.privateKey,
-        cuitRepresentada: config.cuit,
-        environment: config.environment,
-      };
-    } else {
-      try {
-        const saved = localStorage.getItem('necopos_arca_config');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          extraParams = {
-            certificate: parsed.certificate,
-            privateKey: parsed.privateKey,
-            cuitRepresentada: parsed.cuit,
-            environment: parsed.environment,
-          };
-        }
-      } catch (_) {}
-    }
+    const stored = this.getStoredConfig();
+    const extraParams = {
+      certificate: config?.certificate || stored.certificate,
+      privateKey: config?.privateKey || stored.privateKey,
+      cuitRepresentada: config?.cuit || stored.cuit,
+      environment: config?.environment || stored.environment,
+    };
 
     try {
       const res = await fetch('/api/arca/cuit-lookup', {
@@ -207,42 +298,15 @@ export const arcaService = {
   // Authorize invoice or credit note via ARCA WSFEv1
   async authorize(payload: AuthorizeInvoicePayload): Promise<AuthorizeInvoiceResponse> {
     try {
-      let extraParams: Record<string, any> = {};
-      try {
-        const saved = localStorage.getItem('necopos_arca_config');
-        const savedKey = localStorage.getItem('necopos_arca_private_key');
-        const savedCert = localStorage.getItem('necopos_arca_certificate');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          extraParams = {
-            certificate: parsed.certificate || savedCert || '',
-            privateKey: parsed.privateKey || savedKey || '',
-            cuit: parsed.cuit || '30714892019',
-            environment: parsed.environment || 'homologacion',
-          };
-        } else {
-          extraParams = {
-            certificate: savedCert || '',
-            privateKey: savedKey || '',
-            cuit: '30714892019',
-            environment: 'homologacion',
-          };
-        }
-      } catch (_) {}
+      const stored = this.getStoredConfig();
 
-      const fullPayload = {
-        ...extraParams,
+      const fullPayload: AuthorizeInvoicePayload = {
         ...payload,
+        certificate: payload.certificate || stored.certificate || '',
+        privateKey: payload.privateKey || stored.privateKey || '',
+        cuit: payload.cuit || stored.cuit || '20-25506516-6',
+        environment: payload.environment || stored.environment || 'produccion',
       };
-
-      if (!fullPayload.privateKey && typeof window !== 'undefined') {
-        const savedKey = localStorage.getItem('necopos_arca_private_key');
-        if (savedKey) fullPayload.privateKey = savedKey;
-      }
-      if (!fullPayload.certificate && typeof window !== 'undefined') {
-        const savedCert = localStorage.getItem('necopos_arca_certificate');
-        if (savedCert) fullPayload.certificate = savedCert;
-      }
 
       const res = await fetch('/api/arca/authorize', {
         method: 'POST',
@@ -262,8 +326,8 @@ export const arcaService = {
     } catch (err: any) {
       return {
         success: false,
-        status: 'PENDIENTE',
-        error: `Fallo de conexión: ${err.message}. La venta fue preservada localmente.`,
+        status: 'RECHAZADO',
+        error: `Fallo de conexión con el servidor ARCA: ${err.message}`,
       };
     }
   },
@@ -367,7 +431,11 @@ export const arcaService = {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `Error ${res.status} al generar clave y CSR`);
     }
-    return res.json();
+    const data = await res.json();
+    if (data?.privateKey) {
+      this.persistCredentials({ privateKey: data.privateKey, cuit, companyName, alias });
+    }
+    return data;
   },
 
   // Parses and verifies an X.509 certificate PEM via OpenSSL on backend
@@ -386,8 +454,8 @@ export const arcaService = {
 
   // Queries ARCA WSFEv1 FECompUltimoAutorizado for all voucher types (Factura A/B/C, NC A/B/C)
   async getLastVouchers(
-    pointOfSale: string = '0001',
-    environment: string = 'homologacion',
+    pointOfSale: string = '0017',
+    environment: string = 'produccion',
     cuit?: string,
     certificate?: string,
     privateKey?: string
@@ -397,6 +465,8 @@ export const arcaService = {
     environment: string;
     cuit: string;
     hasCredentials: boolean;
+    hasUploadedFiles?: boolean;
+    wsaaError?: string;
     vouchers: Array<{
       cbteTipo: number;
       cbteNombre: string;
@@ -407,13 +477,20 @@ export const arcaService = {
       formattedNext: string;
       source: string;
       status: string;
+      afipError?: string;
       lastChecked: string;
     }>;
     checkedAt: string;
     message?: string;
   }> {
-    const ptoVtaNum = parseInt(String(pointOfSale).replace(/\D/g, ''), 10) || 1;
+    const stored = this.getStoredConfig();
+    const ptoVtaNum = parseInt(String(pointOfSale).replace(/\D/g, ''), 10) || 17;
     const pvFormatted = ptoVtaNum.toString().padStart(4, '0');
+    const effCert = certificate || stored.certificate;
+    const effKey = privateKey || stored.privateKey;
+    const effCuit = cuit || stored.cuit || '20-25506516-6';
+    const effEnv = environment || stored.environment || 'produccion';
+
     const typesToQuery = [
       { cbteTipo: 1, cbteNombre: 'Factura A', cbteLetra: 'A' },
       { cbteTipo: 6, cbteNombre: 'Factura B', cbteLetra: 'B' },
@@ -430,11 +507,11 @@ export const arcaService = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          pointOfSale,
-          environment,
-          cuit,
-          certificate,
-          privateKey,
+          pointOfSale: pvFormatted,
+          environment: effEnv,
+          cuit: effCuit,
+          certificate: effCert,
+          privateKey: effKey,
         }),
       });
 
@@ -444,13 +521,15 @@ export const arcaService = {
       }
       return await res.json();
     } catch (err: any) {
-      console.warn('arcaService.getLastVouchers fallback engaged:', err.message);
+      console.warn('arcaService.getLastVouchers error:', err.message);
       return {
-        success: true,
+        success: false,
         pointOfSale: pvFormatted,
-        environment: environment || 'homologacion',
-        cuit: cuit || '30714892019',
-        hasCredentials: Boolean(certificate && privateKey),
+        environment: effEnv,
+        cuit: effCuit,
+        hasCredentials: false,
+        hasUploadedFiles: Boolean(effCert && effKey),
+        wsaaError: err.message,
         vouchers: typesToQuery.map((t) => ({
           cbteTipo: t.cbteTipo,
           cbteNombre: t.cbteNombre,
@@ -459,13 +538,15 @@ export const arcaService = {
           nextNumber: 1,
           formattedLast: `${pvFormatted}-00000000`,
           formattedNext: `${pvFormatted}-00000001`,
-          source: 'REGISTRO_LOCAL_CONTINGENCIA',
-          status: 'SECUENCIA_POS_LOCAL',
+          source: 'SIN_CONEXION_ARCA',
+          status: 'SIN_CERTIFICADO_ACTIVO',
+          afipError: err.message,
           lastChecked: new Date().toISOString(),
         })),
         checkedAt: new Date().toISOString(),
-        message: 'Modo contingencia local activo (Servidor AFIP/ARCA no disponible).',
+        message: `Error al conectar con ARCA: ${err.message}`,
       };
     }
   },
 };
+

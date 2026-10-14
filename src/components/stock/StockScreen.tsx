@@ -11,8 +11,10 @@ import {
   X,
   Beef,
   FileCheck,
+  Store,
 } from 'lucide-react';
 import { ChamberStockTab } from './ChamberStockTab';
+import { StoreStockTab } from './StoreStockTab';
 import { StockMovementsTab } from './StockMovementsTab';
 import { StockTransfersTab } from './StockTransfersTab';
 import { StockAdjustmentsTab } from './StockAdjustmentsTab';
@@ -23,12 +25,14 @@ import { MeatReconciliationTab } from './MeatReconciliationTab';
 import { MeatReceptionTab } from './MeatReceptionTab';
 import { NewTransferModal } from './NewTransferModal';
 import { ChamberInitModal } from './ChamberInitModal';
+import { StoreInitModal } from './StoreInitModal';
 import { Product, StockTransfer } from '../../types/pos';
 import { printTransferRemito, formatKg, formatCurrency } from '../../utils/stockHelper';
 import { useFirebase } from '../../context/FirebaseContext';
 
 type StockSubTab =
   | 'EXISTENCIAS'
+  | 'STOCK_ALMACEN'
   | 'RECEPCION'
   | 'DESPOSTE'
   | 'CONCILIACION_VENTAS'
@@ -46,6 +50,7 @@ export const StockScreen: React.FC = () => {
   const [showNewTransferModal, setShowNewTransferModal] = useState(false);
   const [transferDefaultProduct, setTransferDefaultProduct] = useState<Product | null>(null);
   const [showInitModal, setShowInitModal] = useState(false);
+  const [showStoreInitModal, setShowStoreInitModal] = useState(false);
 
   // Quick adjustment preselection
   const [quickAdjProduct, setQuickAdjProduct] = useState<Product | null>(null);
@@ -71,25 +76,39 @@ export const StockScreen: React.FC = () => {
       <div className="bg-white border border-[#b8bcc4] flex items-center justify-between p-2 shadow-sm text-black">
         <div className="flex items-center space-x-2 text-black font-bold text-[12px] pl-1">
           <Boxes className="w-4 h-4 text-black" />
-          <span className="text-black font-bold">NECO POS — GESTIÓN PROFESIONAL DE STOCK E INVENTARIO EN CÁMARAS</span>
+          <span className="text-black font-bold">
+            NECO POS — GESTIÓN DE STOCK: CÁMARAS FRIGORÍFICAS (CARNES) Y DEPÓSITO DE ALMACÉN
+          </span>
         </div>
         <div className="text-[11px] text-black font-bold pr-2">
-          Control Frigorífico Multi-Sucursal (NECO 1 ⇄ NECO 2)
+          Control Multi-Sucursal (NECO 1 ⇄ NECO 2)
         </div>
       </div>
 
       {/* PESTAÑAS PRINCIPALES DEL MÓDULO */}
-      <div className="flex space-x-1 border-b border-gray-400 px-1 pt-1 text-xs">
+      <div className="flex flex-wrap gap-1 border-b border-gray-400 px-1 pt-1 text-xs">
         <button
           onClick={() => setActiveTab('EXISTENCIAS')}
-          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t cursor-pointer ${
             activeTab === 'EXISTENCIAS'
               ? 'bg-white text-blue-900 border-gray-400 -mb-px pb-2 shadow-sm'
               : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
           }`}
         >
           <Boxes className="w-3.5 h-3.5 text-blue-700" />
-          <span>Existencias en Cámaras</span>
+          <span>Cámara Frigorífica (Carnes)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('STOCK_ALMACEN')}
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t cursor-pointer ${
+            activeTab === 'STOCK_ALMACEN'
+              ? 'bg-white text-emerald-900 border-gray-400 -mb-px pb-2 shadow-sm'
+              : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
+          }`}
+        >
+          <Store className="w-3.5 h-3.5 text-emerald-700" />
+          <span>Stock Almacén y Artículos Varios</span>
         </button>
 
         <button
@@ -196,6 +215,15 @@ export const StockScreen: React.FC = () => {
             onOpenNewTransfer={handleOpenNewTransfer}
             onOpenInitModal={() => setShowInitModal(true)}
             onOpenQuickAdjustment={handleOpenQuickAdjustment}
+            onSwitchToStoreStock={() => setActiveTab('STOCK_ALMACEN')}
+          />
+        )}
+
+        {activeTab === 'STOCK_ALMACEN' && (
+          <StoreStockTab
+            onOpenNewTransfer={handleOpenNewTransfer}
+            onOpenStoreInitModal={() => setShowStoreInitModal(true)}
+            onOpenQuickAdjustment={handleOpenQuickAdjustment}
           />
         )}
 
@@ -237,8 +265,11 @@ export const StockScreen: React.FC = () => {
         />
       )}
 
-      {/* MODAL APERTURA DE STOCK */}
+      {/* MODAL APERTURA DE STOCK DE CÁMARA (CARNES) */}
       {showInitModal && <ChamberInitModal onClose={() => setShowInitModal(false)} />}
+
+      {/* MODAL APERTURA DE STOCK DE ALMACÉN Y VARIOS */}
+      {showStoreInitModal && <StoreInitModal onClose={() => setShowStoreInitModal(false)} />}
 
       {/* MODAL VER DETALLE TRASLADO */}
       {viewingTransfer && (

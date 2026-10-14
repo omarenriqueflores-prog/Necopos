@@ -4,6 +4,7 @@ export interface Product {
   id?: string;
   code: string;
   docId?: string;
+  barcode?: string | null;
   name?: string;
   description: string;
   rubro?: string;

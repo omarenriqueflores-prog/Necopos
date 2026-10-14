@@ -33,6 +33,7 @@ import {
   AccountMovement,
 } from '../../types/pos';
 import { formatCurrency, formatWeight, parseBarcodeInput } from '../../utils/scaleParser';
+import { isMeatProduct } from '../../utils/stockHelper';
 import { generateTicketHtml, printTicket } from '../../utils/ticketGenerator';
 import { CustomerSelectModal, SelectedPartyData } from './CustomerSelectModal';
 import { WindowsModal } from '../common/WindowsModal';
@@ -184,18 +185,29 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     return products
       .filter((p) => {
         const matchCode = p.code.toLowerCase().includes(q);
+        const matchBarcode = p.barcode ? p.barcode.toLowerCase().includes(q) : false;
         const matchDesc = p.description.toLowerCase().includes(q);
         const matchPlu = p.scalePlu ? p.scalePlu.toLowerCase().includes(q) : false;
         const matchCat = p.category.toLowerCase().includes(q);
-        return matchCode || matchDesc || matchPlu || matchCat;
+        return matchCode || matchBarcode || matchDesc || matchPlu || matchCat;
+      })
+      .sort((a, b) => {
+        const aExact =
+          (a.barcode && a.barcode.toLowerCase() === q) || a.code.toLowerCase() === q ? 0 : 1;
+        const bExact =
+          (b.barcode && b.barcode.toLowerCase() === q) || b.code.toLowerCase() === q ? 0 : 1;
+        return aExact - bExact;
       })
       .slice(0, 8);
   }, [barcodeInput, products]);
 
   const handleSelectProductFromSearch = (product: Product) => {
-    setProductToAmount(product);
-    const initialVal = product.unitType === 'Kg' ? '1.000' : '1';
-    setAmountInput(initialVal);
+    const isMeat = isMeatProduct(product);
+    setProductToAmount({
+      ...product,
+      unitType: isMeat ? 'Kg' : 'Unid',
+    });
+    setAmountInput('');
     setIsAddAmountModalOpen(true);
     setIsSearchFocused(false);
   };
@@ -203,26 +215,29 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   const handleConfirmAddAmount = () => {
     if (!productToAmount) return;
 
-    const val = parseFloat(amountInput.replace(',', '.')) || 0;
-    if (val <= 0) {
-      showAlert('Ingrese un peso o cantidad mayor a cero.');
+    const isMeat = productToAmount.unitType === 'Kg';
+    const rawVal = parseFloat(amountInput.replace(',', '.')) || 0;
+    if (rawVal <= 0) {
+      showAlert(
+        isMeat
+          ? 'Debe ingresar manualmente la cantidad en kilogramos (mayor a 0).'
+          : 'Debe ingresar manualmente la cantidad de unidades (mayor a 0).'
+      );
       return;
     }
 
-    const availableStock = getAvailableChamberStock(productToAmount.code);
-    if (availableStock <= 0) {
-      showNotification(`Aviso: ${productToAmount.description} con stock 0/negativo (${formatQuantity(availableStock, productToAmount.unitType)}). Se ajustará en negativo.`);
-    }
-
-    const subtotal = Math.round(productToAmount.price * val * 100) / 100;
+    const qtyOrWeight = isMeat
+      ? Math.round(rawVal * 1000) / 1000
+      : Math.max(1, Math.round(rawVal));
+    const subtotal = Math.round(productToAmount.price * qtyOrWeight * 100) / 100;
 
     const newItem: SaleItem = {
       id: `item-${Date.now()}`,
       code: productToAmount.code,
       description: productToAmount.description,
-      unitType: productToAmount.unitType,
-      weight: productToAmount.unitType === 'Kg' ? val : undefined,
-      quantity: productToAmount.unitType === 'Unid' ? Math.max(1, Math.round(val)) : undefined,
+      unitType: isMeat ? 'Kg' : 'Unid',
+      weight: isMeat ? qtyOrWeight : undefined,
+      quantity: isMeat ? undefined : qtyOrWeight,
       unitPrice: productToAmount.price,
       discountPercent: 0,
       subtotal: subtotal,
@@ -237,22 +252,12 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     setProductToAmount(null);
 
     showNotification(
-      `Producto agregado: ${productToAmount.description} (${formatQuantity(val, productToAmount.unitType)}) -> ${formatCurrency(subtotal)}`
+      `Producto agregado: ${productToAmount.description} (${
+        isMeat ? formatWeight(qtyOrWeight) : `${qtyOrWeight} Unid.`
+      }) -> ${formatCurrency(subtotal)}`
     );
 
     setTimeout(() => barcodeInputRef.current?.focus(), 10);
-  };
-
-  const handleCaptureScaleInModal = () => {
-    setScaleStatus('PESANDO');
-    setTimeout(() => {
-      const randomWeights = [1.25, 2.15, 0.85, 3.42, 1.95, 2.35];
-      const newWeight = randomWeights[Math.floor(Math.random() * randomWeights.length)];
-      setLiveScaleWeight(newWeight);
-      setAmountInput(newWeight.toFixed(3));
-      setScaleStatus('ESTABLE');
-      showNotification(`[MODO PRUEBA / SIMULACIÓN] Balanza COM1 capturada: ${formatWeight(newWeight)}`);
-    }, 200);
   };
 
   // Auto focus barcode input on mount and keep it focused
@@ -350,12 +355,6 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     const raw = barcodeInput.trim();
     if (!raw) return;
 
-    // If matches exist and raw is not a 13-digit scale barcode, pick the top match
-    if (matchingProducts.length > 0 && !raw.startsWith('20') && raw.length < 10) {
-      handleSelectProductFromSearch(matchingProducts[0]);
-      return;
-    }
-
     const parsed = parseBarcodeInput(raw, products, currentBranch.scaleEanPrefix);
 
     if (parsed && parsed.product) {
@@ -390,10 +389,16 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       } else {
         handleSelectProductFromSearch(parsed.product);
       }
-    } else {
-      showNotification(`Código o artículo no encontrado: "${raw}"`);
-      barcodeInputRef.current?.focus();
+      return;
     }
+
+    if (matchingProducts.length > 0) {
+      handleSelectProductFromSearch(matchingProducts[0]);
+      return;
+    }
+
+    showNotification(`Código o artículo no encontrado: "${raw}"`);
+    barcodeInputRef.current?.focus();
   };
 
   // Auto focus modal amount input when prompt opens
@@ -921,7 +926,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                   setHighlightedSearchIndex(-1);
                   setIsSearchFocused(true);
                 }}
-                placeholder="Escriba nombre del corte, PLU o escanee código (ej. Asado, Vacío, 00125)..."
+                placeholder="Escanee ticket de balanza / código de barras o busque artículo por nombre (ej. Coca Cola, Mayonesa)..."
                 className="w-full h-[30px] pl-2.5 pr-14 bg-[#f7fafe] text-black font-mono text-[13px] font-bold border-2 border-black focus:bg-white focus:outline-none shadow-inner placeholder:text-[#555555]"
                 autoComplete="off"
               />
@@ -952,14 +957,21 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                       Coincidencias de búsqueda ({matchingProducts.length})
                     </span>
                     <span className="text-[10px] text-gray-300 font-normal">
-                      [↑ ↓ Navegar | ENTER Seleccionar]
+                      [↑ ↓ Navegar | ENTER Seleccionar Cantidad]
                     </span>
                   </div>
                   <div className="max-h-[280px] overflow-y-auto divide-y divide-[#ebeef2]">
                     {matchingProducts.map((p, idx) => {
                       const isHighlighted = idx === highlightedSearchIndex;
-                      const stockInChamber = getAvailableChamberStock(p.code);
-                      const isOutOfStock = stockInChamber <= 0;
+                      const isMeat = isMeatProduct(p);
+                      const displayRubro =
+                        p.rubro && p.rubro !== 'Carnes Vacunas'
+                          ? p.rubro
+                          : p.category && p.category !== 'Novillito'
+                          ? p.category
+                          : isMeat
+                          ? 'Carnes'
+                          : 'Almacén';
 
                       return (
                         <div
@@ -984,8 +996,19 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                                     : 'bg-[#e0e3e7] text-[#002046]'
                                 }`}
                               >
-                                CÓD: {p.code} {p.scalePlu ? `| PLU: ${p.scalePlu}` : ''}
+                                CÓD: {p.code}
                               </span>
+                              {p.barcode && (
+                                <span
+                                  className={`font-mono text-[10px] px-1 font-bold ${
+                                    isHighlighted
+                                      ? 'bg-[#00522c] text-white'
+                                      : 'bg-[#dce5f5] text-[#002046]'
+                                  }`}
+                                >
+                                  EAN: {p.barcode}
+                                </span>
+                              )}
                               <span
                                 className={`text-[13px] uppercase font-bold tracking-tight ${
                                   isHighlighted ? 'text-white' : 'text-[#181c1f]'
@@ -1000,32 +1023,14 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                                   isHighlighted ? 'text-[#d4e3ff]' : 'text-[#44474e]'
                                 }
                               >
-                                Categoría:{' '}
+                                Rubro:{' '}
                                 <strong
                                   className={
                                     isHighlighted ? 'text-white' : 'text-black'
                                   }
                                 >
-                                  {p.category}
+                                  {displayRubro}
                                 </strong>
-                              </span>
-                              <span
-                                className={`px-1.5 py-0.2 rounded font-mono font-bold text-[10px] ${
-                                  isOutOfStock
-                                    ? isHighlighted
-                                      ? 'bg-amber-700 text-white border border-amber-300'
-                                      : 'bg-amber-100 text-amber-900 border border-amber-300'
-                                    : isHighlighted
-                                    ? 'bg-[#00522c] text-white border border-[#a8dab5]'
-                                    : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                }`}
-                              >
-                                {isOutOfStock
-                                  ? `Stock: ${formatQuantity(stockInChamber, p.unitType)} (Ajusta negativo)`
-                                  : `Cámara ${currentBranch.id}: ${formatQuantity(
-                                      stockInChamber,
-                                      p.unitType
-                                    )}`}
                               </span>
                             </div>
                           </div>
@@ -1042,7 +1047,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                                   isHighlighted ? 'text-[#aec7f7]' : 'text-gray-600'
                                 }`}
                               >
-                                /{p.unitType}
+                                /{isMeat ? 'Kg' : 'Unid.'}
                               </span>
                             </span>
                             <button
@@ -1054,7 +1059,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                               }`}
                             >
                               <Plus className="w-3 h-3" />
-                              <span>Agregar</span>
+                              <span>Ingresar Cantidad</span>
                             </button>
                           </div>
                         </div>
@@ -1204,7 +1209,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     const totalReqForCode = saleItems
                       .filter((x) => x.code === item.code)
                       .reduce((s, x) => s + (x.unitType === 'Kg' ? (x.weight || 0) : (x.quantity || 0)), 0);
-                    const isExceeded = totalReqForCode > availableStock;
+                    const isExceeded = isKg && Boolean(item.scaleLabelCode) && totalReqForCode > availableStock;
 
                     return (
                       <tr
@@ -1970,7 +1975,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         }}
       />
 
-      {/* MODAL INGRESAR PESO / CANTIDAD AL AGREGAR PRODUCTO */}
+      {/* MODAL INGRESAR CANTIDAD MANUALMENTE AL BUSCAR PRODUCTO */}
       <WindowsModal
         isOpen={isAddAmountModalOpen}
         onClose={() => {
@@ -1978,77 +1983,73 @@ export const POSScreen: React.FC<POSScreenProps> = ({
           setProductToAmount(null);
           setTimeout(() => barcodeInputRef.current?.focus(), 10);
         }}
-        title={
-          productToAmount?.unitType === 'Kg'
-            ? 'INGRESAR PESO DE CORTE CÁRNICO (KG) - PUNTO DE VENTA'
-            : 'INGRESAR CANTIDAD DE UNIDADES - PUNTO DE VENTA'
-        }
-        icon={<Scale className="w-4 h-4 text-[#aec7f7]" />}
+        title="INGRESAR CANTIDAD DEL PRODUCTO - PUNTO DE VENTA"
+        icon={<Receipt className="w-4 h-4 text-[#aec7f7]" />}
         maxWidth="max-w-md"
       >
         {productToAmount && (() => {
-          const chamberStock = getAvailableChamberStock(productToAmount.code);
-          const currentInTicket = saleItems
-            .filter((it) => it.code === productToAmount.code)
-            .reduce((sum, it) => sum + (it.unitType === 'Kg' ? (it.weight || 0) : (it.quantity || 0)), 0);
-          const maxAllowed = Math.max(0, chamberStock - currentInTicket);
-          const val = parseFloat(amountInput.replace(',', '.')) || 0;
-          const isKg = productToAmount.unitType === 'Kg';
-          const calculatedSubtotal = Math.round(val * productToAmount.price * 100) / 100;
-          const isExceeded = val > maxAllowed;
+          const isMeat = productToAmount.unitType === 'Kg';
+          const rawVal = parseFloat(amountInput.replace(',', '.')) || 0;
+          const validQty = rawVal > 0 ? (isMeat ? Math.round(rawVal * 1000) / 1000 : Math.max(1, Math.round(rawVal))) : 0;
+          const calculatedSubtotal = Math.round(validQty * productToAmount.price * 100) / 100;
+          const displayRubro =
+            productToAmount.rubro && productToAmount.rubro !== 'Carnes Vacunas'
+              ? productToAmount.rubro
+              : productToAmount.category && productToAmount.category !== 'Novillito'
+              ? productToAmount.category
+              : isMeat
+              ? 'Carnes'
+              : 'Almacén';
 
           return (
             <div className="flex flex-col gap-3 p-2 text-[12px]">
               {/* Header Info Banner */}
               <div className="bg-[#002046] text-white p-2.5 border border-[#001b3d] shadow-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-[10px] bg-[#1b365d] text-[#aec7f7] px-1.5 py-0.5 font-bold">
-                    CÓD: {productToAmount.code} {productToAmount.scalePlu ? `| PLU: ${productToAmount.scalePlu}` : ''}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-[10px] bg-[#1b365d] text-[#aec7f7] px-1.5 py-0.5 font-bold">
+                      CÓD: {productToAmount.code}
+                    </span>
+                    {productToAmount.barcode && (
+                      <span className="font-mono text-[10px] bg-[#00522c] text-white px-1.5 py-0.5 font-bold">
+                        EAN: {productToAmount.barcode}
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[10px] font-sans text-gray-300 uppercase">
-                    Rubro: {productToAmount.category}
+                    Rubro: {displayRubro}
                   </span>
                 </div>
                 <h3 className="text-[15px] font-bold uppercase tracking-tight text-white mt-1">
                   {productToAmount.description}
                 </h3>
                 <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-[#1b365d] text-[11px]">
-                  <span>Precio Lista Venta:</span>
+                  <span>{isMeat ? 'Precio por Kg:' : 'Precio Unitario:'}</span>
                   <span className="font-mono text-[14px] font-bold text-[#aec7f7]">
                     {formatCurrency(productToAmount.price)}{' '}
-                    <span className="text-[10px] font-normal font-sans">/{productToAmount.unitType}</span>
+                    <span className="text-[10px] font-normal font-sans">
+                      / {isMeat ? 'Kg' : 'Unid.'}
+                    </span>
                   </span>
                 </div>
               </div>
 
-              {/* Chamber Stock Status */}
-              <div className="flex items-center justify-between bg-white p-2 border border-[#c4c6cf] text-[11px]">
-                <span className="text-[#44474e] font-semibold">Stock Físico en Cámara ({currentBranch.id}):</span>
-                <span
-                  className={`font-mono font-bold px-2 py-0.5 rounded text-[10px] ${
-                    chamberStock <= 0
-                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                      : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                  }`}
-                >
-                  {formatQuantity(chamberStock, productToAmount.unitType)} {chamberStock <= 0 ? '(Ajustará en negativo)' : ''}
-                </span>
-              </div>
-
-              {/* Input Form */}
+              {/* Manual Input Form */}
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
                   handleConfirmAddAmount();
                 }}
-                className="flex flex-col gap-2 bg-[#f7fafe] p-3 border border-[#c4c6cf]"
+                className="flex flex-col gap-2.5 bg-[#f7fafe] p-3 border border-[#c4c6cf]"
               >
                 <label htmlFor="amountModalInput" className="font-bold text-[#002046] text-[13px] flex items-center justify-between">
                   <span>
-                    {isKg ? 'PESO A INGRESAR (KILOGRAMOS):' : 'CANTIDAD A INGRESAR (UNIDADES):'}
+                    {isMeat
+                      ? 'CANTIDAD / PESO MANUAL (KG):'
+                      : 'CANTIDAD DEL PRODUCTO (UNIDADES):'}
                   </span>
                   <span className="text-[11px] font-normal text-[#555555]">
-                    {isKg ? '[Ej: 2.350 ó 0.850]' : '[Ej: 1 ó 5]'}
+                    Ingreso manual por teclado
                   </span>
                 </label>
 
@@ -2057,10 +2058,18 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     ref={amountInputRef}
                     id="amountModalInput"
                     type="number"
-                    step={isKg ? '0.001' : '1'}
-                    min="0.001"
+                    step={isMeat ? '0.001' : '1'}
+                    min={isMeat ? '0.001' : '1'}
                     value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
+                    placeholder={isMeat ? '0.000' : 'Ingrese cantidad...'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      // Protect against accidentally scanning an 8-13 digit barcode into the quantity field
+                      if (val.length >= 7 && !val.includes('.')) {
+                        return;
+                      }
+                      setAmountInput(val);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Escape') {
                         setIsAddAmountModalOpen(false);
@@ -2068,71 +2077,27 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         setTimeout(() => barcodeInputRef.current?.focus(), 10);
                       }
                     }}
-                    className="w-full h-[38px] px-3 bg-white font-mono text-[20px] font-bold text-black border-2 border-[#002046] focus:outline-none focus:ring-2 focus:ring-[#002046] shadow-inner text-right pr-12"
+                    className="w-full h-[40px] px-3 bg-white font-mono text-[22px] font-bold text-black border-2 border-[#002046] focus:outline-none focus:ring-2 focus:ring-[#002046] shadow-inner text-center pr-14"
                     autoFocus
                   />
-                  <span className="absolute right-3 font-mono font-bold text-[13px] text-[#002046] pointer-events-none">
-                    {productToAmount.unitType}
+                  <span className="absolute right-3 font-mono font-bold text-[12px] text-[#002046] pointer-events-none">
+                    {isMeat ? 'Kg' : 'Unid.'}
                   </span>
                 </div>
 
-                {/* Quick Increment / Balance Buttons */}
-                <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                  <span className="text-[10px] font-bold text-[#44474e] uppercase">Botones Rápidos:</span>
-                  {isKg ? (
-                    <>
-                      {[0.25, 0.5, 1.0, 2.0, 5.0].map((step) => (
-                        <button
-                          key={step}
-                          type="button"
-                          onClick={() => setAmountInput(step.toFixed(3))}
-                          className="h-[24px] px-2 bg-white hover:bg-[#002046] hover:text-white border border-[#74777f] font-mono font-bold text-[11px] cursor-pointer transition-colors shadow-2xs"
-                        >
-                          {step.toFixed(3)} Kg
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={handleCaptureScaleInModal}
-                        className="h-[24px] px-2 bg-[#00522c] hover:bg-[#003822] text-white font-bold text-[10px] flex items-center gap-1 cursor-pointer ml-auto shadow-xs"
-                        title="Tomar pesaje directo de balanza electrónica COM1"
-                      >
-                        <Scale className="w-3 h-3" />
-                        <span>Balanza COM1 ({formatWeight(liveScaleWeight)})</span>
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {[1, 2, 3, 5, 10, 20].map((num) => (
-                        <button
-                          key={num}
-                          type="button"
-                          onClick={() => setAmountInput(String(num))}
-                          className="h-[24px] px-2.5 bg-white hover:bg-[#002046] hover:text-white border border-[#74777f] font-mono font-bold text-[11px] cursor-pointer transition-colors shadow-2xs"
-                        >
-                          +{num}
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </div>
-
                 {/* Subtotal Calculation Display */}
-                <div className="mt-2 p-2 bg-white border border-[#c4c6cf] flex items-center justify-between">
-                  <span className="font-bold text-[#44474e] text-[11px]">
-                    Subtotal ({isKg ? `${val.toFixed(3)} Kg` : `${Math.round(val)} Unid.`} × {formatCurrency(productToAmount.price)}):
+                <div className="mt-1 p-2.5 bg-white border border-[#c4c6cf] flex items-center justify-between">
+                  <span className="font-bold text-[#44474e] text-[12px]">
+                    Subtotal (
+                    {isMeat
+                      ? `${formatWeight(validQty)}`
+                      : `${validQty} ${validQty === 1 ? 'Unidad' : 'Unidades'}`}{' '}
+                    × {formatCurrency(productToAmount.price)}):
                   </span>
                   <span className="font-mono text-[18px] font-extrabold text-[#002046]">
                     {formatCurrency(calculatedSubtotal)}
                   </span>
                 </div>
-
-                {/* Warning if stock exceeded */}
-                {isExceeded && (
-                  <div className="bg-amber-50 text-amber-900 p-1.5 border border-amber-300 text-[11px] font-semibold flex items-center gap-1 mt-1">
-                    <span>⚠️ Stock en cámara actual: {formatQuantity(chamberStock, productToAmount.unitType)}. Esta venta ajustará el stock en negativo.</span>
-                  </div>
-                )}
               </form>
 
               {/* Action buttons */}
@@ -2150,7 +2115,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                 </button>
                 <button
                   type="button"
-                  disabled={val <= 0}
+                  disabled={rawVal <= 0}
                   onClick={handleConfirmAddAmount}
                   className="h-[30px] px-5 bg-[#002046] hover:bg-[#1b365d] text-white font-bold text-[12px] flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >

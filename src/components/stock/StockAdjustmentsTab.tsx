@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   TrendingDown,
   TrendingUp,
@@ -11,7 +11,14 @@ import {
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
 import { Product, StockMovement, StockMovementType } from '../../types/pos';
-import { isMeatCategory, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
+import {
+  isMeatProduct,
+  getStorageLocationName,
+  getStoreRubroLabel,
+  formatKg,
+  formatQuantity,
+  formatCurrency,
+} from '../../utils/stockHelper';
 
 interface StockAdjustmentsTabProps {
   initialProduct?: Product | null;
@@ -36,7 +43,20 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
+  useEffect(() => {
+    if (initialProduct) {
+      setSelectedTargetCode(initialProduct.code);
+      if (!isMeatProduct(initialProduct)) {
+        setType('ENTRADA');
+        setReason('Ingreso directo de proveedor / Mercadería');
+      }
+    }
+    if (initialBranch) {
+      setBranchId(initialBranch);
+    }
+  }, [initialProduct, initialBranch]);
+
+  const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Stock';
 
   // Recepciones disponibles (medias reses en gancho en cámara)
   const availableReceptions = useMemo(() => {
@@ -66,17 +86,28 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
     );
   }, [availableReceptions, productSearch]);
 
-  // Productos filtrados para el selector
+  // Productos filtrados para el selector (también busca por código de barras)
   const filteredProducts = useMemo(() => {
-    if (!productSearch.trim()) return products.slice(0, 100);
+    if (!productSearch.trim()) return products.slice(0, 120);
     const q = productSearch.toLowerCase().trim();
     return products.filter(
       (p) =>
         p.code.toLowerCase().includes(q) ||
+        (p.barcode && p.barcode.toLowerCase().includes(q)) ||
         p.description.toLowerCase().includes(q) ||
         p.scalePlu?.toString().includes(q)
     );
   }, [products, productSearch]);
+
+  const filteredMeatProducts = useMemo(
+    () => filteredProducts.filter((p) => isMeatProduct(p)),
+    [filteredProducts]
+  );
+
+  const filteredStoreProducts = useMemo(
+    () => filteredProducts.filter((p) => !isMeatProduct(p)),
+    [filteredProducts]
+  );
 
   // Buscar elemento seleccionado (reception o product)
   const selectedReception = useMemo(() => {
@@ -89,6 +120,11 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
     if (selectedTargetCode.startsWith('REC:')) return null;
     return products.find((p) => p.code === selectedTargetCode) || null;
   }, [products, selectedTargetCode]);
+
+  const isSelectedMeat = useMemo(() => {
+    if (selectedReception) return true;
+    return isMeatProduct(selectedProduct);
+  }, [selectedReception, selectedProduct]);
 
   // Stock actual o peso actual de la media res
   const currentStockOrWeight = useMemo(() => {
@@ -109,19 +145,25 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
     ? `MEDIA RES - Tropa #${selectedReception.tropaNumber} (${selectedReception.species} ${selectedReception.category} - ${selectedReception.supplier})`
     : selectedProduct?.description || '';
 
-  const selectedItemCategory = selectedReception ? selectedReception.category : selectedProduct?.category || 'Carnes Vacunas';
+  const selectedItemCategory = selectedReception
+    ? selectedReception.category
+    : selectedProduct
+    ? isSelectedMeat
+      ? selectedProduct.category || 'Carnes Vacunas'
+      : getStoreRubroLabel(selectedProduct)
+    : 'Carnes Vacunas';
   const selectedItemPrice = selectedReception ? selectedReception.pricePerKg : selectedProduct?.price || 0;
-  const selectedItemUnit = 'Kg';
+  const selectedItemUnit = selectedReception ? 'Kg' : selectedProduct?.unitType || 'Kg';
 
   // Opciones de motivo predeterminadas
   const reasonOptions = [
+    'Ingreso directo de proveedor / Mercadería',
     'Evaporación natural en cámara de frío',
     'Desposte / Deshuese',
     'Exceso de grasa / Hueso no aprovechable',
-    'Rotura de frío / Deterioro',
+    'Rotura de frío / Deterioro / Envase dañado',
     'Vencimiento de mercadería',
-    'Diferencia de pesaje en balanza',
-    'Ingreso directo de proveedor / Reses',
+    'Diferencia de pesaje o conteo físico',
     'Otro motivo (especificar)',
   ];
 
@@ -157,7 +199,7 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
         time: timeStr,
         timestamp: Date.now(),
         branchId,
-        chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+        chamber: getStorageLocationName(branchId, isSelectedMeat),
         productCode: selectedReception ? (selectedReception.productCode?.trim() || 'MEDIA_RES') : selectedProduct!.code,
         productDescription: selectedItemName,
         category: selectedItemCategory,
@@ -377,12 +419,12 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                 </div>
               )}
 
-              {filteredProducts.length > 0 && (
+              {filteredMeatProducts.length > 0 && (
                 <div>
                   <div className="bg-blue-100 text-blue-900 font-bold px-2 py-1.5 text-[11px] sticky top-0 border-b border-blue-300">
-                    📦 CORTES Y ARTÍCULOS DE STOCK
+                    ❄️ CORTES CÁRNICOS EN CÁMARA FRIGORÍFICA
                   </div>
-                  {filteredProducts.map((p) => {
+                  {filteredMeatProducts.map((p) => {
                     const isSel = selectedTargetCode === p.code;
                     return (
                       <div
@@ -397,6 +439,33 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                         </div>
                         <div className="text-right">
                           {formatCurrency(p.price)} / {p.unitType}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {filteredStoreProducts.length > 0 && (
+                <div>
+                  <div className="bg-emerald-100 text-emerald-950 font-bold px-2 py-1.5 text-[11px] sticky top-0 border-b border-emerald-300">
+                    🏪 ARTÍCULOS DE ALMACÉN, BEBIDAS Y VARIOS (DEPÓSITO)
+                  </div>
+                  {filteredStoreProducts.map((p) => {
+                    const isSel = selectedTargetCode === p.code;
+                    return (
+                      <div
+                        key={p.code}
+                        onClick={() => setSelectedTargetCode(p.code)}
+                        className={`p-2.5 cursor-pointer flex items-center justify-between transition-colors ${
+                          isSel ? 'bg-[#00522c] text-white font-bold' : 'hover:bg-emerald-50 text-black'
+                        }`}
+                      >
+                        <div>
+                          <span className="font-mono font-bold">[{p.code}]</span> {p.description} ({getStoreRubroLabel(p)})
+                        </div>
+                        <div className="text-right">
+                          {formatCurrency(p.price)} / Unid
                         </div>
                       </div>
                     );

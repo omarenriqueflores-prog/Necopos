@@ -28,47 +28,239 @@ function isValidCuit(cuitStr: string): boolean {
   return verifier === parseInt(clean[10], 10);
 }
 
+// Persistent Server-Side ARCA Credential Store (survives DB purges and page reloads)
+interface StoredArcaCreds {
+  cuit?: string;
+  companyName?: string;
+  environment?: 'homologacion' | 'produccion';
+  alias?: string;
+  certificate?: string;
+  privateKey?: string;
+  pointsOfSale?: Record<string, string>;
+  updatedAt?: string;
+}
+
+const ARCA_CREDS_PATHS = [
+  path.join(process.cwd(), '.arca_credentials.json'),
+  path.join('/tmp', 'necopos_arca_credentials.json'),
+];
+
+function loadSavedArcaCreds(): StoredArcaCreds {
+  for (const p of ARCA_CREDS_PATHS) {
+    try {
+      if (fs.existsSync(p)) {
+        const raw = fs.readFileSync(p, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      }
+    } catch (_) {}
+  }
+  return {};
+}
+
+function saveArcaCreds(partial: Partial<StoredArcaCreds>): StoredArcaCreds {
+  const current = loadSavedArcaCreds();
+  const merged: StoredArcaCreds = {
+    ...current,
+    ...(partial.cuit ? { cuit: partial.cuit } : {}),
+    ...(partial.companyName ? { companyName: partial.companyName } : {}),
+    ...(partial.environment ? { environment: partial.environment } : {}),
+    ...(partial.alias ? { alias: partial.alias } : {}),
+    ...(partial.certificate && partial.certificate.includes('BEGIN CERTIFICATE')
+      ? { certificate: partial.certificate.trim() }
+      : {}),
+    ...(partial.privateKey && partial.privateKey.includes('PRIVATE KEY')
+      ? { privateKey: partial.privateKey.trim() }
+      : {}),
+    ...(partial.pointsOfSale ? { pointsOfSale: { ...(current.pointsOfSale || {}), ...partial.pointsOfSale } } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+
+  for (const p of ARCA_CREDS_PATHS) {
+    try {
+      fs.writeFileSync(p, JSON.stringify(merged, null, 2), 'utf-8');
+    } catch (_) {}
+  }
+  return merged;
+}
+
+function extractCertMetadata(certPem?: string): {
+  cuit?: string;
+  detectedEnv?: 'produccion' | 'homologacion';
+  subject?: string;
+  issuer?: string;
+} {
+  if (!certPem || !certPem.includes('BEGIN CERTIFICATE')) return {};
+  const tempPath = path.join('/tmp', `meta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.crt`);
+  try {
+    fs.writeFileSync(tempPath, certPem.trim(), 'utf-8');
+    const output = execSync(`openssl x509 -in "${tempPath}" -noout -subject -issuer`, { stdio: 'pipe' }).toString();
+    const subjectMatch = output.match(/subject=\s*(.*)/i);
+    const issuerMatch = output.match(/issuer=\s*(.*)/i);
+    const subject = subjectMatch ? subjectMatch[1].trim() : '';
+    const issuer = issuerMatch ? issuerMatch[1].trim() : '';
+
+    const cuitMatch = subject.match(/CUIT\s*(\d{11})/i) || subject.match(/serialNumber\s*=\s*(?:CUIT\s*)?(\d{11})/i);
+    const cuit = cuitMatch ? cuitMatch[1] : undefined;
+
+    let detectedEnv: 'produccion' | 'homologacion' | undefined;
+    if (issuer) {
+      if (/homo|testing|prueba/i.test(issuer)) {
+        detectedEnv = 'homologacion';
+      } else if (/computadores|afip|arca/i.test(issuer)) {
+        detectedEnv = 'produccion';
+      }
+    }
+    return { cuit, detectedEnv, subject, issuer };
+  } catch (_) {
+    return {};
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (_) {}
+    }
+  }
+}
+
+function resolveArcaCreds(body: any = {}) {
+  const saved = loadSavedArcaCreds();
+  const certPem = (body?.certificate && String(body.certificate).includes('BEGIN CERTIFICATE'))
+    ? String(body.certificate).trim()
+    : (saved.certificate || process.env.ARCA_CERT || '');
+  const keyPem = (body?.privateKey && String(body.privateKey).includes('PRIVATE KEY'))
+    ? String(body.privateKey).trim()
+    : (saved.privateKey || process.env.ARCA_PRIVATE_KEY || '');
+
+  const certMeta = extractCertMetadata(certPem);
+
+  const rawCuit = certMeta.cuit || body?.cuit || body?.cuitRepresentada || saved.cuit || process.env.ARCA_CUIT || '20255065166';
+  const cleanCuit = String(rawCuit).replace(/\D/g, '') || '20255065166';
+
+  const environment: 'produccion' | 'homologacion' =
+    certMeta.detectedEnv ||
+    (body?.environment === 'produccion' || body?.environment === 'homologacion' ? body.environment : undefined) ||
+    saved.environment ||
+    (process.env.ARCA_ENVIRONMENT === 'homologacion' ? 'homologacion' : 'produccion');
+
+  if (certPem || keyPem) {
+    saveArcaCreds({
+      certificate: certPem || undefined,
+      privateKey: keyPem || undefined,
+      cuit: cleanCuit,
+      environment,
+      companyName: body?.companyName || saved.companyName,
+      pointsOfSale: body?.pointsOfSale || saved.pointsOfSale,
+    });
+  }
+
+  return {
+    certPem,
+    keyPem,
+    emisorCuit: cleanCuit,
+    environment,
+    isProd: environment === 'produccion',
+    hasCerts: Boolean(certPem && keyPem),
+    companyName: body?.companyName || saved.companyName || 'MOYA CARLOS HUGO',
+    pointsOfSale: body?.pointsOfSale || saved.pointsOfSale || { 'NECO 1': '0017', 'NECO 2': '0018' },
+  };
+}
+
+app.get('/api/arca/credentials', (_req, res) => {
+  const saved = loadSavedArcaCreds();
+  const certMeta = extractCertMetadata(saved.certificate);
+  res.json({
+    success: true,
+    credentials: {
+      ...saved,
+      cuit: certMeta.cuit || saved.cuit || '20-25506516-6',
+      environment: certMeta.detectedEnv || saved.environment || 'produccion',
+      hasCertificate: Boolean(saved.certificate),
+      hasPrivateKey: Boolean(saved.privateKey),
+    },
+  });
+});
+
+app.post('/api/arca/save-credentials', (req, res) => {
+  try {
+    const saved = saveArcaCreds(req.body || {});
+    res.json({
+      success: true,
+      credentials: {
+        ...saved,
+        hasCertificate: Boolean(saved.certificate),
+        hasPrivateKey: Boolean(saved.privateKey),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ARCA / AFIP Status Endpoint
 app.post('/api/arca/status', async (req, res) => {
   try {
-    const { environment: reqEnv, cuit: reqCuit, companyName: reqCompany, pointsOfSale: reqPvs, certificate, privateKey } = req.body || {};
-    const environment = reqEnv || process.env.ARCA_ENVIRONMENT || 'homologacion';
-    const cuit = reqCuit ? String(reqCuit).replace(/\D/g, '') : (process.env.ARCA_CUIT || '30714892019');
-    const companyName = reqCompany || 'Carlos Hugo Moya';
-    const hasCert = Boolean(certificate || process.env.ARCA_CERT);
-    const hasKey = Boolean(privateKey || process.env.ARCA_PRIVATE_KEY);
+    const resolved = resolveArcaCreds(req.body);
+    const { certPem, keyPem, emisorCuit: cuit, companyName, pointsOfSale: reqPvs } = resolved;
+    let { environment, isProd } = resolved;
 
-    const pv1 = reqPvs?.['NECO 1'] ? String(reqPvs['NECO 1']).padStart(4, '0') : '0001';
-    const pv2 = reqPvs?.['NECO 2'] ? String(reqPvs['NECO 2']).padStart(4, '0') : '0002';
+    const hasCert = Boolean(certPem);
+    const hasKey = Boolean(keyPem);
+
+    const pv1 = reqPvs?.['NECO 1'] ? String(reqPvs['NECO 1']).padStart(4, '0') : '0017';
+    const pv2 = reqPvs?.['NECO 2'] ? String(reqPvs['NECO 2']).padStart(4, '0') : '0018';
+
+    let wsaaOk = false;
+    let wsaaError = '';
+    if (hasCert && hasKey) {
+      try {
+        const wsaaRes = await getWsaaTicket('wsfe', certPem, keyPem, isProd);
+        wsaaOk = Boolean(wsaaRes.token && wsaaRes.sign);
+        isProd = wsaaRes.isProduction;
+        environment = isProd ? 'produccion' : 'homologacion';
+      } catch (err: any) {
+        wsaaError = err.message || 'Error en autenticación WSAA';
+      }
+    }
 
     const envTag = environment === 'produccion' ? 'PRODUCCION' : 'HOMOLOGACION';
+    const connected = hasCert && hasKey && wsaaOk;
 
-    const statusMessage = `🟢 Servidores de AFIP/ARCA WSFE: AppServer=OK, DbServer=OK, AuthServer=OK. [${envTag}] • Autenticación WSAA OK (Token y Sign generados con éxito para CUIT ${cuit}) • 🔑 Certificado y Clave Privada vinculados correctamente.`;
+    const statusMessage = connected
+      ? `🟢 Servidores de AFIP/ARCA WSFE: AppServer=OK, DbServer=OK, AuthServer=OK. [${envTag}] • Autenticación WSAA OK (Token y Sign generados con éxito para CUIT ${cuit}) • 🔑 Certificado y Clave Privada vinculados correctamente.`
+      : !hasCert || !hasKey
+      ? `⚠️ Certificado Digital (.crt) o Clave Privada (.key) pendientes de carga (${!hasKey ? 'Falta .key' : ''}${!hasKey && !hasCert ? ' y ' : ''}${!hasCert ? 'Falta .crt' : ''}). Suba ambos archivos en la pestaña "2. Asistente de Claves y Certificados".`
+      : `⚠️ Error al autenticar con ARCA WSAA [${envTag}]: ${wsaaError}`;
 
     res.json({
       success: true,
-      connected: true,
+      connected,
       environment,
       cuit,
       companyName,
       vatCondition: 'Responsable Inscripto',
-      hasCert: true,
-      hasKey: true,
+      hasCert,
+      hasKey,
       servers: {
         appServer: 'OK',
         dbServer: 'OK',
-        authServer: 'OK',
+        authServer: wsaaOk ? 'OK' : 'PENDIENTE',
       },
       wsaa: {
-        status: 'OK',
+        status: wsaaOk ? 'OK' : 'ERROR',
         cuit,
-        tokenGenerated: true,
-        signGenerated: true,
+        tokenGenerated: wsaaOk,
+        signGenerated: wsaaOk,
+        error: wsaaError || undefined,
       },
-      authMethod: hasCert ? 'Certificado X.509 + WSAA' : (environment === 'produccion' ? 'Certificado X.509 en Producción' : 'Homologación WSFEv1 (Sandbox ARCA)'),
+      authMethod: connected
+        ? `Certificado X.509 + WSAA (${envTag})`
+        : 'Pendiente de Certificado X.509 / WSAA',
       activePvs: [
-        { branch: 'NECO 1', pv: pv1, address: '24 de Septiembre', status: 'HABILITADO_ARCA' },
-        { branch: 'NECO 2', pv: pv2, address: 'Villa Saavedra', status: 'HABILITADO_ARCA' },
+        { branch: 'NECO 1', pv: pv1, address: '24 de Septiembre', status: connected ? 'HABILITADO_ARCA' : 'PENDIENTE' },
+        { branch: 'NECO 2', pv: pv2, address: 'Villa Saavedra', status: connected ? 'HABILITADO_ARCA' : 'PENDIENTE' },
       ],
       timestamp: new Date().toISOString(),
       message: statusMessage,
@@ -106,15 +298,11 @@ app.post('/api/arca/generate-csr', async (req, res) => {
     tempKeyPath = path.join('/tmp', `${tempId}.key`);
     tempCsrPath = path.join('/tmp', `${tempId}.csr`);
 
-    // AFIP DN Formats:
-    // 1. 'exact': Matches AFIP's displayed DN "SERIALNUMBER=CUIT [cuit], CN=[alias]" (Persona Física / Monotributo / Alias existente)
-    // 2. 'full': Includes Country and Organization
     const subject =
       format === 'full'
         ? `/C=AR/O=${cleanCompany}/CN=${cleanAlias}/serialNumber=CUIT ${cleanCuit}`
         : `/serialNumber=CUIT ${cleanCuit}/CN=${cleanAlias}`;
 
-    // Execute standard OpenSSL to generate 2048-bit RSA private key & Certificate Signing Request (CSR)
     execSync(
       `openssl req -new -newkey rsa:2048 -nodes -keyout "${tempKeyPath}" -out "${tempCsrPath}" -subj "${subject}"`,
       { stdio: 'pipe' }
@@ -122,6 +310,14 @@ app.post('/api/arca/generate-csr', async (req, res) => {
 
     const privateKey = fs.readFileSync(tempKeyPath, 'utf-8');
     const csr = fs.readFileSync(tempCsrPath, 'utf-8');
+
+    // Persist private key immediately on server disk so it is never lost
+    saveArcaCreds({
+      privateKey,
+      cuit: cleanCuit,
+      companyName: cleanCompany,
+      alias: cleanAlias,
+    });
 
     res.json({
       success: true,
@@ -179,44 +375,48 @@ function saveWsaaCache(cache: Record<string, WsaaTicketCache>) {
 }
 
 const wsaaTicketCache: Record<string, WsaaTicketCache> = loadWsaaCache();
+const wsaaInFlightPromises: Record<string, Promise<{ token: string; sign: string; isProduction: boolean }>> = {};
 
-async function getWsaaTicket(
+async function requestSingleWsaaTicket(
   service: string,
   certPem: string,
   keyPem: string,
-  isProduction: boolean = true
-): Promise<{ token: string; sign: string }> {
+  isProduction: boolean
+): Promise<{ token: string; sign: string; isProduction: boolean }> {
   const cacheKey = `${service}_${isProduction ? 'prod' : 'homo'}`;
   const now = Date.now();
   if (wsaaTicketCache[cacheKey] && wsaaTicketCache[cacheKey].expiration > now + 60000) {
     return {
       token: wsaaTicketCache[cacheKey].token,
       sign: wsaaTicketCache[cacheKey].sign,
+      isProduction,
     };
   }
 
-  // AFIP requires dates formatted as ISO 8601 with timezone offset (e.g. -03:00) in Argentina Local Time (ART)
-  const formatDateAfip = (d: Date) => {
-    // In Node container (UTC), subtract 3 hours to get local Argentina time before tagging with -03:00
-    const offsetMs = -3 * 60 * 60 * 1000;
-    const argDate = new Date(d.getTime() + offsetMs);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const y = argDate.getUTCFullYear();
-    const m = pad(argDate.getUTCMonth() + 1);
-    const day = pad(argDate.getUTCDate());
-    const h = pad(argDate.getUTCHours());
-    const min = pad(argDate.getUTCMinutes());
-    const s = pad(argDate.getUTCSeconds());
-    return `${y}-${m}-${day}T${h}:${min}:${s}-03:00`;
-  };
+  if (wsaaInFlightPromises[cacheKey]) {
+    return wsaaInFlightPromises[cacheKey];
+  }
 
-  const nowDate = new Date();
-  const uniqueId = Math.floor(nowDate.getTime() / 1000);
-  const genTime = formatDateAfip(new Date(nowDate.getTime() - 10 * 60 * 1000));
-  // AFIP WSAA standard 12-hour expiration window in TRA header
-  const expTime = formatDateAfip(new Date(nowDate.getTime() + 12 * 60 * 60 * 1000));
+  const promise = (async () => {
+    const formatDateAfip = (d: Date) => {
+      const offsetMs = -3 * 60 * 60 * 1000;
+      const argDate = new Date(d.getTime() + offsetMs);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const y = argDate.getUTCFullYear();
+      const m = pad(argDate.getUTCMonth() + 1);
+      const day = pad(argDate.getUTCDate());
+      const h = pad(argDate.getUTCHours());
+      const min = pad(argDate.getUTCMinutes());
+      const s = pad(argDate.getUTCSeconds());
+      return `${y}-${m}-${day}T${h}:${min}:${s}-03:00`;
+    };
 
-  const traXml = `<?xml version="1.0" encoding="UTF-8"?>
+    const nowDate = new Date();
+    const uniqueId = Math.floor(nowDate.getTime() / 1000);
+    const genTime = formatDateAfip(new Date(nowDate.getTime() - 10 * 60 * 1000));
+    const expTime = formatDateAfip(new Date(nowDate.getTime() + 12 * 60 * 60 * 1000));
+
+    const traXml = `<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
     <uniqueId>${uniqueId}</uniqueId>
@@ -226,33 +426,32 @@ async function getWsaaTicket(
   <service>${service}</service>
 </loginTicketRequest>`;
 
-  const tempId = `wsaa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const traPath = path.join('/tmp', `${tempId}_tra.xml`);
-  const certPath = path.join('/tmp', `${tempId}_cert.crt`);
-  const keyPath = path.join('/tmp', `${tempId}_key.key`);
-  const cmsPath = path.join('/tmp', `${tempId}_tra.cms`);
+    const tempId = `wsaa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const traPath = path.join('/tmp', `${tempId}_tra.xml`);
+    const certPath = path.join('/tmp', `${tempId}_cert.crt`);
+    const keyPath = path.join('/tmp', `${tempId}_key.key`);
+    const cmsPath = path.join('/tmp', `${tempId}_tra.cms`);
 
-  try {
-    fs.writeFileSync(traPath, traXml, 'utf-8');
-    fs.writeFileSync(certPath, certPem.trim(), 'utf-8');
-    fs.writeFileSync(keyPath, keyPem.trim(), 'utf-8');
+    try {
+      fs.writeFileSync(traPath, traXml, 'utf-8');
+      fs.writeFileSync(certPath, certPem.trim(), 'utf-8');
+      fs.writeFileSync(keyPath, keyPem.trim(), 'utf-8');
 
-    // Sign CMS with OpenSSL
-    execSync(
-      `openssl cms -sign -in "${traPath}" -out "${cmsPath}" -signer "${certPath}" -inkey "${keyPath}" -nodetach -outform PEM`,
-      { stdio: 'pipe' }
-    );
+      execSync(
+        `openssl cms -sign -in "${traPath}" -out "${cmsPath}" -signer "${certPath}" -inkey "${keyPath}" -nodetach -outform PEM`,
+        { stdio: 'pipe' }
+      );
 
-    const cmsContent = fs.readFileSync(cmsPath, 'utf-8');
-    const cleanCms = cmsContent
-      .replace(/-----BEGIN CMS-----|-----END CMS-----|-----BEGIN PKCS7-----|-----END PKCS7-----|\r|\n/g, '')
-      .trim();
+      const cmsContent = fs.readFileSync(cmsPath, 'utf-8');
+      const cleanCms = cmsContent
+        .replace(/-----BEGIN CMS-----|-----END CMS-----|-----BEGIN PKCS7-----|-----END PKCS7-----|\r|\n/g, '')
+        .trim();
 
-    const wsaaUrl = isProduction
-      ? 'https://wsaa.afip.gov.ar/ws/services/LoginCms'
-      : 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
+      const wsaaUrl = isProduction
+        ? 'https://wsaa.afip.gov.ar/ws/services/LoginCms'
+        : 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
 
-    const soapEnvelope = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wsaa="http://wsaa.view.sua.dvadac.desein.afip.gov">
+      const soapEnvelope = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wsaa="http://wsaa.view.sua.dvadac.desein.afip.gov">
   <soapenv:Header/>
   <soapenv:Body>
     <wsaa:loginCms>
@@ -261,64 +460,97 @@ async function getWsaaTicket(
   </soapenv:Body>
 </soapenv:Envelope>`;
 
-    const response = await fetch(wsaaUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        SOAPAction: '',
-      },
-      body: soapEnvelope,
-    });
+      const response = await fetch(wsaaUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '',
+        },
+        body: soapEnvelope,
+        signal: AbortSignal.timeout(8000),
+      });
 
-    const rawResponse = await response.text();
-    // AFIP returns the loginTicketResponse XML encoded inside <loginCmsReturn>&lt;?xml...&gt;</loginCmsReturn>
-    const responseText = rawResponse
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&');
+      const rawResponse = await response.text();
+      const responseText = rawResponse
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&');
 
-    const tokenMatch = responseText.match(/<token>([\s\S]*?)<\/token>/i);
-    const signMatch = responseText.match(/<sign>([\s\S]*?)<\/sign>/i);
-    const expMatch = responseText.match(/<expirationTime>([\s\S]*?)<\/expirationTime>/i);
+      const tokenMatch = responseText.match(/<token>([\s\S]*?)<\/token>/i);
+      const signMatch = responseText.match(/<sign>([\s\S]*?)<\/sign>/i);
+      const expMatch = responseText.match(/<expirationTime>([\s\S]*?)<\/expirationTime>/i);
 
-    if (!tokenMatch || !signMatch) {
-      const faultMatch = rawResponse.match(/<faultstring>([\s\S]*?)<\/faultstring>/i);
-      const faultMsg = faultMatch
-        ? faultMatch[1].trim()
-        : rawResponse.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250);
+      if (!tokenMatch || !signMatch) {
+        const faultMatch = rawResponse.match(/<faultstring>([\s\S]*?)<\/faultstring>/i);
+        const faultMsg = faultMatch
+          ? faultMatch[1].trim()
+          : rawResponse.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250);
 
-      // If AFIP says "El CEE ya posee un TA valido...", reuse existing cached ticket if available
-      if (wsaaTicketCache[cacheKey]) {
-        console.log(`[WSAA] Reusing existing cached ticket for ${cacheKey} after AFIP response: ${faultMsg}`);
-        return {
-          token: wsaaTicketCache[cacheKey].token,
-          sign: wsaaTicketCache[cacheKey].sign,
-        };
+        if (wsaaTicketCache[cacheKey]) {
+          return {
+            token: wsaaTicketCache[cacheKey].token,
+            sign: wsaaTicketCache[cacheKey].sign,
+            isProduction,
+          };
+        }
+        throw new Error(`WSAA AFIP: ${faultMsg}`);
       }
-      throw new Error(`WSAA AFIP: ${faultMsg}`);
+
+      const token = tokenMatch[1].trim();
+      const sign = signMatch[1].trim();
+      const expDate = expMatch ? new Date(expMatch[1].trim()).getTime() : Date.now() + 11 * 3600000;
+
+      wsaaTicketCache[cacheKey] = {
+        token,
+        sign,
+        expiration: expDate,
+      };
+      saveWsaaCache(wsaaTicketCache);
+
+      return { token, sign, isProduction };
+    } finally {
+      [traPath, certPath, keyPath, cmsPath].forEach((p) => {
+        if (fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (_) {}
+        }
+      });
     }
+  })();
 
-    const token = tokenMatch[1].trim();
-    const sign = signMatch[1].trim();
-    const expDate = expMatch ? new Date(expMatch[1].trim()).getTime() : now + 11 * 3600000;
-
-    wsaaTicketCache[cacheKey] = {
-      token,
-      sign,
-      expiration: expDate,
-    };
-    saveWsaaCache(wsaaTicketCache);
-
-    return { token, sign };
+  wsaaInFlightPromises[cacheKey] = promise;
+  try {
+    return await promise;
   } finally {
-    [traPath, certPath, keyPath, cmsPath].forEach((p) => {
-      if (fs.existsSync(p)) {
-        try {
-          fs.unlinkSync(p);
-        } catch (_) {}
-      }
-    });
+    delete wsaaInFlightPromises[cacheKey];
+  }
+}
+
+async function getWsaaTicket(
+  service: string,
+  certPem: string,
+  keyPem: string,
+  isProduction: boolean = true
+): Promise<{ token: string; sign: string; isProduction: boolean }> {
+  const certMeta = extractCertMetadata(certPem);
+  const preferredIsProd =
+    certMeta.detectedEnv !== undefined
+      ? certMeta.detectedEnv === 'produccion'
+      : isProduction;
+
+  try {
+    return await requestSingleWsaaTicket(service, certPem, keyPem, preferredIsProd);
+  } catch (firstErr: any) {
+    // If failed due to environment mismatch (e.g., Production cert sent to Homologacion or vice versa), retry opposite environment
+    try {
+      const fallbackRes = await requestSingleWsaaTicket(service, certPem, keyPem, !preferredIsProd);
+      saveArcaCreds({ environment: fallbackRes.isProduction ? 'produccion' : 'homologacion' });
+      return fallbackRes;
+    } catch (_) {
+      throw firstErr;
+    }
   }
 }
 
@@ -500,6 +732,15 @@ app.post('/api/arca/parse-cert', async (req, res) => {
     const expiryDate = notAfterStr ? new Date(notAfterStr) : null;
     const isExpired = expiryDate ? expiryDate.getTime() < Date.now() : false;
 
+    const certMeta = extractCertMetadata(certText);
+    if (!isExpired) {
+      saveArcaCreds({
+        certificate: certText.trim(),
+        ...(certMeta.cuit ? { cuit: certMeta.cuit } : {}),
+        ...(certMeta.detectedEnv ? { environment: certMeta.detectedEnv } : {}),
+      });
+    }
+
     res.json({
       success: true,
       subject: subjectMatch ? subjectMatch[1].trim() : 'Desconocido',
@@ -507,6 +748,8 @@ app.post('/api/arca/parse-cert', async (req, res) => {
       validFrom: notBeforeMatch ? notBeforeMatch[1].trim() : '',
       validTo: notAfterStr,
       serial: serialMatch ? serialMatch[1].trim() : '',
+      cuit: certMeta.cuit,
+      detectedEnvironment: certMeta.detectedEnv,
       isExpired,
       isValid: !isExpired,
       message: isExpired ? 'El certificado ha caducado' : 'Certificado X.509 válido emitido por ARCA/AFIP',
@@ -638,10 +881,11 @@ app.post('/api/arca/cuit-lookup', async (req, res) => {
       });
     }
 
-    const certPem = certificate || process.env.ARCA_CERT;
-    const keyPem = privateKey || process.env.ARCA_PRIVATE_KEY;
-    const repCuit = cuitRepresentada ? String(cuitRepresentada).replace(/\D/g, '') : (process.env.ARCA_CUIT || '30714892019');
-    const isProd = environment !== 'homologacion';
+    const resolved = resolveArcaCreds(req.body);
+    const certPem = resolved.certPem;
+    const keyPem = resolved.keyPem;
+    const repCuit = resolved.emisorCuit;
+    const isProd = resolved.isProd;
 
     // Query public padron and AFIP padron. Return the fastest successful result immediately!
     const queryPublic = async () => {
@@ -757,9 +1001,19 @@ async function authorizeWithAfipWsfe({
   isProduction: boolean;
   associatedInvoice?: any;
 }) {
-  const { token, sign } = await getWsaaTicket('wsfe', certPem, keyPem, isProduction);
+  const wsaaAuth = await getWsaaTicket('wsfe', certPem, keyPem, isProduction);
+  const { token, sign } = wsaaAuth;
+  const effectiveIsProd = wsaaAuth.isProduction;
 
-  const lastRes = await queryAfipUltimoComprobante(ptoVtaNum, cbteTipo, emisorCuit, certPem, keyPem, isProduction);
+  const lastRes = await queryAfipUltimoComprobante(
+    ptoVtaNum,
+    cbteTipo,
+    emisorCuit,
+    certPem,
+    keyPem,
+    effectiveIsProd,
+    { token, sign }
+  );
   const nextCbteNro = (lastRes?.lastNumber ?? 0) + 1;
 
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -863,7 +1117,7 @@ async function authorizeWithAfipWsfe({
   </soapenv:Body>
 </soapenv:Envelope>`;
 
-  const wsfeUrl = isProduction
+  const wsfeUrl = effectiveIsProd
     ? 'https://servicios1.afip.gov.ar/wsfev1/service.asmx'
     : 'https://wswhomo.afip.gov.ar/wsfev1/service.asmx';
 
@@ -967,10 +1221,11 @@ app.post('/api/arca/authorize', async (req, res) => {
       });
     }
 
-    const certPem = certificate || process.env.ARCA_CERT;
-    const keyPem = privateKey || process.env.ARCA_PRIVATE_KEY;
-    const emisorCuit = (cuit || process.env.ARCA_CUIT || '30714892019').replace(/\D/g, '');
-    const isProd = environment !== 'homologacion';
+    const resolved = resolveArcaCreds(req.body);
+    const certPem = resolved.certPem;
+    const keyPem = resolved.keyPem;
+    const emisorCuit = resolved.emisorCuit;
+    let isProd = resolved.isProd;
 
     // Determine receiver doc type according to AFIP table
     const cleanDoc = (customer?.cuitDni || '').replace(/\D/g, '');
@@ -986,46 +1241,38 @@ app.post('/api/arca/authorize', async (req, res) => {
         tipoDocRec = 96; // DNI
       }
     } else {
-      // If number is 0 or invalid, it MUST be 99 for AFIP
       tipoDocRec = 99;
     }
 
-    let cae = '';
-    let caeVto = '';
-    let finalCbteNro = cbteNumero || 1;
-    let isRealAfipAuth = false;
-
-    if (certPem && keyPem) {
-      // Execute real AFIP WSFEv1 FECAESolicitar call
-      const afipResult = await authorizeWithAfipWsfe({
-        ptoVtaNum,
-        cbteTipo,
-        cbteNumero,
-        tipoDocRec,
-        nroDocRec,
-        totalAmount: Number(totalAmount || 0),
-        netAmount: Number(netAmount || 0),
-        vatAmount: Number(vatAmount || 0),
-        emisorCuit,
-        certPem,
-        keyPem,
-        isProduction: isProd,
-        associatedInvoice,
+    if (!certPem || !keyPem) {
+      return res.status(400).json({
+        success: false,
+        status: 'RECHAZADO',
+        error:
+          'No se encontraron el Certificado Digital (.crt) o la Clave Privada (.key) de ARCA para autenticar con WSFEv1. Por favor ingrese en "Configuración ARCA > 2. Asistente de Claves y Certificados" y verifique que ambos archivos estén cargados.',
       });
-
-      cae = afipResult.cae;
-      caeVto = afipResult.caeVto;
-      finalCbteNro = afipResult.cbteNumero;
-      isRealAfipAuth = true;
-    } else {
-      // Contingency / Simulation mode when no certificates are uploaded yet
-      const random14 = Math.floor(10000000000000 + Math.random() * 90000000000000).toString();
-      cae = random14;
-      const vtoDate = new Date();
-      vtoDate.setDate(vtoDate.getDate() + 10);
-      caeVto = vtoDate.toISOString().split('T')[0];
-      finalCbteNro = cbteNumero || Math.floor(1000 + Math.random() * 9000);
     }
+
+    // Execute real AFIP WSFEv1 FECAESolicitar call
+    const afipResult = await authorizeWithAfipWsfe({
+      ptoVtaNum,
+      cbteTipo,
+      cbteNumero,
+      tipoDocRec,
+      nroDocRec,
+      totalAmount: Number(totalAmount || 0),
+      netAmount: Number(netAmount || 0),
+      vatAmount: Number(vatAmount || 0),
+      emisorCuit,
+      certPem,
+      keyPem,
+      isProduction: isProd,
+      associatedInvoice,
+    });
+
+    const cae = afipResult.cae;
+    const caeVto = afipResult.caeVto;
+    const finalCbteNro = afipResult.cbteNumero;
 
     const todayStr = new Date().toISOString().split('T')[0];
 
@@ -1056,12 +1303,10 @@ app.post('/api/arca/authorize', async (req, res) => {
       cbteNumero: finalCbteNro,
       qrUrl,
       qrPayload,
-      mode: isRealAfipAuth ? 'OFICIAL_AFIP' : 'CONTINGENCIA_LOCAL',
+      mode: 'OFICIAL_AFIP',
       environment: isProd ? 'produccion' : 'homologacion',
       authorizedAt: new Date().toISOString(),
-      message: isRealAfipAuth
-        ? 'Comprobante AUTORIZADO OFICIALMENTE por ARCA / AFIP.'
-        : 'Comprobante emitido en MODO CONTINGENCIA LOCAL (Pendiente subir .crt y .key en Configuración ARCA).',
+      message: 'Comprobante AUTORIZADO OFICIALMENTE por ARCA / AFIP.',
     });
   } catch (err: any) {
     res.status(400).json({
@@ -1079,10 +1324,12 @@ async function queryAfipUltimoComprobante(
   cuit: string,
   certPem: string,
   keyPem: string,
-  isProduction: boolean
+  isProduction: boolean,
+  preAuth?: { token: string; sign: string }
 ) {
   try {
-    const { token, sign } = await getWsaaTicket('wsfe', certPem, keyPem, isProduction);
+    const authData = preAuth || (await getWsaaTicket('wsfe', certPem, keyPem, isProduction));
+    const { token, sign } = authData;
     const wsfeUrl = isProduction
       ? 'https://servicios1.afip.gov.ar/wsfev1/service.asmx'
       : 'https://wswhomo.afip.gov.ar/wsfev1/service.asmx';
@@ -1110,22 +1357,47 @@ async function queryAfipUltimoComprobante(
         SOAPAction: 'http://ar.gov.afip.dif.FEV1/FECompUltimoAutorizado',
       },
       body: soapEnvelope,
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(8000),
     });
 
     const rawXml = await response.text();
-    const cbteNroMatch = rawXml.match(/<CbteNro>(\d+)<\/CbteNro>/i);
+    const xml = rawXml
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&');
+
+    const errMsgMatch = xml.match(/<Err>[\s\S]*?<Msg>([\s\S]*?)<\/Msg>[\s\S]*?<\/Err>/i) || xml.match(/<faultstring>([\s\S]*?)<\/faultstring>/i);
+    const cbteNroMatch = xml.match(/<CbteNro>(\d+)<\/CbteNro>/i);
 
     if (cbteNroMatch) {
       const lastNro = parseInt(cbteNroMatch[1], 10);
+      if (lastNro === 0 && errMsgMatch) {
+        return {
+          lastNumber: 0,
+          source: 'ARCA_WSFEv1_OFICIAL',
+          status: 'EN_LINEA_ARCA',
+          afipError: errMsgMatch[1].trim(),
+        };
+      }
       return {
         lastNumber: lastNro,
         source: 'ARCA_WSFEv1_OFICIAL',
         status: 'EN_LINEA_ARCA',
       };
     }
+
+    if (errMsgMatch) {
+      throw new Error(errMsgMatch[1].trim());
+    }
   } catch (err: any) {
     console.warn(`Query FECompUltimoAutorizado error tipo ${cbteTipo}:`, err.message);
+    return {
+      error: err.message,
+      lastNumber: 0,
+      source: 'ERROR_ARCA',
+      status: 'ERROR_ARCA',
+    };
   }
   return null;
 }
@@ -1133,19 +1405,13 @@ async function queryAfipUltimoComprobante(
 // ARCA / AFIP Check Last Voucher (FECompUltimoAutorizado)
 app.post('/api/arca/last-voucher', async (req, res) => {
   try {
-    const {
-      pointOfSale = '0001',
-      environment = 'homologacion',
-      cuit,
-      certificate,
-      privateKey,
-    } = req.body;
-
-    const certPem = certificate || process.env.ARCA_CERT;
-    const keyPem = privateKey || process.env.ARCA_PRIVATE_KEY;
-    const emisorCuit = (cuit || process.env.ARCA_CUIT || '30714892019').replace(/\D/g, '');
-    const isProd = environment !== 'homologacion';
-    const ptoVtaNum = parseInt(String(pointOfSale).replace(/\D/g, ''), 10) || 1;
+    const { pointOfSale = '0017' } = req.body || {};
+    const resolved = resolveArcaCreds(req.body);
+    const certPem = resolved.certPem;
+    const keyPem = resolved.keyPem;
+    const emisorCuit = resolved.emisorCuit;
+    let isProd = resolved.isProd;
+    const ptoVtaNum = parseInt(String(pointOfSale).replace(/\D/g, ''), 10) || 17;
 
     const typesToQuery = [
       { cbteTipo: 1, cbteNombre: 'Factura A', cbteLetra: 'A' },
@@ -1159,25 +1425,36 @@ app.post('/api/arca/last-voucher', async (req, res) => {
     ];
 
     const hasCerts = Boolean(certPem && keyPem);
+    let preAuth: { token: string; sign: string } | undefined;
+    let wsaaErrorMsg = '';
+
+    if (hasCerts) {
+      try {
+        const wsaaRes = await getWsaaTicket('wsfe', certPem, keyPem, isProd);
+        preAuth = { token: wsaaRes.token, sign: wsaaRes.sign };
+        isProd = wsaaRes.isProduction;
+      } catch (wsaaErr: any) {
+        wsaaErrorMsg = wsaaErr.message || 'No se pudo autenticar con WSAA ARCA';
+      }
+    }
 
     const results = await Promise.all(
       typesToQuery.map(async (t) => {
-        let afipRes = null;
-        if (hasCerts) {
+        let afipRes: any = null;
+        if (hasCerts && preAuth) {
           afipRes = await queryAfipUltimoComprobante(
             ptoVtaNum,
             t.cbteTipo,
             emisorCuit,
             certPem,
             keyPem,
-            isProd
+            isProd,
+            preAuth
           );
         }
 
-        // Baseline starting point: 0 if no invoices have been authorized yet in ARCA (so next is N° 1: 0017-00000001)
-        const defaultBase = 0;
-
-        const lastNum = afipRes ? afipRes.lastNumber : defaultBase;
+        const isOfficial = Boolean(afipRes && afipRes.source === 'ARCA_WSFEv1_OFICIAL');
+        const lastNum = isOfficial ? afipRes.lastNumber : 0;
         const pvFormatted = ptoVtaNum.toString().padStart(4, '0');
         const lastFormatted = `${pvFormatted}-${lastNum.toString().padStart(8, '0')}`;
         const nextFormatted = `${pvFormatted}-${(lastNum + 1).toString().padStart(8, '0')}`;
@@ -1190,24 +1467,32 @@ app.post('/api/arca/last-voucher', async (req, res) => {
           nextNumber: lastNum + 1,
           formattedLast: lastFormatted,
           formattedNext: nextFormatted,
-          source: afipRes ? afipRes.source : 'PADRON_REGISTRO_LOCAL',
-          status: afipRes ? 'OFICIAL_EN_LINEA_ARCA' : (hasCerts ? 'PADRON_LOCAL_VERIFICADO' : 'SECUENCIA_POS_ESTANDAR'),
+          source: isOfficial ? 'ARCA_WSFEv1_OFICIAL' : 'SIN_CONEXION_ARCA',
+          status: isOfficial ? 'OFICIAL_EN_LINEA_ARCA' : 'SIN_CERTIFICADO_ACTIVO',
+          afipError: afipRes?.error || afipRes?.afipError || wsaaErrorMsg || undefined,
           lastChecked: new Date().toISOString(),
         };
       })
     );
+
+    const anyOfficial = results.some((r) => r.source === 'ARCA_WSFEv1_OFICIAL');
+    const firstError = results.find((r) => r.afipError)?.afipError || wsaaErrorMsg;
 
     res.json({
       success: true,
       pointOfSale: ptoVtaNum.toString().padStart(4, '0'),
       environment: isProd ? 'produccion' : 'homologacion',
       cuit: emisorCuit,
-      hasCredentials: hasCerts,
+      hasCredentials: hasCerts && anyOfficial,
+      hasUploadedFiles: hasCerts,
+      wsaaError: firstError || undefined,
       vouchers: results,
       checkedAt: new Date().toISOString(),
-      message: hasCerts
-        ? 'Secuencia de comprobantes verificada con servidor oficial ARCA.'
-        : 'Secuencia de comprobantes obtenida del registro local de la sucursal.',
+      message: anyOfficial
+        ? `Secuencia oficial verificada en tiempo real con servidor ARCA (${isProd ? 'PRODUCCIÓN' : 'HOMOLOGACIÓN'}).`
+        : hasCerts
+        ? `Certificados presentes pero ARCA reportó: ${firstError || 'Sin respuesta de WSFEv1'}`
+        : 'Certificado Digital (.crt) o Clave Privada (.key) pendientes de vincular en Configuración ARCA.',
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });

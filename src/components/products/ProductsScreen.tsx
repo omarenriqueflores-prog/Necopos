@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Package,
@@ -13,9 +13,11 @@ import {
   CheckCircle,
   Save,
   RefreshCw,
+  Barcode,
 } from 'lucide-react';
 import { Product, BranchConfig, UserAccount, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatCurrency, formatWeight } from '../../utils/scaleParser';
+import { isMeatProduct } from '../../utils/stockHelper';
 import { WindowsModal } from '../common/WindowsModal';
 import { useDialog } from '../../context/DialogContext';
 import { ImportProductsModal } from './ImportProductsModal';
@@ -56,6 +58,8 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isNewMode, setIsNewMode] = useState<boolean>(false);
+  const [barcodeCaptured, setBarcodeCaptured] = useState<boolean>(false);
+  const barcodeFieldRef = useRef<HTMLInputElement>(null);
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [exportStatus, setExportStatus] = useState<'IDLE' | 'SENDING' | 'DONE'>('IDLE');
 
@@ -69,12 +73,18 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     if (!p) return false;
     if (categoryFilter !== 'TODAS' && p.category !== categoryFilter) return false;
     if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
+    const term = searchTerm.toLowerCase().trim();
     const codeStr = String(p.code || '').toLowerCase();
+    const barcodeStr = String(p.barcode || '').toLowerCase();
     const descStr = String(p.description || '').toLowerCase();
     const pluStr = String(p.scalePlu || '').toLowerCase();
 
-    return codeStr.includes(term) || descStr.includes(term) || pluStr.includes(term);
+    return (
+      codeStr.includes(term) ||
+      barcodeStr.includes(term) ||
+      descStr.includes(term) ||
+      pluStr.includes(term)
+    );
   });
 
   const selectedProduct =
@@ -82,20 +92,23 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
 
   const handleOpenEdit = (prod: Product) => {
     setIsNewMode(false);
-    setEditingProduct({ ...prod });
+    setBarcodeCaptured(false);
+    setEditingProduct({ ...prod, barcode: prod.barcode || '' });
     setIsEditModalOpen(true);
   };
 
   const handleOpenNew = () => {
     setIsNewMode(true);
+    setBarcodeCaptured(false);
     setEditingProduct({
       code: `00${products.length + 120}`,
+      barcode: '',
       description: '',
-      rubro: 'Carnes Vacunas',
-      category: 'Novillito',
-      unitType: 'Kg',
+      rubro: 'Almacén',
+      category: 'Almacén',
+      unitType: 'Unid',
       price: 10000,
-      scalePlu: String(products.length + 120),
+      scalePlu: null,
       active: true,
     });
     setIsEditModalOpen(true);
@@ -106,15 +119,35 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
       await showAlert('La descripción del artículo es obligatoria.');
       return;
     }
+    const cleanBarcode = editingProduct.barcode ? editingProduct.barcode.trim() : null;
+    if (cleanBarcode) {
+      const duplicateBarcodeProd = products.find(
+        (p) =>
+          p.code !== editingProduct.code &&
+          p.barcode &&
+          p.barcode.trim().toLowerCase() === cleanBarcode.toLowerCase()
+      );
+      if (duplicateBarcodeProd) {
+        await showAlert(
+          `El código de barras "${cleanBarcode}" ya está asignado al artículo "${duplicateBarcodeProd.description}" (Cód: ${duplicateBarcodeProd.code}).`
+        );
+        return;
+      }
+    }
+
     const originalProduct = products.find((p) => p.code === editingProduct.code);
     if (!canModifyPrices && originalProduct && originalProduct.price !== editingProduct.price) {
       await showAlert('Acceso Denegado: Su perfil de usuario no posee permisos para modificar precios de lista.');
       return;
     }
+    const productToSave: Product = {
+      ...editingProduct,
+      barcode: cleanBarcode,
+    };
     if (isNewMode) {
-      onAddProduct(editingProduct);
+      onAddProduct(productToSave);
     } else {
-      onUpdateProduct(editingProduct);
+      onUpdateProduct(productToSave);
     }
     setIsEditModalOpen(false);
   };
@@ -127,6 +160,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
 
     const rows = products.map((p) => ({
       CODIGO: p.code,
+      CODIGO_BARRAS: p.barcode || '',
       DESCRIPCION: p.description,
       RUBRO: p.rubro || 'Carnes Vacunas',
       CATEGORIA_ESPECIE: p.category || 'Novillito',
@@ -139,6 +173,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [
       { wch: 12 }, // CODIGO
+      { wch: 18 }, // CODIGO_BARRAS
       { wch: 35 }, // DESCRIPCION
       { wch: 20 }, // RUBRO
       { wch: 20 }, // CATEGORIA_ESPECIE
@@ -191,7 +226,20 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Código, PLU de balanza o descripción..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && searchTerm.trim()) {
+                  const q = searchTerm.trim().toLowerCase();
+                  const exact = products.find(
+                    (p) =>
+                      (p.barcode && p.barcode.trim().toLowerCase() === q) ||
+                      p.code.trim().toLowerCase() === q
+                  );
+                  if (exact) {
+                    setSelectedProductCode(exact.code);
+                  }
+                }
+              }}
+              placeholder="Escanee código de barras con la pistola o busque por código, PLU o descripción..."
               className="w-full h-[26px] px-2 bg-[#f7fafe] border border-[#74777f] text-[12px] font-semibold text-[#002046] focus:bg-white focus:outline-none"
             />
             <Search className="w-3.5 h-3.5 text-[#74777f] absolute right-2 top-1.5" />
@@ -288,6 +336,9 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
             <thead className="sticky top-0 bg-[#e5e8ec] text-[#181c1f] font-bold text-[11px] border-b border-[#74777f]">
               <tr className="h-[24px]">
                 <th className="w-[70px] px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
+                <th className="w-[140px] px-2 border-r border-[#c4c6cf] bg-[#dce5f5] text-[#002046]">
+                  CÓD. DE BARRAS (EAN)
+                </th>
                 <th className="px-2 border-r border-[#c4c6cf]">DESCRIPCIÓN DEL PRODUCTO</th>
                 <th className="w-[120px] px-2 border-r border-[#c4c6cf]">RUBRO</th>
                 <th className="w-[120px] px-2 border-r border-[#c4c6cf]">CATEGORÍA / ESPECIE</th>
@@ -318,6 +369,17 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                   >
                     <td className="px-2 font-mono text-[11px] border-r border-[#c4c6cf]">
                       {prod.code}
+                    </td>
+                    <td
+                      className={`px-2 font-mono text-[11px] border-r border-[#c4c6cf] ${
+                        isSelected
+                          ? 'text-[#aec7f7] font-bold'
+                          : prod.barcode
+                          ? 'text-[#002046] font-bold bg-[#f5f8ff]'
+                          : 'text-[#74777f]'
+                      }`}
+                    >
+                      {prod.barcode ? prod.barcode : '-'}
                     </td>
                     <td className="px-2 border-r border-[#c4c6cf] truncate max-w-[280px]">
                       {prod.description}
@@ -381,7 +443,11 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
             <div className="flex items-center gap-2">
               <span className="font-bold text-[#002046]">{selectedProduct.description}</span>
               <span className="text-[#44474e]">
-                (Cód: {selectedProduct.code} | PLU Balanza: {selectedProduct.scalePlu || 'Sin PLU'})
+                (Cód: {selectedProduct.code} | Cód. Barras:{' '}
+                <strong className="font-mono text-[#002046]">
+                  {selectedProduct.barcode || 'Sin asignar'}
+                </strong>{' '}
+                | PLU Balanza: {selectedProduct.scalePlu || 'Sin PLU'})
               </span>
             </div>
 
@@ -431,15 +497,96 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                   onChange={(e) =>
                     setEditingProduct({ ...editingProduct, scalePlu: e.target.value || null })
                   }
-                  placeholder="Ej: 125 (para código 2000125...)"
+                  placeholder={
+                    editingProduct.unitType === 'Unid'
+                      ? 'No requiere (Venta por Unidad)'
+                      : 'Ej: 125 (para código 2000125...)'
+                  }
                   className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-mono text-[13px] font-bold text-[#002046]"
                 />
               </div>
             </div>
 
+            {/* Barcode Scanner Input Box (Pistola Lectora) */}
+            <div className="bg-[#f0f4fa] border border-[#002046] p-2">
+              <div className="flex items-center justify-between mb-1">
+                <label className="font-bold text-[#002046] flex items-center gap-1.5 text-[12px]">
+                  <Barcode className="w-4 h-4 text-[#002046]" />
+                  <span>Código de Barras del Producto (Pistola Lectora / EAN):</span>
+                </label>
+                <span className="text-[10px] bg-[#002046] text-white px-1.5 py-0.5 font-mono font-bold">
+                  LECTORA DE CÓDIGO ACTIVA
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  ref={barcodeFieldRef}
+                  type="text"
+                  value={editingProduct.barcode || ''}
+                  onChange={(e) => {
+                    setBarcodeCaptured(false);
+                    setEditingProduct({
+                      ...editingProduct,
+                      barcode: e.target.value,
+                    });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (editingProduct.barcode && editingProduct.barcode.trim()) {
+                        setEditingProduct({
+                          ...editingProduct,
+                          barcode: editingProduct.barcode.trim(),
+                        });
+                        setBarcodeCaptured(true);
+                      }
+                    }
+                  }}
+                  placeholder="Haga clic aquí y dispare con la pistola lectora o digite el código (Ej: 7790895000997)..."
+                  className="flex-1 h-[28px] px-2.5 bg-white border-2 border-[#002046] font-mono text-[14px] font-bold text-[#002046] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBarcodeCaptured(false);
+                    barcodeFieldRef.current?.focus();
+                    barcodeFieldRef.current?.select();
+                  }}
+                  className="h-[28px] px-2.5 bg-[#002046] hover:bg-[#1b365d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  title="Posicionar cursor para leer con la pistola lectora de código de barras"
+                >
+                  <Barcode className="w-3.5 h-3.5 text-[#aec7f7]" />
+                  <span>Leer con Pistola</span>
+                </button>
+                {editingProduct.barcode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBarcodeCaptured(false);
+                      setEditingProduct({ ...editingProduct, barcode: '' });
+                      barcodeFieldRef.current?.focus();
+                    }}
+                    className="h-[28px] px-2 bg-[#ebeef2] hover:bg-[#ffdad6] border border-[#74777f] text-[#aa3531] text-[11px] font-bold cursor-pointer"
+                    title="Borrar código de barras"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+              {barcodeCaptured && editingProduct.barcode && (
+                <div className="mt-1 text-[11px] font-bold text-[#00522c] flex items-center gap-1">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>
+                    Código {editingProduct.barcode} capturado correctamente. Presione &quot;Guardar Registro&quot; para confirmar.
+                  </span>
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="font-bold text-[#181c1f] block mb-0.5">
-                Descripción / Nombre del Corte:
+                Descripción / Nombre del Artículo o Corte:
               </label>
               <input
                 type="text"
@@ -455,55 +602,115 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
               <div>
                 <label className="font-bold text-[#181c1f] block mb-0.5">Rubro:</label>
                 <select
-                  value={editingProduct.rubro || 'Carnes Vacunas'}
-                  onChange={(e) => setEditingProduct({ ...editingProduct, rubro: e.target.value })}
+                  value={editingProduct.rubro || 'Almacén'}
+                  onChange={(e) => {
+                    const nextRubro = e.target.value;
+                    const isUnitRubro = [
+                      'Almacén',
+                      'Bebidas',
+                      'Limpieza',
+                      'Carbón / Leña',
+                      'Huevos',
+                      'Fideos / Despensa',
+                      'Lácteos',
+                      'Panadería',
+                      'Fiambrería',
+                      'Artículos Varios',
+                    ].includes(nextRubro);
+                    setEditingProduct({
+                      ...editingProduct,
+                      rubro: nextRubro,
+                      unitType: isUnitRubro ? 'Unid' : 'Kg',
+                      category: isUnitRubro ? nextRubro : editingProduct.category === 'Almacén' ? 'Novillito' : editingProduct.category,
+                      scalePlu: isUnitRubro ? null : editingProduct.scalePlu || editingProduct.code,
+                    });
+                  }}
                   className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-semibold text-[#002046]"
                 >
-                  <option value="Carnes Vacunas">Carnes Vacunas</option>
-                  <option value="Embutidos Frescos">Embutidos Frescos</option>
-                  <option value="Granja / Pollo">Granja / Pollo</option>
-                  <option value="Achuras / Menudencias">Achuras / Menudencias</option>
-                  <option value="Elaborados">Elaborados</option>
-                  <option value="Bebidas">Bebidas</option>
-                  <option value="Almacén">Almacén</option>
-                  <option value="Fiambrería">Fiambrería</option>
+                  <optgroup label="🏪 Almacén y Artículos Varios (Fuera de Cámara)">
+                    <option value="Almacén">Almacén</option>
+                    <option value="Bebidas">Bebidas</option>
+                    <option value="Limpieza">Limpieza</option>
+                    <option value="Carbón / Leña">Carbón / Leña</option>
+                    <option value="Huevos">Huevos</option>
+                    <option value="Fideos / Despensa">Fideos / Despensa</option>
+                    <option value="Lácteos">Lácteos</option>
+                    <option value="Panadería">Panadería</option>
+                    <option value="Fiambrería">Fiambrería</option>
+                    <option value="Artículos Varios">Artículos Varios</option>
+                  </optgroup>
+                  <optgroup label="❄️ Carnes (Cámara Frigorífica)">
+                    <option value="Carnes Vacunas">Carnes Vacunas</option>
+                    <option value="Cerdo">Cerdo</option>
+                    <option value="Granja / Pollo">Granja / Pollo</option>
+                    <option value="Embutidos Frescos">Embutidos Frescos</option>
+                    <option value="Achuras / Menudencias">Achuras / Menudencias</option>
+                    <option value="Elaborados">Elaborados</option>
+                  </optgroup>
                 </select>
               </div>
               <div>
-                <label className="font-bold text-[#181c1f] block mb-0.5">Categoría / Especie:</label>
+                <label className="font-bold text-[#181c1f] block mb-0.5">Categoría / Sector:</label>
                 <select
-                  value={editingProduct.category || 'Novillito'}
+                  value={editingProduct.category || 'Almacén'}
                   onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
                   className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-semibold text-[#002046]"
                 >
-                  {ANIMAL_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
+                  <optgroup label="🏪 Almacén y Artículos Varios">
+                    <option value="Almacén">Almacén</option>
+                    <option value="Bebidas">Bebidas</option>
+                    <option value="Limpieza">Limpieza</option>
+                    <option value="Carbón / Leña">Carbón / Leña</option>
+                    <option value="Huevos">Huevos</option>
+                    <option value="Fideos / Despensa">Fideos / Despensa</option>
+                    <option value="Lácteos">Lácteos</option>
+                    <option value="Panadería">Panadería</option>
+                    <option value="Fiambrería">Fiambrería</option>
+                    <option value="Artículos Varios">Artículos Varios</option>
+                  </optgroup>
+                  <optgroup label="❄️ Categorías Cárnicas (Cámara)">
+                    {ANIMAL_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
             </div>
             <div className="grid grid-cols-1 gap-2">
               <div>
-                <label className="font-bold text-[#181c1f] block mb-0.5">Tipo de Venta:</label>
+                <label className="font-bold text-[#181c1f] block mb-0.5">Tipo de Venta y Destino de Stock:</label>
                 <div className="flex gap-4 items-center h-[26px]">
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={editingProduct.unitType === 'Unid'}
+                      onChange={() => setEditingProduct({ ...editingProduct, unitType: 'Unid', scalePlu: null })}
+                    />
+                    <span>Por Unidad (Stock Almacén / Varios)</span>
+                  </label>
                   <label className="flex items-center gap-1 cursor-pointer">
                     <input
                       type="radio"
                       checked={editingProduct.unitType === 'Kg'}
                       onChange={() => setEditingProduct({ ...editingProduct, unitType: 'Kg' })}
                     />
-                    <span>Por Kilogramo (Kg)</span>
+                    <span>Por Kilogramo (Kg - Ticket Balanza / Cámara)</span>
                   </label>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={editingProduct.unitType === 'Unid'}
-                      onChange={() => setEditingProduct({ ...editingProduct, unitType: 'Unid' })}
-                    />
-                    <span>Por Unidad</span>
-                  </label>
+                </div>
+                <div
+                  className={`mt-1 px-2 py-1 rounded border text-[11px] font-bold flex items-center justify-between ${
+                    isMeatProduct(editingProduct)
+                      ? 'bg-blue-50 border-blue-300 text-blue-900'
+                      : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                  }`}
+                >
+                  <span>
+                    {isMeatProduct(editingProduct)
+                      ? '❄️ Este artículo se gestionará en: Stock de Cámara Frigorífica (Carnes)'
+                      : '🏪 Este artículo se gestionará en: Stock de Almacén y Artículos Varios (Separado de Cámara)'}
+                  </span>
                 </div>
               </div>
             </div>

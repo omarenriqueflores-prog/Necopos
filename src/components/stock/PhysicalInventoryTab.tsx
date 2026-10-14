@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
 import { PhysicalInventory, PhysicalInventoryItem, ANIMAL_CATEGORIES } from '../../types/pos';
-import { isMeatCategory, formatKg, formatCurrency } from '../../utils/stockHelper';
+import { isMeatProduct, formatKg, formatCurrency } from '../../utils/stockHelper';
 
 export const PhysicalInventoryTab: React.FC = () => {
   const { products, branchStock, applyPhysicalInventory, physicalInventories, localUser, user } = useFirebase();
@@ -36,16 +36,18 @@ export const PhysicalInventoryTab: React.FC = () => {
   // Categorías de productos cárnicos con las oficiales primero
   const categories = useMemo(() => {
     const customCats = new Set<string>();
-    products.forEach((p) => {
-      if (p.category) customCats.add(p.category);
-    });
+    products
+      .filter((p) => isMeatProduct(p))
+      .forEach((p) => {
+        if (p.category) customCats.add(p.category);
+      });
     return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
   }, [products]);
 
-  // Obtener items cárnicos y su stock del sistema
+  // Obtener items cárnicos y su stock del sistema (excluye artículos de almacén y varios)
   const chamberItems = useMemo(() => {
     return products
-      .filter((p) => isMeatCategory(p.category))
+      .filter((p) => isMeatProduct(p))
       .map((p) => {
         const stockDoc = branchStock.find((s) => s.branchId === branchId && s.productCode === p.code);
         const systemStock = stockDoc ? Number(stockDoc.currentStock) || 0 : 0;

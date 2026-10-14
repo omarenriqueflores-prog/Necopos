@@ -126,34 +126,35 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
         },
         creditNoteReason: reason,
         creditNoteType: creditType,
-        certificate: fb?.arcaConfig?.certificate,
-        privateKey: fb?.arcaConfig?.privateKey,
-        cuit: fb?.arcaConfig?.cuit,
-        environment: fb?.arcaConfig?.environment,
+        certificate: fb?.arcaConfig?.certificate || arcaService.getStoredConfig().certificate,
+        privateKey: fb?.arcaConfig?.privateKey || arcaService.getStoredConfig().privateKey,
+        cuit: fb?.arcaConfig?.cuit || arcaService.getStoredConfig().cuit,
+        environment: fb?.arcaConfig?.environment || arcaService.getStoredConfig().environment,
       });
 
-      if (!arcaRes.success && arcaRes.status === 'RECHAZADO') {
-        await showAlert(`ARCA rechazó la Nota de Crédito: ${arcaRes.error}`);
+      if (!arcaRes.success || !arcaRes.cae) {
+        await showAlert(`ARCA no autorizó la Nota de Crédito:\n${arcaRes.error || 'Verifique que el Certificado (.crt) y la Clave Privada (.key) estén vinculados en Configuración ARCA.'}`);
         setIsProcessing(false);
         return;
       }
 
-      const formattedNum = arcaService.formatCbteNumber(invoice.pointOfSale, nextNum);
+      const officialNum = arcaRes.cbteNumero || nextNum;
+      const formattedNum = arcaService.formatCbteNumber(invoice.pointOfSale, officialNum);
       const today = new Date().toISOString().split('T')[0];
       const timeStr = new Date().toLocaleTimeString('es-AR');
 
       const newCreditNote: ElectronicInvoice = {
-        id: `NC-${invoice.pointOfSale}-${nextNum}-${Date.now()}`,
+        id: `NC-${invoice.pointOfSale}-${officialNum}-${Date.now()}`,
         branchId: invoice.branchId,
         pointOfSale: invoice.pointOfSale,
         cbteTipo: ncCbteTipo,
         cbteLetra: ncLetra,
         cbteNombre: ncNombre,
-        cbteNumero: nextNum,
+        cbteNumero: officialNum,
         formattedNumber: formattedNum,
         date: today,
         time: timeStr,
-        cae: arcaRes.cae || '74109823412034',
+        cae: arcaRes.cae,
         caeVto: arcaRes.caeVto || new Date(Date.now() + 10 * 86400000).toISOString().split('T')[0],
         qrUrl:
           arcaRes.qrUrl ||
@@ -161,11 +162,11 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
             currentBranch.cuit,
             invoice.pointOfSale,
             ncCbteTipo,
-            nextNum,
+            officialNum,
             finalAmount,
             invoice.customer.docType || 80,
             invoice.customer.cuitDni,
-            arcaRes.cae || '74109823412034',
+            arcaRes.cae,
             today
           ),
         customer: invoice.customer,
@@ -179,8 +180,8 @@ export const CreditNoteModal: React.FC<CreditNoteModalProps> = ({
         vatAmount105: vat105,
         exemptAmount: 0,
         totalAmount: finalAmount,
-        status: arcaRes.status || 'AUTORIZADO',
-        environment: arcaRes.environment || 'homologacion',
+        status: 'AUTORIZADO',
+        environment: arcaRes.environment || 'produccion',
         associatedInvoiceId: invoice.id,
         associatedInvoiceNumber: invoice.formattedNumber,
         creditNoteReason: reason,

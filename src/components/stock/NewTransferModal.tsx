@@ -70,40 +70,13 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   }, [products, searchFilter]);
 
   // Items en preparación para transferir
-  const [transferItems, setTransferItems] = useState<StockTransferItem[]>(() => {
-    if (defaultProduct) {
-      const doc = branchStock.find((s) => s.branchId === 'NECO 1' && s.productCode === defaultProduct.code);
-      const stock = doc ? Number(doc.currentStock) || 0 : 0;
-      if (stock > 0) {
-        const initialQty = Math.min(10, stock);
-        return [
-          {
-            productCode: defaultProduct.code,
-            description: defaultProduct.description,
-            category: defaultProduct.category || 'Carnes Vacunas',
-            unitType: defaultProduct.unitType,
-            quantity: initialQty,
-            price: defaultProduct.price,
-            totalValue: Number((initialQty * defaultProduct.price).toFixed(2)),
-          },
-        ];
-      }
-    }
-    return [];
-  });
+  const [transferItems, setTransferItems] = useState<StockTransferItem[]>([]);
 
   // Selector de nuevo corte o media res
   const [selectedTargetCode, setSelectedTargetCode] = useState<string>(() => {
     return defaultProduct?.code || '';
   });
-  const [addQuantity, setAddQuantity] = useState<string>(() => {
-    if (defaultProduct) {
-      const doc = branchStock.find((s) => s.branchId === 'NECO 1' && s.productCode === defaultProduct.code);
-      const stock = doc ? Number(doc.currentStock) || 0 : 0;
-      return stock > 0 ? Math.min(10, stock).toString() : '0';
-    }
-    return '10';
-  });
+  const [addQuantity, setAddQuantity] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
@@ -218,7 +191,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
       }
 
       setSelectedTargetCode('');
-      setAddQuantity('10');
+      setAddQuantity('');
       return;
     }
 
@@ -283,7 +256,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     }
 
     setSelectedTargetCode('');
-    setAddQuantity('10');
+    setAddQuantity('');
   };
 
   const handleRemoveItem = (index: number) => {
@@ -569,8 +542,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                           key={p.code}
                           onClick={() => {
                             setSelectedTargetCode(p.code);
-                            const rem = getRemainingStock(p.code);
-                            if (rem > 0) setAddQuantity(Math.min(10, rem).toString());
+                            setAddQuantity('');
                           }}
                           className={`p-2 cursor-pointer flex items-center justify-between transition-colors ${
                             isSel ? 'bg-[#002046] text-white font-bold' : isZero ? 'bg-gray-50 text-gray-400' : 'hover:bg-gray-100 text-black'

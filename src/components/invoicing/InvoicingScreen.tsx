@@ -275,6 +275,7 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
 
     try {
       const nextNum = arcaService.getNextNumber(invoices, pointOfSale, manualCbteTipo);
+      const storedCfg = arcaService.getStoredConfig();
 
       const authRes = await arcaService.authorize({
         branchId: currentBranch.id,
@@ -291,19 +292,20 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
         netAmount: manualNetTotal,
         vatAmount: manualVat21 + manualVat105,
         totalAmount: manualTotal,
-        certificate: arcaConfig?.certificate,
-        privateKey: arcaConfig?.privateKey,
-        cuit: arcaConfig?.cuit,
-        environment: arcaConfig?.environment,
+        certificate: arcaConfig?.certificate || storedCfg.certificate,
+        privateKey: arcaConfig?.privateKey || storedCfg.privateKey,
+        cuit: arcaConfig?.cuit || storedCfg.cuit,
+        environment: arcaConfig?.environment || storedCfg.environment,
       });
 
-      if (!authRes.success && authRes.status === 'RECHAZADO') {
-        await showAlert(`Comprobante rechazado por ARCA: ${authRes.error}`);
+      if (!authRes.success || !authRes.cae) {
+        await showAlert(`Comprobante no autorizado por ARCA:\n${authRes.error || 'Verifique que el Certificado (.crt) y la Clave Privada (.key) estén vinculados en Configuración ARCA.'}`);
         setIsSubmittingManual(false);
         return;
       }
 
-      const formattedNumber = arcaService.formatCbteNumber(pointOfSale, nextNum);
+      const officialNum = authRes.cbteNumero || nextNum;
+      const formattedNumber = arcaService.formatCbteNumber(pointOfSale, officialNum);
       const today = new Date().toISOString().split('T')[0];
       const timeStr = new Date().toLocaleTimeString('es-AR');
 
@@ -311,17 +313,17 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
       const docType = cleanDoc.length === 11 ? 80 : cleanDoc.length >= 7 ? 96 : 99;
 
       const newInv: ElectronicInvoice = {
-        id: `INV-${pointOfSale}-${nextNum}-${Date.now()}`,
+        id: `INV-${pointOfSale}-${officialNum}-${Date.now()}`,
         branchId: currentBranch.id,
         pointOfSale,
         cbteTipo: manualCbteTipo,
         cbteLetra: currentCbteConfig.cbteLetra,
         cbteNombre: currentCbteConfig.cbteNombre,
-        cbteNumero: nextNum,
+        cbteNumero: officialNum,
         formattedNumber,
         date: today,
         time: timeStr,
-        cae: authRes.cae || '74102948192039',
+        cae: authRes.cae,
         caeVto: authRes.caeVto || new Date(Date.now() + 10 * 86400000).toISOString().split('T')[0],
         qrUrl:
           authRes.qrUrl ||
@@ -329,11 +331,11 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
             currentBranch.cuit,
             pointOfSale,
             manualCbteTipo,
-            nextNum,
+            officialNum,
             manualTotal,
             docType,
             selectedCustomer.dniCuit,
-            authRes.cae || '74102948192039',
+            authRes.cae,
             today
           ),
         customer: {
@@ -356,8 +358,8 @@ export const InvoicingScreen: React.FC<InvoicingScreenProps> = ({
         vatAmount105: manualVat105,
         exemptAmount: 0,
         totalAmount: manualTotal,
-        status: authRes.status || 'AUTORIZADO',
-        environment: authRes.environment || 'homologacion',
+        status: 'AUTORIZADO',
+        environment: authRes.environment || 'produccion',
         operator: currentUser.fullName,
         createdAt: new Date().toISOString(),
       };

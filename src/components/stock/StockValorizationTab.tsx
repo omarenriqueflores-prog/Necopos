@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
-import { isMeatCategory, formatKg, formatCurrency } from '../../utils/stockHelper';
+import { isMeatCategory, isMeatProduct, getStoreRubroLabel, formatKg, formatCurrency } from '../../utils/stockHelper';
 
 export const StockValorizationTab: React.FC = () => {
   const { products, branchStock, branchConfigs, meatReceptions } = useFirebase();
@@ -31,10 +31,10 @@ export const StockValorizationTab: React.FC = () => {
     return map;
   }, [branchStock]);
 
-  // Artículos cárnicos procesados
+  // Artículos cárnicos procesados (estrictamente carnes de cámara frigorífica)
   const meatItems = useMemo(() => {
     const list = products
-      .filter((p) => isMeatCategory(p.category))
+      .filter((p) => isMeatProduct(p))
       .map((p) => {
         const neco1Stock = stockMap.get(`NECO 1_${p.code}`) || 0;
         const neco2Stock = stockMap.get(`NECO 2_${p.code}`) || 0;
@@ -89,19 +89,19 @@ export const StockValorizationTab: React.FC = () => {
     return list;
   }, [products, stockMap, branchStock, meatReceptions]);
 
-  // Artículos no cárnicos (Almacén, bebidas, etc.) - estrictamente excluidos de la valorización cárnica
+  // Artículos no cárnicos (Almacén, bebidas, limpieza, carbón, huevos, fideos, etc.) - separados de cámara
   const nonMeatItems = useMemo(() => {
     return products
-      .filter((p) => !isMeatCategory(p.category))
+      .filter((p) => !isMeatProduct(p))
       .map((p) => {
-        const neco1Stock = stockMap.get(`NECO 1_${p.code}`) || 0;
-        const neco2Stock = stockMap.get(`NECO 2_${p.code}`) || 0;
-        const totalStock = Number((neco1Stock + neco2Stock).toFixed(3));
+        const neco1Stock = Math.round(stockMap.get(`NECO 1_${p.code}`) || 0);
+        const neco2Stock = Math.round(stockMap.get(`NECO 2_${p.code}`) || 0);
+        const totalStock = Math.round(neco1Stock + neco2Stock);
         const totalValue = Number((totalStock * p.price).toFixed(2));
         return {
           code: p.code,
           description: p.description,
-          category: p.category || 'Almacén',
+          category: getStoreRubroLabel(p),
           unitType: p.unitType,
           price: p.price,
           neco1Stock,

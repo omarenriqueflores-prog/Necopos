@@ -49,8 +49,16 @@ import {
   CarcassUnit,
 } from '../types/pos';
 import { calculateDeboningMassBalance, prepareNextTemplateVersion } from '../utils/deboningHelper';
-import { formatKg, classifyStockMovementBatch } from '../utils/stockHelper';
+import {
+  formatKg,
+  classifyStockMovementBatch,
+  isMeatProduct,
+  getStorageLocationName,
+  getStoreRubroLabel,
+} from '../utils/stockHelper';
+import { isStoreUnitProduct } from '../utils/scaleParser';
 import { INITIAL_BRANCH_CONFIGS, INITIAL_USERS } from '../data/mockData';
+import { arcaService } from '../services/arcaService';
 
 export function sanitizeForFirestore<T>(data: T): T {
   if (data === undefined) {
@@ -75,7 +83,7 @@ const DEFAULT_ARCA_CONFIG: ArcaConfig = {
   cuit: '20-25506516-6',
   companyName: 'MOYA CARLOS HUGO',
   vatCondition: 'Responsable Inscripto',
-  environment: 'homologacion',
+  environment: 'produccion',
   connected: true,
   lastChecked: new Date().toISOString(),
   pointsOfSale: {
@@ -287,9 +295,31 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           let rubro = String(data.rubro || data.departamento || 'Carnes Vacunas');
           let category = String(data.category || data.categoria || data.especie || '');
           const descUpper = description.toUpperCase();
+          const rawUnit = String(data.unitType || data.unidad || 'Kg');
+          const isStoreItem = isStoreUnitProduct({
+            description: descUpper,
+            rubro,
+            category,
+            unitType: rawUnit.toLowerCase().includes('u') ? 'Unid' : 'Kg',
+          });
 
           const catUpper = category.toUpperCase();
-          if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
+          if (isStoreItem) {
+            const suggestedStoreRubro = getStoreRubroLabel({
+              description: descUpper,
+              rubro,
+              category,
+            });
+            if (!rubro || rubro === 'Carnes Vacunas') {
+              rubro = suggestedStoreRubro;
+            }
+            if (
+              !category ||
+              ['NOVILLITO', 'NOVILLO', 'NOVILLO PESADO', 'VACA', 'TERNERA', 'VAQUILLONA', 'CARNES VACUNAS', 'CARNE', 'VACUNO'].includes(catUpper)
+            ) {
+              category = suggestedStoreRubro;
+            }
+          } else if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
             rubro = 'Carnes Vacunas';
             if (descUpper.includes(' VACA') || descUpper.endsWith('VACA') || descUpper.includes(' - VACA')) {
               category = 'Vaca';
@@ -309,16 +339,24 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             }
           }
 
-          const rawUnit = String(data.unitType || data.unidad || 'Kg');
-          const unitType: 'Kg' | 'Unid' = rawUnit.toLowerCase().includes('u') ? 'Unid' : 'Kg';
+          const unitType: 'Kg' | 'Unid' =
+            isStoreItem || rawUnit.toLowerCase().includes('u') ? 'Unid' : 'Kg';
           const price = Number(data.price ?? data.precio ?? 0);
           const vatRate = Number(data.vatRate ?? data.iva ?? 21);
-          const scalePlu = data.scalePlu || data.plu ? String(data.scalePlu || data.plu) : code;
+          const scalePlu =
+            unitType === 'Unid'
+              ? null
+              : data.scalePlu || data.plu
+              ? String(data.scalePlu || data.plu)
+              : code;
+          const barcodeRaw = data.barcode || data.codigoBarras || data.ean || null;
+          const barcode = barcodeRaw ? String(barcodeRaw).trim() : null;
           const active = data.active !== false;
 
           return {
             code,
             docId: docItem.id,
+            barcode,
             description: descUpper,
             rubro,
             category,
@@ -339,12 +377,23 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
 
-    // Clean up unwanted legacy fields (costPrice, stock) from existing Firestore documents
+    // Clean up unwanted legacy fields (costPrice, stock) and fix store items with unitType='Kg' in Firestore
     const cleanupUnwantedFields = async () => {
       try {
         const snap = await getDocs(collection(db, 'products'));
         for (const docItem of snap.docs) {
           const d = docItem.data();
+          const desc = String(d.description || d.descripcion || '').toUpperCase();
+          const rubro = String(d.rubro || '');
+          const category = String(d.category || d.categoria || '');
+          const isStore = isStoreUnitProduct({
+            description: desc,
+            rubro,
+            category,
+            unitType: d.unitType,
+          });
+
+          const updates: Record<string, any> = {};
           if (
             'costPrice' in d ||
             'costo' in d ||
@@ -352,13 +401,36 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             'stockNeco2' in d ||
             'stock' in d
           ) {
-            await updateDoc(docItem.ref, {
-              costPrice: deleteField(),
-              costo: deleteField(),
-              stockNeco1: deleteField(),
-              stockNeco2: deleteField(),
-              stock: deleteField(),
+            updates.costPrice = deleteField();
+            updates.costo = deleteField();
+            updates.stockNeco1 = deleteField();
+            updates.stockNeco2 = deleteField();
+            updates.stock = deleteField();
+          }
+
+          if (isStore) {
+            const suggestedRubro = getStoreRubroLabel({
+              description: desc,
+              rubro,
+              category,
             });
+            if (d.unitType !== 'Unid') {
+              updates.unitType = 'Unid';
+              updates.scalePlu = null;
+            }
+            if (!d.rubro || d.rubro === 'Carnes Vacunas') {
+              updates.rubro = suggestedRubro;
+            }
+            if (
+              !category ||
+              ['Novillito', 'Novillo Pesado', 'Vaca', 'Ternera', 'Vaquillona', 'Carnes Vacunas'].includes(category)
+            ) {
+              updates.category = suggestedRubro;
+            }
+          }
+
+          if (Object.keys(updates).length > 0) {
+            await updateDoc(docItem.ref, updates);
           }
         }
       } catch (err) {
@@ -565,30 +637,67 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
-  // Sync ARCA Config from Firestore (with bootstrapping)
+  // Sync ARCA Config from Firestore (with bootstrapping and credential recovery)
   useEffect(() => {
     const unsub = onSnapshot(
       doc(db, 'arcaConfig', 'main'),
       async (docSnap) => {
+        const localStored = arcaService.getStoredConfig();
+        const serverStored = await arcaService.fetchServerCredentials();
+
         if (!docSnap.exists()) {
           try {
-            await setDoc(doc(db, 'arcaConfig', 'main'), DEFAULT_ARCA_CONFIG);
-            setArcaConfig(DEFAULT_ARCA_CONFIG);
+            const initialCfg: ArcaConfig = {
+              ...DEFAULT_ARCA_CONFIG,
+              ...localStored,
+              ...(serverStored || {}),
+              certificate: localStored.certificate || serverStored?.certificate,
+              privateKey: localStored.privateKey || serverStored?.privateKey,
+            };
+            await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(initialCfg), { merge: true });
+            setArcaConfig(initialCfg);
+            arcaService.persistCredentials(initialCfg);
           } catch (err) {
             console.error('Error bootstrapping arcaConfig:', err);
           }
         } else {
           const data = docSnap.data() as ArcaConfig;
-          setArcaConfig(data);
-          if (typeof window !== 'undefined' && data) {
+          const recoveredCert =
+            (data.certificate && data.certificate.includes('BEGIN CERTIFICATE') ? data.certificate : undefined) ||
+            (localStored.certificate && localStored.certificate.includes('BEGIN CERTIFICATE') ? localStored.certificate : undefined) ||
+            (serverStored?.certificate && serverStored.certificate.includes('BEGIN CERTIFICATE') ? serverStored.certificate : undefined);
+          const recoveredKey =
+            (data.privateKey && data.privateKey.includes('PRIVATE KEY') ? data.privateKey : undefined) ||
+            (localStored.privateKey && localStored.privateKey.includes('PRIVATE KEY') ? localStored.privateKey : undefined) ||
+            (serverStored?.privateKey && serverStored.privateKey.includes('PRIVATE KEY') ? serverStored.privateKey : undefined);
+
+          const merged: ArcaConfig = {
+            ...DEFAULT_ARCA_CONFIG,
+            ...data,
+            certificate: recoveredCert,
+            privateKey: recoveredKey,
+            hasCertificate: Boolean(recoveredCert),
+            hasPrivateKey: Boolean(recoveredKey),
+            certificateLinked: Boolean(recoveredCert && recoveredKey),
+          };
+
+          setArcaConfig(merged);
+          arcaService.persistCredentials(merged);
+
+          // If Firestore was missing cert or key that we recovered locally/from server, heal Firestore automatically
+          if ((!data.certificate && recoveredCert) || (!data.privateKey && recoveredKey)) {
             try {
-              localStorage.setItem('necopos_arca_config', JSON.stringify(data));
-              if (data.privateKey) {
-                localStorage.setItem('necopos_arca_private_key', data.privateKey);
-              }
-              if (data.certificate) {
-                localStorage.setItem('necopos_arca_certificate', data.certificate);
-              }
+              await setDoc(
+                doc(db, 'arcaConfig', 'main'),
+                sanitizeForFirestore({
+                  certificate: recoveredCert,
+                  privateKey: recoveredKey,
+                  hasCertificate: Boolean(recoveredCert),
+                  hasPrivateKey: Boolean(recoveredKey),
+                  certificateLinked: Boolean(recoveredCert && recoveredKey),
+                }),
+                { merge: true }
+              );
             } catch (_) {}
           }
         }
@@ -802,6 +911,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const path = `products/${p.code}`;
     const cleanProduct = {
       code: String(p.code),
+      barcode: p.barcode ? String(p.barcode).trim() : null,
       description: p.description,
       rubro: p.rubro || 'Carnes Vacunas',
       category: p.category || 'Novillito',
@@ -827,6 +937,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const docRef = doc(db, 'products', String(p.code));
           const cleanProduct = {
             code: String(p.code),
+            barcode: p.barcode ? String(p.barcode).trim() : null,
             description: p.description,
             rubro: p.rubro || 'Carnes Vacunas',
             category: p.category || 'Novillito',
@@ -1064,6 +1175,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const qty = Number(item.unitType === 'Kg' ? (item.weight || item.quantity || 0) : (item.quantity || 1));
         if (qty <= 0) continue;
 
+        const prodRef = products.find((p) => p.code === productCode);
+        const isMeat = isMeatProduct(prodRef || item);
+
         movements.push({
           id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
           idempotencyKey: `REV_SALE_${saleId}_${productCode}_${idx}`,
@@ -1071,11 +1185,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           time: timeStr,
           timestamp: Date.now() + idx,
           branchId: saleData.branchId,
-          chamber: saleData.branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          chamber: getStorageLocationName(saleData.branchId, isMeat),
           productCode: productCode,
           productDescription: item.description || '',
-          category: item.category || 'Carnes Vacunas',
-          unitType: item.unitType || 'Kg',
+          category: item.category || (isMeat ? 'Carnes Vacunas' : 'Almacén'),
+          unitType: item.unitType || (isMeat ? 'Kg' : 'Unid'),
           type: 'DEVOLUCION',
           quantity: qty,
           factor: 1, // Restaura stock
@@ -1124,23 +1238,26 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const saveArcaConfig = async (cfg: ArcaConfig) => {
     const path = `arcaConfig/main`;
     try {
-      await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(cfg));
-      if (typeof window !== 'undefined') {
-        try {
-          localStorage.setItem('necopos_arca_config', JSON.stringify(cfg));
-          if (cfg.privateKey) {
-            localStorage.setItem('necopos_arca_private_key', cfg.privateKey);
-          }
-          if (cfg.certificate) {
-            localStorage.setItem('necopos_arca_certificate', cfg.certificate);
-          }
-        } catch (_) {}
-      }
-      
+      const stored = arcaService.getStoredConfig();
+      const merged: ArcaConfig = {
+        ...stored,
+        ...arcaConfig,
+        ...cfg,
+        certificate: cfg.certificate || arcaConfig.certificate || stored.certificate,
+        privateKey: cfg.privateKey || arcaConfig.privateKey || stored.privateKey,
+      };
+      merged.hasCertificate = Boolean(merged.certificate);
+      merged.hasPrivateKey = Boolean(merged.privateKey);
+      merged.certificateLinked = Boolean(merged.certificate && merged.privateKey);
+
+      arcaService.persistCredentials(merged);
+      setArcaConfig(merged);
+      await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(merged), { merge: true });
+
       // Sync points of sale back to branches if they were updated in arcaConfig
-      if (cfg.pointsOfSale) {
+      if (merged.pointsOfSale) {
         const batch = writeBatch(db);
-        for (const [branchKey, ptoVta] of Object.entries(cfg.pointsOfSale)) {
+        for (const [branchKey, ptoVta] of Object.entries(merged.pointsOfSale)) {
           const branchRef = doc(db, 'branches', branchKey);
           batch.set(branchRef, { pointOfSale: ptoVta }, { merge: true });
         }
@@ -1363,17 +1480,20 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const qty = Number(item.unitType === 'Kg' ? (item.weight || item.quantity || 0) : (item.quantity || 1));
       if (qty <= 0) continue;
 
+      const prodRef = products.find((p) => p.code === productCode);
+      const isMeat = isMeatProduct(prodRef || item);
+
       const mov: StockMovement = {
         id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
         date: dateStr,
         time: timeStr,
         timestamp: Date.now() + idx,
         branchId,
-        chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+        chamber: getStorageLocationName(branchId, isMeat),
         productCode,
         productDescription: item.description || '',
-        category: item.category || 'Carnes Vacunas',
-        unitType: item.unitType || 'Kg',
+        category: item.category || prodRef?.category || (isMeat ? 'Carnes Vacunas' : 'Almacén'),
+        unitType: item.unitType || prodRef?.unitType || (isMeat ? 'Kg' : 'Unid'),
         type: 'VENTA',
         quantity: qty,
         factor: -1,
@@ -2353,17 +2473,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         const qty = Math.abs(diff) > 0 ? Math.abs(diff) : newStock;
 
+        const isMeat = isMeatProduct(prod);
+
         movements.push({
           id: `SM-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
-          idempotencyKey: `INIT_CHAMBER_${branchId}_${it.productCode}`,
+          idempotencyKey: `INIT_STOCK_${branchId}_${it.productCode}_${Date.now()}_${idx}`,
           date: dateStr,
           time: timeStr,
           timestamp: Date.now() + idx,
           branchId,
-          chamber: branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          chamber: getStorageLocationName(branchId, isMeat),
           productCode: it.productCode,
           productDescription: desc,
-          category: cat,
+          category: isMeat ? cat : getStoreRubroLabel(prod || { description: desc, category: cat }),
           unitType,
           type: 'STOCK_INICIAL',
           quantity: qty,
@@ -2372,9 +2494,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           newStock,
           unitPrice: price,
           totalValue: Number((qty * price).toFixed(2)),
-          referenceDoc: 'INICIO-CAMARA',
+          referenceDoc: isMeat ? 'INICIO-CAMARA' : 'INICIO-ALMACEN',
           operator,
-          notes: 'Carga inicial o balance de apertura de cámara frigorífica',
+          notes: isMeat
+            ? 'Carga inicial o balance de apertura de cámara frigorífica'
+            : 'Carga inicial o actualización de stock de almacén y artículos varios',
         });
       }
 
