@@ -40,17 +40,8 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
 
   const effectiveBranch = isAdmin ? branchFilter : userBranch;
 
-  // Filtrar estrictamente excluyendo cualquier tipo de cierre automático del sistema
+  // Preservar todos los cierres de caja en el historial (los cierres automáticos no se descartan)
   const filteredClosures = closures.filter((c) => {
-    const isAuto =
-      c.id.startsWith('Z-AUTO') ||
-      c.operator.includes('AUTOMÁTICO') ||
-      c.notes?.includes('[AUTO-SISTEMA]') ||
-      c.shift?.includes('AUTOMÁTICO');
-
-    // Descartar cierres automáticos completamente
-    if (isAuto) return false;
-
     if (effectiveBranch !== 'TODAS' && c.branch !== effectiveBranch) return false;
 
     if (!searchTerm.trim()) return true;
@@ -64,13 +55,9 @@ export const CashHistoryScreen: React.FC<CashHistoryScreenProps> = ({
   });
 
   const handlePurgeAutoClosures = async () => {
-    const confirmed = await showConfirm(
-      '¿Está seguro de eliminar de la base de datos todos los cierres automáticos registrados por el sistema?'
+    await showAlert(
+      'PROTECCIÓN DE DATOS: La eliminación masiva de cierres automáticos está deshabilitada para preservar la integridad del historial contable y fiscal.'
     );
-    if (confirmed) {
-      await purgeAutoClosures();
-      await showAlert('Se han eliminado todos los cierres automáticos de la base de datos.');
-    }
   };
 
   const handlePrintClosure = (closure: CashClosure) => {

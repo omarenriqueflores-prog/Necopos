@@ -29,11 +29,15 @@ service cloud.firestore {
     }
 
     function isUserActive() {
-      return isSystemOwner() || (hasUserDoc() && getUserData().active != false);
+      return isSystemOwner() || (hasUserDoc() && getUserData().active == true);
     }
 
     function getUserRole() {
       return hasUserDoc() ? getUserData().role : (isSystemOwner() ? 'SUPERADMIN' : 'NONE');
+    }
+
+    function getUserBranch() {
+      return (hasUserDoc() && ('branch' in getUserData())) ? getUserData().branch : '';
     }
 
     function isAdmin() {
@@ -44,19 +48,26 @@ service cloud.firestore {
       return isSystemOwner() || (isUserActive() && (getUserRole() in ['SUPERADMIN', 'ADMIN', 'ENCARGADO', 'CAJERO']));
     }
 
+    function isSameBranch(targetBranch) {
+      return isAdmin() || getUserBranch() == '' || targetBranch == '' || targetBranch == null || getUserBranch() == targetBranch;
+    }
+
     // 1. Users & Roles Management Collection
     match /users/{userId} {
-      allow read: if isSignedIn() && isValidId(userId);
+      allow read: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow create: if isSignedIn() && isValidId(userId) && (
         isAdmin() || (
           request.auth.uid == userId && 
-          !(request.resource.data.role in ['SUPERADMIN', 'ADMIN'])
+          !(request.resource.data.role in ['SUPERADMIN', 'ADMIN', 'ENCARGADO']) &&
+          request.resource.data.active == true
         )
       );
       allow update: if isSignedIn() && isValidId(userId) && (
         isAdmin() || (
           request.auth.uid == userId && 
-          request.resource.data.role == resource.data.role
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.active == resource.data.active &&
+          ('branch' in request.resource.data ? request.resource.data.branch == resource.data.branch : true)
         )
       );
       allow delete: if isAdmin() && isValidId(userId);
@@ -71,7 +82,9 @@ service cloud.firestore {
 
     // 3. Sales Records Collection
     match /sales/{saleId} {
-      allow read, create, update: if isUserActive() && isValidId(saleId);
+      allow read: if isUserActive() && isValidId(saleId);
+      allow create, update: if isUserActive() && isValidId(saleId) &&
+        ('branchId' in request.resource.data ? isSameBranch(request.resource.data.branchId) : true);
       allow delete: if isAdmin() && isValidId(saleId);
     }
 
@@ -83,8 +96,8 @@ service cloud.firestore {
 
     // 5. Employees Collection
     match /employees/{employeeId} {
-      allow read, create, update: if isUserActive() && isValidId(employeeId);
-      allow delete: if isAdmin() && isValidId(employeeId);
+      allow read: if isUserActive() && isValidId(employeeId);
+      allow create, update, delete: if isAdmin() && isValidId(employeeId);
     }
 
     // 6. Branch Configurations
@@ -101,13 +114,17 @@ service cloud.firestore {
 
     // 8. Cash Movements
     match /cashMovements/{movId} {
-      allow read, create, update: if isUserActive() && isValidId(movId);
+      allow read: if isUserActive() && isValidId(movId);
+      allow create, update: if isUserActive() && isValidId(movId) &&
+        ('branchId' in request.resource.data ? isSameBranch(request.resource.data.branchId) : true);
       allow delete: if isAdmin() && isValidId(movId);
     }
 
     // 9. Cash Z Closures
     match /cashClosures/{closureId} {
-      allow read, create, update: if isUserActive() && isValidId(closureId);
+      allow read: if isUserActive() && isValidId(closureId);
+      allow create, update: if isUserActive() && isValidId(closureId) &&
+        ('branch' in request.resource.data ? isSameBranch(request.resource.data.branch) : true);
       allow delete: if isAdmin() && isValidId(closureId);
     }
 
@@ -132,13 +149,17 @@ service cloud.firestore {
 
     // 13. Branch Stock
     match /branchStock/{stockId} {
-      allow read, create, update: if isUserActive() && isValidId(stockId);
+      allow read: if isUserActive() && isValidId(stockId);
+      allow create, update: if isUserActive() && isValidId(stockId) &&
+        ('branchId' in request.resource.data ? isSameBranch(request.resource.data.branchId) : true);
       allow delete: if isAdmin() && isValidId(stockId);
     }
 
     // 14. Stock Movements
     match /stockMovements/{movementId} {
-      allow read, create, update: if isUserActive() && isValidId(movementId);
+      allow read: if isUserActive() && isValidId(movementId);
+      allow create, update: if isUserActive() && isValidId(movementId) &&
+        ('branchId' in request.resource.data ? isSameBranch(request.resource.data.branchId) : true);
       allow delete: if isAdmin() && isValidId(movementId);
     }
 
@@ -168,14 +189,15 @@ service cloud.firestore {
 
     // 19. Deboning Yield Templates
     match /deboningTemplates/{templateId} {
-      allow read, create, update: if isUserActive() && isValidId(templateId);
-      allow delete: if isAdmin() && isValidId(templateId);
+      allow read: if isUserActive() && isValidId(templateId);
+      allow create, update, delete: if isAdmin() && isValidId(templateId);
     }
 
     // 20. Idempotency Keys (Protected against unauthorized user modification)
     match /idempotencyKeys/{keyId} {
-      allow read, create, update: if isSignedIn() && isValidId(keyId);
+      allow read, create, update: if isUserActive() && isValidId(keyId);
       allow delete: if isAdmin() && isValidId(keyId);
     }
   }
 }
+

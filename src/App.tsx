@@ -570,9 +570,21 @@ export default function App() {
     setActiveScreen('HISTORIAL_CIERRES');
   };
 
-  const handleUnlockApp = () => {
-    if (unlockPassword.trim() === '1234' || unlockPassword.trim().length >= 0) {
+  const handleUnlockApp = async () => {
+    const input = unlockPassword.trim();
+    if (!input) {
+      await showAlert('Debe ingresar su PIN o clave de operador para desbloquear la terminal.');
+      return;
+    }
+
+    const validPassword = activeUser?.password || currentUser?.password;
+    const validPin = (activeUser as any)?.pin || (currentUser as any)?.pin;
+
+    if ((validPassword && input === validPassword) || (validPin && input === validPin)) {
       setIsAppLocked(false);
+      setUnlockPassword('');
+    } else {
+      await showAlert('Credencial o PIN incorrecto. La terminal permanece bloqueada.');
       setUnlockPassword('');
     }
   };

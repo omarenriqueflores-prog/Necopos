@@ -1059,35 +1059,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const purgeAutoClosures = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'cashClosures'));
-      for (const d of snap.docs) {
-        const data = d.data();
-        const isAuto =
-          d.id.startsWith('Z-AUTO') ||
-          String(data.operator || '').includes('AUTOMÁTICO') ||
-          String(data.notes || '').includes('[AUTO-SISTEMA]') ||
-          String(data.shift || '').includes('AUTOMÁTICO');
-        if (isAuto) {
-          try {
-            await deleteDoc(d.ref);
-          } catch (err) {
-            console.error('Error borrando cierre automático:', d.id, err);
-          }
-        }
-      }
-      setCashClosures((prev) =>
-        prev.filter(
-          (c) =>
-            !c.id.startsWith('Z-AUTO') &&
-            !c.operator.includes('AUTOMÁTICO') &&
-            !c.notes?.includes('[AUTO-SISTEMA]') &&
-            !c.shift?.includes('AUTOMÁTICO')
-        )
-      );
-    } catch (err) {
-      console.error('Error purgando cierres automáticos:', err);
-    }
+    console.warn('PROTECCIÓN DE DATOS: purgeAutoClosures fue deshabilitado para evitar la pérdida de cierres de caja históricos.');
   };
 
   const addSaleRecord = async (saleData: any) => {

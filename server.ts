@@ -218,7 +218,7 @@ export interface ArcaAuthUser {
 const ARCA_SESSION_SECRET =
   process.env.ARCA_SESSION_SECRET ||
   process.env.ARCA_ADMIN_TOKEN ||
-  'necopos-arca-hmac-secret-key-v1';
+  crypto.randomBytes(32).toString('hex');
 
 export const ALLOWED_ADMIN_ROLES = new Set(['SUPERADMIN', 'ADMIN']);
 export const ALLOWED_OPERATOR_ROLES = new Set(['SUPERADMIN', 'ADMIN', 'ENCARGADO', 'CAJERO']);
@@ -301,11 +301,12 @@ export function verifyArcaSessionToken(token: string): ArcaAuthUser | null {
       };
     }
 
+    // Require explicit server profile verification (unverified user token is denied active status)
     return {
       id: userId,
       username: String(payload.username || userId),
-      role: String(payload.role || '').toUpperCase(),
-      active: payload.active !== false,
+      role: 'NONE',
+      active: false,
     };
   } catch (_) {
     return null;
