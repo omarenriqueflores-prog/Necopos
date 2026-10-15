@@ -229,15 +229,16 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const userSnap = await getDoc(userDocRef);
 
           if (!userSnap.exists()) {
+            const isOwnerAdmin = userEmail.toLowerCase() === "omarenriqueflores@gmail.com";
             const newUserDoc: UserAccount = {
               id: userId,
               username: userEmail,
               fullName: userDisplayName,
-              role: 'SUPERADMIN',
-              branch: 'NECO 1',
+              role: isOwnerAdmin ? "SUPERADMIN" : "CAJERO",
+              branch: "NECO 1",
               active: true,
-              lastLogin: new Date().toLocaleString('es-AR'),
-              permissions: {
+              lastLogin: new Date().toLocaleString("es-AR"),
+              permissions: isOwnerAdmin ? {
                 canApplyDiscounts: true,
                 canCancelTickets: true,
                 canModifyPrices: true,
@@ -245,6 +246,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 canOpenDrawerWithoutSale: true,
                 canViewReports: true,
                 canPerformClosureZ: true,
+              } : {
+                canApplyDiscounts: false,
+                canCancelTickets: false,
+                canModifyPrices: false,
+                canViewCosts: false,
+                canOpenDrawerWithoutSale: false,
+                canViewReports: false,
+                canPerformClosureZ: false,
               },
             };
             await setDoc(userDocRef, newUserDoc);
@@ -814,8 +823,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       );
 
       if (localMatch) {
+        if (localMatch.active === false) {
+          throw new Error("Su cuenta de usuario se encuentra deshabilitada. Contacte al administrador.");
+        }
         if (localMatch.password && localMatch.password !== pass) {
-          throw new Error('Contraseña incorrecta.');
+          throw new Error("Contraseña incorrecta.");
         }
         setLocalUser(localMatch);
         return;
@@ -2650,76 +2662,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const purgeDatabase = async () => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('neco_pos_purged', 'true');
-    }
-    const collectionsToPurge = [
-      'sales',
-      'products',
-      'customers',
-      'employees',
-      'accountMovements',
-      'cashMovements',
-      'cashClosures',
-      'electronicInvoices',
-      'auditLogs',
-      'branchStock',
-      'stockMovements',
-      'stockTransfers',
-      'physicalInventories',
-    ];
-    for (const colName of collectionsToPurge) {
-      try {
-        const snapshot = await getDocs(collection(db, colName));
-        for (const docSnap of snapshot.docs) {
-          await deleteDoc(doc(db, colName, docSnap.id));
-        }
-      } catch (err) {
-        console.error(`Error purging collection ${colName}:`, err);
-      }
-    }
-    setProducts([]);
-    setCustomers([]);
-    setEmployees([]);
-    setUsers([]);
-    setAccountMovements([]);
-    setCashMovements([]);
-    setCashClosures([]);
-    setSales([]);
-    setElectronicInvoices([]);
-    setAuditLogs([]);
+    console.warn("PROTECCIÓN DE DATOS: purgeDatabase fue bloqueado para evitar la pérdida de colecciones en producción.");
   };
 
   const purgeInventoryTransactions = async () => {
-    const collectionsToPurge = [
-      'stockMovements',
-      'stockTransfers',
-    ];
-    for (const colName of collectionsToPurge) {
-      try {
-        const snapshot = await getDocs(collection(db, colName));
-        for (const docSnap of snapshot.docs) {
-          await deleteDoc(doc(db, colName, docSnap.id));
-        }
-      } catch (err) {
-        console.error(`Error purging inventory collection ${colName}:`, err);
-        throw err;
-      }
-    }
+    console.warn("PROTECCIÓN DE DATOS: purgeInventoryTransactions fue bloqueado para evitar la pérdida de transacciones de inventario.");
   };
 
   const purgeProductsCollection = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'products'));
-      for (const d of snap.docs) {
-        try {
-          await deleteDoc(d.ref);
-        } catch (_) {}
-      }
-      setProducts([]);
-    } catch (err) {
-      console.error('Error purging products collection:', err);
-    }
+    console.warn("PROTECCIÓN DE DATOS: purgeProductsCollection fue bloqueado para evitar el vaciado del catálogo de productos.");
   };
 
   return (

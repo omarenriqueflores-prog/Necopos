@@ -455,8 +455,7 @@ export const BranchConfigScreen: React.FC<BranchConfigScreenProps> = ({
                         );
                         if (doubleCheck) {
                           try {
-                            await purgeDatabase();
-                            await showAlert('Base de datos limpiada y restablecida correctamente.');
+                            await showAlert("PROTECCIÓN DE DATOS: El restablecimiento masivo de la base de datos está deshabilitado para resguardar la información comercial de NECO POS.");
                           } catch (err: any) {
                             await showAlert(`Error al limpiar la base de datos: ${err?.message || 'Error desconocido'}`);
                           }

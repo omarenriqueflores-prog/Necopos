@@ -88,17 +88,7 @@ export default function App() {
     purgeInventoryTransactions,
   } = useFirebase();
 
-  useEffect(() => {
-    const runPurgeOnce = async () => {
-      const hasPurged = localStorage.getItem('has_purged_inventory_once');
-      if (!hasPurged) {
-        await purgeInventoryTransactions();
-        localStorage.setItem('has_purged_inventory_once', 'true');
-        alert('Purga de inventario completada.');
-      }
-    };
-    runPurgeOnce();
-  }, []);
+  // PROTECCIÓN DE DATOS: No se ejecutan purgas automáticas.
 
 
   const { showAlert, showConfirm, showAdminAuth } = useDialog();
@@ -376,31 +366,18 @@ export default function App() {
   };
 
   const handlePurgeProducts = async () => {
-    const authorized = await showAdminAuth(
-      '¿Desea ELIMINAR TODOS los artículos de la base de datos Firestore para vaciar el catálogo por completo?',
-      'CONFIRMAR VACIADO TOTAL DEL CATÁLOGO'
+    await showAlert(
+      "PROTECCIÓN DE DATOS: El borrado masivo del catálogo está deshabilitado para preservar la integridad de los datos comerciales en producción."
     );
-    if (authorized) {
-      await purgeProductsCollection();
-      setProducts([]);
-      await showAlert('Se han eliminado todos los artículos de la base de datos Firestore.');
-    }
   };
 
   const handleBatchImportProducts = async (imported: Product[], replaceAll: boolean) => {
-    if (replaceAll) {
-      const authorized = await showAdminAuth(
-        'REEMPLAZAR TODO EL CATÁLOGO: Esta opción eliminará permanentemente los artículos actuales para ingresar únicamente los del Excel.',
-        'CONFIRMAR REEMPLAZO TOTAL DE ARTÍCULOS'
-      );
-      if (!authorized) return;
-      await purgeProductsCollection();
-    }
     await saveProductsBatch(imported);
     setProducts((prev) => {
-      if (replaceAll) return imported;
       const map = new Map<string, Product>();
-      prev.forEach((p) => map.set(p.code, p));
+      if (!replaceAll) {
+        prev.forEach((p) => map.set(p.code, p));
+      }
       imported.forEach((p) => map.set(p.code, p));
       return Array.from(map.values());
     });

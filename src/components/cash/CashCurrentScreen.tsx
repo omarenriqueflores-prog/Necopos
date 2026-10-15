@@ -343,8 +343,7 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                     );
                     if (doubleCheck) {
                       try {
-                        await purgeDatabase();
-                        await showAlert('Base de datos vaciada y reiniciada a cero correctamente.');
+                        await showAlert("PROTECCIÓN DE DATOS: El vaciado masivo de la base de datos está deshabilitado para resguardar la información comercial de NECO POS.");
                       } catch (err: any) {
                         await showAlert(`Error al vaciar la base de datos: ${err?.message || 'Error desconocido'}`);
                       }
