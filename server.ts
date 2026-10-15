@@ -1729,9 +1729,21 @@ async function authorizeWithAfipWsfe({
     const rateGroups = new Map<number, { base: number; amount: number; id: number }>();
 
     for (const item of items) {
-      const rate = Number(item.vatRate ?? 21);
-      const afipId = rate === 10.5 ? 4 : rate === 27 ? 6 : rate === 0 ? 3 : 5;
-      const base = Number(item.netAmount ?? (item.totalAmount ? item.totalAmount / (rate === 10.5 ? 1.105 : 1.21) : 0));
+      if (item.vatRate === undefined || item.vatRate === null || typeof item.vatRate !== 'number' || isNaN(item.vatRate)) {
+        throw new Error(`El producto "${item.description || item.productCode || 'desconocido'}" no posee una alícuota de IVA verificada.`);
+      }
+      const rate = Number(item.vatRate);
+      let afipId = 5;
+      if (rate === 21) afipId = 5;
+      else if (rate === 10.5) afipId = 4;
+      else if (rate === 27) afipId = 6;
+      else if (rate === 0) afipId = 3;
+      else {
+        throw new Error(`Alícuota de IVA no permitida por ARCA (${rate}%) en "${item.description || item.productCode}".`);
+      }
+
+      const divisor = rate === 10.5 ? 1.105 : rate === 27 ? 1.27 : rate === 0 ? 1.0 : 1.21;
+      const base = Number(item.netAmount ?? (item.totalAmount ? item.totalAmount / divisor : 0));
       const vat = Number(item.vatAmount ?? (item.totalAmount ? item.totalAmount - base : 0));
 
       const existing = rateGroups.get(afipId) || { base: 0, amount: 0, id: afipId };
@@ -1955,6 +1967,37 @@ app.post('/api/arca/authorize', requireArcaOperatorAuth, async (req, res) => {
         status: 'RECHAZADO',
         error: 'ARCA Regla 10062: Las Notas de Crédito deben identificar obligatoriamente el comprobante original asociado.',
       });
+    }
+
+    // C.1 & C.2 Validation: Enforce explicit VAT rates and consistency of invoice totals
+    if (items && Array.isArray(items) && items.length > 0) {
+      let calcItemsTotal = 0;
+      for (const item of items) {
+        if (item.vatRate === undefined || item.vatRate === null || typeof item.vatRate !== 'number' || isNaN(item.vatRate)) {
+          return res.status(400).json({
+            success: false,
+            status: 'RECHAZADO',
+            error: `ARCA Regla 10099: El producto "${item.description || item.productCode || 'desconocido'}" no posee una alícuota de IVA verificada. Configure la condición fiscal del producto antes de autorizar.`,
+          });
+        }
+        if (![0, 10.5, 21, 27].includes(item.vatRate)) {
+          return res.status(400).json({
+            success: false,
+            status: 'RECHAZADO',
+            error: `ARCA Regla 10099: Alícuota de IVA no válida (${item.vatRate}%) para el producto "${item.description || item.productCode}".`,
+          });
+        }
+        calcItemsTotal += Number(item.totalAmount || item.subtotal || 0);
+      }
+
+      const reqTotal = Number(totalAmount || 0);
+      if (reqTotal > 0 && calcItemsTotal > 0 && Math.abs(reqTotal - calcItemsTotal) > 0.1) {
+        return res.status(400).json({
+          success: false,
+          status: 'RECHAZADO',
+          error: `ARCA Regla 10098: Importes contradictorios. El total especificado ($${reqTotal.toFixed(2)}) no coincide con la suma de los ítems ($${calcItemsTotal.toFixed(2)}).`,
+        });
+      }
     }
 
     const resolved = resolveArcaCreds(req.body);

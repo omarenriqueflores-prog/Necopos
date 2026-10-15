@@ -225,12 +225,23 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
     const sub = Number(i.subtotal) || 0;
     const prodRef = productsList.find((p) => p.code === (i.productCode || i.code));
     
-    // Check vatRate from item or product reference (default to 21)
-    const rate = typeof i.vatRate === 'number' && i.vatRate >= 0
-      ? i.vatRate
-      : (prodRef?.vatRate !== undefined ? Number(prodRef.vatRate) : 21);
+    // Determine rate explicitly from item, product reference or category rule
+    let rate: number | undefined = undefined;
+    if (typeof i.vatRate === 'number' && i.vatRate >= 0) {
+      rate = i.vatRate;
+    } else if (prodRef?.vatRate !== undefined && prodRef?.vatRate !== null && typeof prodRef.vatRate === 'number') {
+      rate = prodRef.vatRate;
+    } else {
+      const cat = (i.category || prodRef?.category || '').toLowerCase();
+      if (cat.includes('carne') || cat.includes('res') || cat.includes('achura') || cat.includes('desposte')) {
+        rate = 10.5;
+      } else if (cat.includes('almacén') || cat.includes('bebida') || cat.includes('limpieza') || cat.includes('carbón') || cat.includes('varios')) {
+        rate = 21.0;
+      }
+    }
 
-    const divisor = rate === 10.5 ? 1.105 : rate === 27 ? 1.27 : rate === 0 ? 1.0 : 1.21;
+    const effectiveRate = rate !== undefined ? rate : 21; // Used for calculation if explicit or rule matched
+    const divisor = effectiveRate === 10.5 ? 1.105 : effectiveRate === 27 ? 1.27 : effectiveRate === 0 ? 1.0 : 1.21;
     const net = Math.round((sub / divisor) * 100) / 100;
     const vat = Math.round((sub - net) * 100) / 100;
 
@@ -240,7 +251,7 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
       unitType: (i.unitType as any) || 'Kg',
       quantity: qty,
       unitPrice: i.unitPrice,
-      vatRate: rate,
+      vatRate: rate !== undefined ? rate : -1, // -1 indicates unverified
       netAmount: net,
       vatAmount: vat,
       totalAmount: sub,
@@ -322,9 +333,10 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
       return;
     }
 
-    if (suggested.cbteTipo === 1 && selectedCustomer.vatCondition !== 'Resp. Inscripto') {
+    const unverified = invoiceItems.filter((it) => it.vatRate === -1);
+    if (unverified.length > 0) {
       await showAlert(
-        'REGLA ARCA: Factura "A" sólo puede emitirse a clientes Responsables Inscriptos con CUIT.'
+        `REGLA FISCAL ARCA: No se puede emitir la factura. Los siguientes productos no poseen una alícuota de IVA verificada: ${unverified.map((u) => u.description || u.productCode).join(', ')}. Por favor configure la condición fiscal en la lista de productos.`
       );
       return;
     }
