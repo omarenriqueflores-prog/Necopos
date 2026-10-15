@@ -29,11 +29,11 @@ service cloud.firestore {
     }
 
     function isUserActive() {
-      return isSystemOwner() || (hasUserDoc() && getUserData().active != false) || isSignedIn();
+      return isSystemOwner() || (hasUserDoc() && getUserData().active != false);
     }
 
     function getUserRole() {
-      return hasUserDoc() ? getUserData().role : (isSystemOwner() ? 'SUPERADMIN' : 'CAJERO');
+      return hasUserDoc() ? getUserData().role : (isSystemOwner() ? 'SUPERADMIN' : 'NONE');
     }
 
     function isAdmin() {
