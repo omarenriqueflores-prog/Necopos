@@ -435,6 +435,8 @@ export interface StockTransferItem {
   quantity: number;
   price: number;
   totalValue: number;
+  receptionId?: string;
+  carcassId?: string;
 }
 
 export interface StockTransfer {

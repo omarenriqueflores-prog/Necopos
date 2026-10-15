@@ -64,7 +64,7 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
     const map = new Map<string, { currentStock: number; minStock: number }>();
     branchStock.forEach((bs) => {
       map.set(`${bs.branchId}_${bs.productCode}`, {
-        currentStock: Math.round(Number(bs.currentStock) || 0),
+        currentStock: Number(Number(bs.currentStock).toFixed(3)) || 0,
         minStock: bs.minStock !== undefined ? Number(bs.minStock) : 10,
       });
     });
@@ -78,7 +78,7 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
       .map((p) => {
         const neco1 = stockMap.get(`NECO 1_${p.code}`) || { currentStock: 0, minStock: 10 };
         const neco2 = stockMap.get(`NECO 2_${p.code}`) || { currentStock: 0, minStock: 10 };
-        const totalStock = Math.round(neco1.currentStock + neco2.currentStock);
+        const totalStock = Number((neco1.currentStock + neco2.currentStock).toFixed(3));
         const minStockRef = Math.max(neco1.minStock, neco2.minStock);
         const storeRubro = getStoreRubroLabel(p);
 

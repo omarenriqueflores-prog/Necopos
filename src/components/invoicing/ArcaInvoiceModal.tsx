@@ -218,11 +218,47 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
         description: 'Consumidor Final / Monotributo (IVA incluido)',
       };
 
-  // Calculate items and taxes
+  // Calculate items and taxes per product VAT rate (21%, 10.5%, 0% exempt)
+  const productsList = fb.products || [];
+  const invoiceItems: ElectronicInvoiceItem[] = (saleData.items || []).map((i, idx) => {
+    const qty = i.unitType === 'Kg' ? i.weight || 1 : i.quantity || 1;
+    const sub = Number(i.subtotal) || 0;
+    const prodRef = productsList.find((p) => p.code === (i.productCode || i.code));
+    
+    // Check vatRate from item or product reference (default to 21)
+    const rate = typeof i.vatRate === 'number' && i.vatRate >= 0
+      ? i.vatRate
+      : (prodRef?.vatRate !== undefined ? Number(prodRef.vatRate) : 21);
+
+    const divisor = rate === 10.5 ? 1.105 : rate === 27 ? 1.27 : rate === 0 ? 1.0 : 1.21;
+    const net = Math.round((sub / divisor) * 100) / 100;
+    const vat = Math.round((sub - net) * 100) / 100;
+
+    return {
+      productCode: i.productCode || i.code || `ART-${idx + 1}`,
+      description: i.description,
+      unitType: (i.unitType as any) || 'Kg',
+      quantity: qty,
+      unitPrice: i.unitPrice,
+      vatRate: rate,
+      netAmount: net,
+      vatAmount: vat,
+      totalAmount: sub,
+    };
+  });
+
   const totalAmount = saleData.total;
-  // Meat products in butcher shop have 21% or 10.5% VAT; standard butcher retail is 21% or 10.5% for live cattle/meat
-  const netAmount = Math.round((totalAmount / 1.21) * 100) / 100;
-  const vatAmount = Math.round((totalAmount - netAmount) * 100) / 100;
+  const netAmount = Number(invoiceItems.reduce((acc, item) => acc + item.netAmount, 0).toFixed(2));
+  const vatAmount21 = Number(
+    invoiceItems.filter((it) => it.vatRate === 21).reduce((acc, item) => acc + item.vatAmount, 0).toFixed(2)
+  );
+  const vatAmount105 = Number(
+    invoiceItems.filter((it) => it.vatRate === 10.5).reduce((acc, item) => acc + item.vatAmount, 0).toFixed(2)
+  );
+  const exemptAmount = Number(
+    invoiceItems.filter((it) => it.vatRate === 0).reduce((acc, item) => acc + item.netAmount, 0).toFixed(2)
+  );
+  const vatAmount = Number((vatAmount21 + vatAmount105).toFixed(2));
 
   const handleConsultarCuit = async () => {
     if (!newCuit) {
@@ -297,25 +333,6 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
 
     try {
       const nextNum = arcaService.getNextNumber(existingInvoices, pointOfSale, suggested.cbteTipo);
-
-      // Build invoice items
-      const invoiceItems: ElectronicInvoiceItem[] = saleData.items.map((i, idx) => {
-        const qty = i.unitType === 'Kg' ? i.weight || 1 : i.quantity || 1;
-        const sub = i.subtotal || 0;
-        const net = Math.round((sub / 1.21) * 100) / 100;
-        const vat = Math.round((sub - net) * 100) / 100;
-        return {
-          productCode: i.productCode || i.code || `ART-${idx + 1}`,
-          description: i.description,
-          unitType: (i.unitType as any) || 'Kg',
-          quantity: qty,
-          unitPrice: i.unitPrice,
-          vatRate: 21,
-          netAmount: net,
-          vatAmount: vat,
-          totalAmount: sub,
-        };
-      });
 
       // Call backend ARCA WSFEv1 authorization
       const storedCfg = arcaService.getStoredConfig();
@@ -397,9 +414,9 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
         },
         items: invoiceItems,
         netAmount,
-        vatAmount21: vatAmount,
-        vatAmount105: 0,
-        exemptAmount: 0,
+        vatAmount21,
+        vatAmount105,
+        exemptAmount,
         totalAmount,
         status: 'AUTORIZADO',
         environment: authRes.environment || 'produccion',

@@ -221,11 +221,28 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
       await recordStockMovement(movement);
 
       if (selectedReception) {
+        if (selectedReception.status === 'DESPOSTADO' || selectedReception.carcasses?.some((c) => c.status === 'DESPOSTADO')) {
+          setErrorMessage('No se permite ajustar una recepción que ya ha sido despostada.');
+          setIsSubmitting(false);
+          return;
+        }
+
         const diff = isPositive ? qtyNumber : -qtyNumber;
         const newTotalWeight = Number(Math.max(0, selectedReception.totalWeightKg + diff).toFixed(3));
+        
+        let updatedCarcasses = selectedReception.carcasses;
+        if (updatedCarcasses && updatedCarcasses.length > 0 && selectedReception.totalWeightKg > 0) {
+          const ratio = newTotalWeight / selectedReception.totalWeightKg;
+          updatedCarcasses = updatedCarcasses.map((c) => ({
+            ...c,
+            weightKg: Number((c.weightKg * ratio).toFixed(3)),
+          }));
+        }
+
         const updatedRec = {
           ...selectedReception,
           totalWeightKg: newTotalWeight,
+          carcasses: updatedCarcasses,
           notes: (selectedReception.notes ? `${selectedReception.notes} | ` : '') + `Ajuste ${type}: ${diff > 0 ? '+' : ''}${diff.toFixed(3)} Kg (${finalReason})`,
         };
         await saveMeatReception(updatedRec);

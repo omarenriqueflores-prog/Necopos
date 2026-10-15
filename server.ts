@@ -1683,6 +1683,7 @@ async function authorizeWithAfipWsfe({
   totalAmount,
   netAmount,
   vatAmount,
+  items,
   emisorCuit,
   certPem,
   keyPem,
@@ -1697,6 +1698,7 @@ async function authorizeWithAfipWsfe({
   totalAmount: number;
   netAmount: number;
   vatAmount: number;
+  items?: any[];
   emisorCuit: string;
   certPem: string;
   keyPem: string;
@@ -1723,7 +1725,42 @@ async function authorizeWithAfipWsfe({
   const cbteFch = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
 
   let ivaXml = '';
-  if (vatAmount > 0) {
+  if (items && Array.isArray(items) && items.length > 0) {
+    const rateGroups = new Map<number, { base: number; amount: number; id: number }>();
+
+    for (const item of items) {
+      const rate = Number(item.vatRate ?? 21);
+      const afipId = rate === 10.5 ? 4 : rate === 27 ? 6 : rate === 0 ? 3 : 5;
+      const base = Number(item.netAmount ?? (item.totalAmount ? item.totalAmount / (rate === 10.5 ? 1.105 : 1.21) : 0));
+      const vat = Number(item.vatAmount ?? (item.totalAmount ? item.totalAmount - base : 0));
+
+      const existing = rateGroups.get(afipId) || { base: 0, amount: 0, id: afipId };
+      rateGroups.set(afipId, {
+        id: afipId,
+        base: existing.base + base,
+        amount: existing.amount + vat,
+      });
+    }
+
+    const alicXmlParts: string[] = [];
+    for (const group of rateGroups.values()) {
+      if (group.base > 0 || group.amount > 0) {
+        alicXmlParts.push(`
+          <ar:AlicIva>
+            <ar:Id>${group.id}</ar:Id>
+            <ar:BaseImp>${group.base.toFixed(2)}</ar:BaseImp>
+            <ar:Importe>${group.amount.toFixed(2)}</ar:Importe>
+          </ar:AlicIva>`);
+      }
+    }
+
+    if (alicXmlParts.length > 0) {
+      ivaXml = `
+        <ar:Iva>
+          ${alicXmlParts.join('')}
+        </ar:Iva>`;
+    }
+  } else if (vatAmount > 0) {
     ivaXml = `
       <ar:Iva>
         <ar:AlicIva>
@@ -1962,6 +1999,7 @@ app.post('/api/arca/authorize', requireArcaOperatorAuth, async (req, res) => {
       totalAmount: Number(totalAmount || 0),
       netAmount: Number(netAmount || 0),
       vatAmount: Number(vatAmount || 0),
+      items: items || [],
       emisorCuit,
       certPem,
       keyPem,

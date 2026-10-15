@@ -38,6 +38,7 @@ import {
   AuditLog,
   BranchStock,
   StockMovement,
+  StockMovementType,
   StockTransfer,
   PhysicalInventory,
   MeatDeboning,
@@ -1106,14 +1107,31 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const saleId = saleData.id;
       if (!saleId) throw new Error('No se puede cancelar una venta sin ID.');
 
-      // 1. Crear movimientos inversos para restaurar stock
+      // 1. Validar existencia y estado real de la venta en Firestore / memoria
+      const saleRef = doc(db, 'sales', String(saleId));
+      const saleSnap = await getDoc(saleRef);
+
+      if (!saleSnap.exists()) {
+        throw new Error(`La venta "${saleId}" no existe en el sistema.`);
+      }
+
+      const existingData = saleSnap.data() || {};
+      if (existingData.cancelled || existingData.status === 'CANCELLED') {
+        throw new Error(`La venta "${saleId}" ya fue cancelada previamente.`);
+      }
+
+      // 2. Crear movimientos inversos para restaurar stock con claves de idempotencia estables
       const now = new Date();
       const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const movements: StockMovement[] = [];
 
-      for (let idx = 0; idx < saleData.items.length; idx++) {
-        const item = saleData.items[idx];
+      const itemsToRevert = saleData.items || existingData.items || [];
+      const targetBranch = saleData.branchId || existingData.branchId || 'NECO 1';
+      const ticketRef = saleData.ticketNumber || existingData.ticketNumber || saleId;
+
+      for (let idx = 0; idx < itemsToRevert.length; idx++) {
+        const item = itemsToRevert[idx];
         const productCode = item.code || item.productCode;
         if (!productCode) continue;
 
@@ -1129,8 +1147,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           date: dateStr,
           time: timeStr,
           timestamp: Date.now() + idx,
-          branchId: saleData.branchId,
-          chamber: getStorageLocationName(saleData.branchId, isMeat),
+          branchId: targetBranch,
+          chamber: getStorageLocationName(targetBranch, isMeat),
           productCode: productCode,
           productDescription: item.description || '',
           category: item.category || (isMeat ? 'Carnes Vacunas' : 'Almacén'),
@@ -1142,10 +1160,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           newStock: 0,
           unitPrice: Number(item.unitPrice) || 0,
           totalValue: Number((qty * (Number(item.unitPrice) || 0)).toFixed(2)),
-          referenceDoc: `REV-${saleData.ticketNumber || saleId}`,
+          referenceDoc: `REV-${ticketRef}`,
           saleId: String(saleId),
           operator: operator || 'Cajero POS',
-          notes: `Reversión por cancelación de venta POS: ${saleData.ticketNumber || saleId}`,
+          notes: `Reversión por cancelación de venta POS: ${ticketRef}`,
         });
       }
 
@@ -1153,8 +1171,18 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         await recordStockMovementsBatch(movements);
       }
 
-      // 2. Eliminar registro de venta
-      await deleteSaleRecord(saleId);
+      // 3. Conservar el documento de la venta original marcándolo como CANCELADO
+      await setDoc(
+        saleRef,
+        sanitizeForFirestore({
+          status: 'CANCELLED',
+          cancelled: true,
+          cancelledAt: `${dateStr} ${timeStr}`,
+          cancelledBy: operator || 'Cajero POS',
+          cancelReason: saleData.cancelReason || 'Cancelación comercial solicitada por usuario',
+        }),
+        { merge: true }
+      );
     } catch (error) {
       console.error('Error canceling sale record:', error);
       throw error;
@@ -1252,6 +1280,21 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!Number.isFinite(qty) || qty <= 0) {
         throw new Error(
           `Regla D: Lote inválido: movimiento "${mov.productCode}" tiene cantidad no numérica o menor/igual a cero (${mov.quantity}).`
+        );
+      }
+
+      const commercialTypes: StockMovementType[] = [
+        'VENTA',
+        'DEVOLUCION',
+        'TRANSFERENCIA_SALIDA',
+        'TRANSFERENCIA_ENTRADA',
+        'PRODUCCION',
+        'DESPOSTE_INGRESO',
+        'DESPOSTE_SALIDA',
+      ];
+      if (commercialTypes.includes(mov.type) && (!mov.idempotencyKey || !mov.idempotencyKey.trim())) {
+        throw new Error(
+          `Regla D.1: Movimiento comercial "${mov.type}" para producto "${mov.productCode}" exige una clave de idempotencia estable (idempotencyKey).`
         );
       }
     }
@@ -1474,6 +1517,40 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const dispatchStockTransfer = async (transfer: StockTransfer, operator: string) => {
     try {
+      if (!transfer || !transfer.id) {
+        throw new Error('Identificador de remito inválido.');
+      }
+
+      // 1. Validar el estado real del remito en Firestore antes de despachar
+      const transferRef = doc(db, 'stockTransfers', transfer.id);
+      const transferSnap = await getDoc(transferRef);
+      if (transferSnap.exists()) {
+        const currentData = transferSnap.data() as StockTransfer;
+        if (currentData.status === 'EN_TRANSITO' || currentData.status === 'RECIBIDA') {
+          console.warn('El remito de traslado ya fue despachado previamente (idempotencia):', transfer.transferNumber);
+          return;
+        }
+        if (currentData.status === 'CANCELADA') {
+          throw new Error(`El remito ${transfer.transferNumber} se encuentra cancelado.`);
+        }
+      }
+
+      // 2. Validar disponibilidad de stock en sucursal de origen
+      for (const item of transfer.items) {
+        if (!item.productCode || item.quantity <= 0) {
+          throw new Error(`Ítem inválido en transferencia: ${item.productCode || 'Sin código'}`);
+        }
+        const stockDocId = `${transfer.originBranch}_${item.productCode}`;
+        const currentStockItem = branchStock.find((s) => s.id === stockDocId);
+        const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
+
+        if (prevStock < item.quantity - 0.001) {
+          throw new Error(
+            `Stock insuficiente en ${transfer.originBranch} para el producto "${item.description || item.productCode}". Disponible: ${prevStock}, Requerido: ${item.quantity}.`
+          );
+        }
+      }
+
       const now = new Date();
       const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1513,7 +1590,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       await recordStockMovementsBatch(movements);
 
-      // Actualizar estado del remito a EN_TRANSITO
+      // Actualizar estado del remito a EN_TRANSITO en Firestore
       const updatedTransfer: StockTransfer = {
         ...transfer,
         status: 'EN_TRANSITO',
@@ -1528,10 +1605,31 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const receiveStockTransfer = async (transfer: StockTransfer, operator: string) => {
     try {
-      // Idempotencia: Verificar que no esté recibida previamente
-      if (transfer.status === 'RECIBIDA') {
+      if (!transfer || !transfer.id) {
+        throw new Error('Identificador de remito inválido.');
+      }
+
+      // 1. Validar el estado real del remito en Firestore
+      const transferRef = doc(db, 'stockTransfers', transfer.id);
+      const transferSnap = await getDoc(transferRef);
+      
+      let realStatus = transfer.status;
+      if (transferSnap.exists()) {
+        const currentData = transferSnap.data() as StockTransfer;
+        realStatus = currentData.status;
+      }
+
+      if (realStatus === 'RECIBIDA') {
         console.warn('El remito de traslado ya fue recibido previamente (idempotencia verificada):', transfer.transferNumber);
         return;
+      }
+
+      if (realStatus === 'BORRADOR') {
+        throw new Error(`El remito ${transfer.transferNumber} no se puede recibir porque aún no ha sido despachado (estado BORRADOR).`);
+      }
+
+      if (realStatus === 'CANCELADA') {
+        throw new Error(`El remito ${transfer.transferNumber} se encuentra cancelado y no puede ser recibido.`);
       }
 
       const now = new Date();
@@ -1568,28 +1666,33 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       await recordStockMovementsBatch(movements);
 
-      // Si se transfirió una recepción completa, actualizar su sucursal de custodia
+      // Si se transfirió una recepción completa con referencia unívoca o coincidencia exacta única
       for (const item of transfer.items) {
         if (item.productCode) {
-          const matchingReception = meatReceptions.find(
+          let matchingReceptions = meatReceptions.filter(
             (r) =>
               r.branchId === transfer.originBranch &&
               r.status === 'CONFIRMADO' &&
-              (r.productCode === item.productCode || item.description.includes(r.tropaNumber))
+              (item.receptionId ? r.id === item.receptionId : r.productCode === item.productCode)
           );
-          if (matchingReception && item.quantity >= matchingReception.totalWeightKg - 0.01) {
-            const updatedReception: MeatReception = {
-              ...matchingReception,
-              branchId: transfer.destinationBranch,
-              chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
-              carcasses: (matchingReception.carcasses || []).map((c) => ({
-                ...c,
+
+          // Evitar modificar si hay ambigüedad o múltiples coincidencias
+          if (matchingReceptions.length === 1) {
+            const matchingReception = matchingReceptions[0];
+            if (item.quantity >= matchingReception.totalWeightKg - 0.01) {
+              const updatedReception: MeatReception = {
+                ...matchingReception,
                 branchId: transfer.destinationBranch,
                 chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
-                status: 'DISPONIBLE' as CarcassStatus,
-              })),
-            };
-            await saveMeatReception(updatedReception);
+                carcasses: (matchingReception.carcasses || []).map((c) => ({
+                  ...c,
+                  branchId: transfer.destinationBranch,
+                  chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+                  status: 'DISPONIBLE' as CarcassStatus,
+                })),
+              };
+              await saveMeatReception(updatedReception);
+            }
           }
         }
       }
@@ -1815,7 +1918,13 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!rawMaterialCode && hasCarcasses) {
         const firstCarcassId = deboning.selectedCarcassIds![0];
         const parentReception = meatReceptions.find((r) => r.carcasses?.some((c) => c.id === firstCarcassId));
-        rawMaterialCode = parentReception?.productCode || parentReception?.category || (deboning.animalCategory || 'Novillito');
+        rawMaterialCode = parentReception?.productCode?.trim();
+      }
+
+      if (!rawMaterialCode) {
+        throw new Error(
+          `Regla B.2: Código de origen inválido. No se permite utilizar la categoría ("${deboning.animalCategory || 'Desconocida'}") como SKU de producto. Debe especificar un código de producto (SKU) válido para la materia prima.`
+        );
       }
 
       if (rawMaterialCode) {
