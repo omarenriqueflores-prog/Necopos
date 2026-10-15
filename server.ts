@@ -5,6 +5,9 @@ import crypto from 'crypto';
 import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 
 dotenv.config();
 
@@ -12,6 +15,24 @@ export const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
+
+// Initialize Firebase Admin SDK for authentic cryptographic ID token verification
+const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || 'necopos';
+const adminApp = getAdminApps().length
+  ? getAdminApps()[0]
+  : initAdminApp({ projectId: firebaseProjectId });
+export const adminAuth = getAdminAuth(adminApp);
+export const adminDb = (() => {
+  try {
+    return getAdminFirestore(adminApp, 'ai-studio-necopos-1af90faf-2bee-44ff-8358-0ab6350c10b3');
+  } catch (_) {
+    try {
+      return getAdminFirestore(adminApp);
+    } catch (_) {
+      return null;
+    }
+  }
+})();
 
 // Helper: CUIT verification algorithm (Modulo 11)
 function isValidCuit(cuitStr: string): boolean {
@@ -30,13 +51,168 @@ function isValidCuit(cuitStr: string): boolean {
 }
 
 // ============================================================================
+// Server-Side Trusted User Registry (Role Authority Resides Strictly on Server)
+// ============================================================================
+
+export interface ServerUserRecord {
+  id: string;
+  username: string;
+  email?: string;
+  fullName?: string;
+  role: 'SUPERADMIN' | 'ADMIN' | 'ENCARGADO' | 'CAJERO' | 'CONSULTA' | string;
+  active: boolean;
+  password?: string;
+}
+
+export const SERVER_TRUSTED_USERS: Map<string, ServerUserRecord> = new Map([
+  [
+    'USR-01',
+    {
+      id: 'USR-01',
+      username: 'admin',
+      fullName: 'Administrador POS',
+      role: 'SUPERADMIN',
+      active: true,
+      password: process.env.ADMIN_DEFAULT_PASSWORD || 'admin123',
+    },
+  ],
+  [
+    'USR-02',
+    {
+      id: 'USR-02',
+      username: 'omarenriqueflores@gmail.com',
+      email: 'omarenriqueflores@gmail.com',
+      fullName: 'Omar Enrique Flores',
+      role: 'SUPERADMIN',
+      active: true,
+    },
+  ],
+  [
+    'USR-03',
+    {
+      id: 'USR-03',
+      username: 'dueno',
+      fullName: 'Dueño Principal',
+      role: 'CONSULTA',
+      active: true,
+      password: process.env.DUENO_DEFAULT_PASSWORD || 'dueno123',
+    },
+  ],
+  [
+    'USR-04',
+    {
+      id: 'USR-04',
+      username: 'cajero',
+      fullName: 'Cajero Principal',
+      role: 'CAJERO',
+      active: true,
+      password: process.env.CAJERO_DEFAULT_PASSWORD || 'cajero123',
+    },
+  ],
+]);
+
+export function findTrustedUser(identifier: string): ServerUserRecord | null {
+  if (!identifier) return null;
+  const clean = String(identifier).trim().toLowerCase();
+  for (const u of SERVER_TRUSTED_USERS.values()) {
+    if (
+      u.id.toLowerCase() === clean ||
+      u.username.toLowerCase() === clean ||
+      (u.email && u.email.toLowerCase() === clean)
+    ) {
+      return u;
+    }
+  }
+  return null;
+}
+
+export function registerOrUpdateTrustedUser(user: ServerUserRecord): void {
+  SERVER_TRUSTED_USERS.set(user.id, user);
+}
+
+export async function findUserInFirestore(identifier: string): Promise<ServerUserRecord | null> {
+  if (!adminDb || !identifier) return null;
+  const clean = String(identifier).trim();
+  const lower = clean.toLowerCase();
+
+  try {
+    // 1. Direct lookup by UID (document ID)
+    const docSnap = await adminDb.collection('users').doc(clean).get();
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      if (data) {
+        return {
+          id: docSnap.id,
+          username: String(data.username || data.email || docSnap.id),
+          email: data.email ? String(data.email).toLowerCase() : undefined,
+          fullName: data.fullName,
+          role: String(data.role || 'NONE').toUpperCase(),
+          active: data.active !== false,
+          password: data.password,
+        };
+      }
+    }
+
+    // 2. Query by email
+    const emailSnap = await adminDb
+      .collection('users')
+      .where('email', '==', lower)
+      .limit(1)
+      .get();
+    if (!emailSnap.empty) {
+      const d = emailSnap.docs[0];
+      const data = d.data();
+      return {
+        id: d.id,
+        username: String(data.username || d.id),
+        email: data.email ? String(data.email).toLowerCase() : undefined,
+        fullName: data.fullName,
+        role: String(data.role || 'NONE').toUpperCase(),
+        active: data.active !== false,
+        password: data.password,
+      };
+    }
+
+    // 3. Query by username
+    const userSnap = await adminDb
+      .collection('users')
+      .where('username', '==', clean)
+      .limit(1)
+      .get();
+    if (!userSnap.empty) {
+      const d = userSnap.docs[0];
+      const data = d.data();
+      return {
+        id: d.id,
+        username: String(data.username || d.id),
+        email: data.email ? String(data.email).toLowerCase() : undefined,
+        fullName: data.fullName,
+        role: String(data.role || 'NONE').toUpperCase(),
+        active: data.active !== false,
+        password: data.password,
+      };
+    }
+  } catch (_) {
+    // Graceful fallback for non-GCP or test environments
+  }
+  return null;
+}
+
+export async function resolveTrustedUserAsync(identifier: string): Promise<ServerUserRecord | null> {
+  const local = findTrustedUser(identifier);
+  if (local) return local;
+  return await findUserInFirestore(identifier);
+}
+
+// ============================================================================
 // ARCA Authentication & Role-Based Authorization (Server-Enforced)
 // ============================================================================
 
 export interface ArcaAuthUser {
   id: string;
   username: string;
-  role: 'SUPERADMIN' | 'ADMIN' | 'CAJERO' | 'CONSULTA' | string;
+  role: 'SUPERADMIN' | 'ADMIN' | 'ENCARGADO' | 'CAJERO' | 'CONSULTA' | string;
+  active?: boolean;
 }
 
 const ARCA_SESSION_SECRET =
@@ -44,36 +220,47 @@ const ARCA_SESSION_SECRET =
   process.env.ARCA_ADMIN_TOKEN ||
   'necopos-arca-hmac-secret-key-v1';
 
-const ALLOWED_ADMIN_ROLES = new Set(['SUPERADMIN', 'ADMIN']);
+export const ALLOWED_ADMIN_ROLES = new Set(['SUPERADMIN', 'ADMIN']);
+export const ALLOWED_OPERATOR_ROLES = new Set(['SUPERADMIN', 'ADMIN', 'ENCARGADO', 'CAJERO']);
+export const ALLOWED_VIEWER_ROLES = new Set(['SUPERADMIN', 'ADMIN', 'ENCARGADO', 'CAJERO', 'CONSULTA']);
 
 export function createArcaSessionToken(
-  user: ArcaAuthUser,
+  user: { id: string; username?: string; role: string; active?: boolean },
   ttlMs: number = 12 * 60 * 60 * 1000
 ): string {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expSec = Math.floor((Date.now() + ttlMs) / 1000);
   const payload = {
+    iss: 'necopos-server',
+    aud: 'necopos-arca-api',
+    sub: String(user.id || '').trim(),
     id: String(user.id || '').trim(),
-    username: String(user.username || '').trim(),
+    username: String(user.username || user.id || '').trim(),
     role: String(user.role || '').trim().toUpperCase(),
-    iat: Date.now(),
-    exp: Date.now() + ttlMs,
+    active: user.active !== false,
+    iat: nowSec,
+    exp: expSec,
   };
+  const headerB64 = Buffer.from(JSON.stringify(header), 'utf-8').toString('base64url');
   const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
   const signature = crypto
     .createHmac('sha256', ARCA_SESSION_SECRET)
-    .update(payloadB64)
+    .update(`${headerB64}.${payloadB64}`)
     .digest('base64url');
-  return `${payloadB64}.${signature}`;
+  return `${headerB64}.${payloadB64}.${signature}`;
 }
 
 export function verifyArcaSessionToken(token: string): ArcaAuthUser | null {
   try {
-    if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+    if (!token || typeof token !== 'string') return null;
     const parts = token.split('.');
-    if (parts.length !== 2) return null;
-    const [payloadB64, providedSig] = parts;
+    if (parts.length !== 3) return null;
+    const [headerB64, payloadB64, providedSig] = parts;
+
     const expectedSig = crypto
       .createHmac('sha256', ARCA_SESSION_SECRET)
-      .update(payloadB64)
+      .update(`${headerB64}.${payloadB64}`)
       .digest('base64url');
 
     const sigBuf = Buffer.from(providedSig);
@@ -82,53 +269,65 @@ export function verifyArcaSessionToken(token: string): ArcaAuthUser | null {
       return null;
     }
 
-    const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
-    if (!decoded || typeof decoded !== 'object') return null;
-    if (typeof decoded.exp === 'number' && decoded.exp < Date.now()) return null;
-    if (!decoded.id || !decoded.role) return null;
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf-8'));
+    if (!header || header.alg !== 'HS256') return null;
 
-    return {
-      id: String(decoded.id),
-      username: String(decoded.username || decoded.id),
-      role: String(decoded.role).toUpperCase(),
-    };
-  } catch (_) {
-    return null;
-  }
-}
-
-function verifyFirebaseJwtFormat(token: string, roleHint?: string): ArcaAuthUser | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
     if (!payload || typeof payload !== 'object') return null;
-    if (typeof payload.exp === 'number' && payload.exp * 1000 < Date.now()) return null;
-    const isNecoFirebase =
-      payload.aud === 'necopos' ||
-      (typeof payload.iss === 'string' && payload.iss.includes('securetoken.google.com/necopos'));
-    if (!isNecoFirebase) return null;
 
-    const uid = String(payload.user_id || payload.sub || '');
-    const email = String(payload.email || '').toLowerCase();
-    if (!uid) return null;
+    if (payload.iss !== 'necopos-server' || payload.aud !== 'necopos-arca-api') {
+      return null;
+    }
 
-    const explicitRole = roleHint ? roleHint.toUpperCase() : undefined;
-    const resolvedRole =
-      explicitRole ||
-      (email === 'omarenriqueflores@gmail.com' ? 'SUPERADMIN' : 'CAJERO');
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp !== 'number' || payload.exp <= nowSec) {
+      return null;
+    }
+    if (typeof payload.iat === 'number' && payload.iat > nowSec + 10) {
+      return null;
+    }
+
+    const userId = String(payload.sub || payload.id || '');
+    if (!userId) return null;
+
+    // Verify current status and role against trusted server-side registry
+    const trusted = findTrustedUser(userId) || findTrustedUser(payload.username);
+    if (trusted) {
+      return {
+        id: trusted.id,
+        username: trusted.username,
+        role: trusted.role,
+        active: trusted.active,
+      };
+    }
 
     return {
-      id: uid,
-      username: email || uid,
-      role: resolvedRole,
+      id: userId,
+      username: String(payload.username || userId),
+      role: String(payload.role || '').toUpperCase(),
+      active: payload.active !== false,
     };
   } catch (_) {
     return null;
   }
 }
 
-export function authenticateArcaRequest(req: express.Request): ArcaAuthUser | null {
+// Cryptographic Firebase ID Token verification using official Firebase Admin SDK
+export async function verifyFirebaseIdToken(token: string): Promise<{ uid: string; email?: string } | null> {
+  try {
+    if (!token || typeof token !== 'string') return null;
+    const decoded = await adminAuth.verifyIdToken(token);
+    if (!decoded || !decoded.uid) return null;
+    return {
+      uid: String(decoded.uid),
+      email: decoded.email ? String(decoded.email).toLowerCase() : undefined,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function authenticateArcaRequest(req: express.Request): Promise<ArcaAuthUser | null> {
   const authHeader = String(req.headers.authorization || '').trim();
   const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
     ? authHeader.slice(7).trim()
@@ -142,9 +341,7 @@ export function authenticateArcaRequest(req: express.Request): ArcaAuthUser | nu
     return null;
   }
 
-  const roleHeader = String(req.headers['x-user-role'] || '').trim().toUpperCase();
-
-  // 1. Check static server admin token if configured in environment
+  // 1. Static server admin token (timing-safe compare for backend administrative scripts)
   const envAdminToken = (process.env.ARCA_ADMIN_TOKEN || '').trim();
   if (envAdminToken && headerToken.length === envAdminToken.length) {
     try {
@@ -152,43 +349,70 @@ export function authenticateArcaRequest(req: express.Request): ArcaAuthUser | nu
         return {
           id: 'ENV-ADMIN',
           username: 'arca-admin',
-          role: roleHeader || 'SUPERADMIN',
+          role: 'SUPERADMIN',
+          active: true,
         };
       }
     } catch (_) {}
   }
 
-  // 2. Check HMAC-signed server session token
+  // 2. Cryptographically verified internal session token (HMAC-SHA256)
   const verifiedSession = verifyArcaSessionToken(headerToken);
   if (verifiedSession) {
-    // If client explicitly declares a more restrictive role header, enforce the stricter role
-    const effectiveRole =
-      roleHeader && !ALLOWED_ADMIN_ROLES.has(roleHeader) ? roleHeader : verifiedSession.role;
-    return {
-      ...verifiedSession,
-      role: effectiveRole,
-    };
+    return verifiedSession;
   }
 
-  // 3. Check Firebase ID JWT token
-  const verifiedFirebase = verifyFirebaseJwtFormat(headerToken, roleHeader);
-  if (verifiedFirebase) {
-    return verifiedFirebase;
+  // 3. Cryptographically verified Firebase ID token (Firebase Admin SDK verifyIdToken)
+  const firebaseUser = await verifyFirebaseIdToken(headerToken);
+  if (firebaseUser) {
+    const trustedUser =
+      (await resolveTrustedUserAsync(firebaseUser.uid)) ||
+      (firebaseUser.email ? await resolveTrustedUserAsync(firebaseUser.email) : null);
+    if (trustedUser) {
+      return {
+        id: trustedUser.id,
+        username: trustedUser.username,
+        role: trustedUser.role,
+        active: trustedUser.active,
+      };
+    }
+    if (firebaseUser.email && firebaseUser.email.toLowerCase() === 'omarenriqueflores@gmail.com') {
+      return {
+        id: firebaseUser.uid,
+        username: firebaseUser.email,
+        role: 'SUPERADMIN',
+        active: true,
+      };
+    }
+    // Authenticated Firebase user with no trusted role in NECO POS
+    return {
+      id: firebaseUser.uid,
+      username: firebaseUser.email || firebaseUser.uid,
+      role: 'NONE',
+      active: false,
+    };
   }
 
   return null;
 }
 
-export function requireArcaAdminAuth(
+export async function requireArcaAdminAuth(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
 ) {
-  const authUser = authenticateArcaRequest(req);
+  const authUser = await authenticateArcaRequest(req);
   if (!authUser) {
     return res.status(401).json({
       success: false,
       error: 'No autenticado: se requiere iniciar sesión válida para acceder a la configuración de credenciales ARCA.',
+    });
+  }
+
+  if (authUser.active === false) {
+    return res.status(403).json({
+      success: false,
+      error: 'Acceso denegado: el usuario se encuentra deshabilitado o suspendido.',
     });
   }
 
@@ -203,35 +427,143 @@ export function requireArcaAdminAuth(
   next();
 }
 
-// Endpoint to issue an HMAC-signed session token for authenticated POS users
-app.post('/api/arca/auth-session', (req, res) => {
+export async function requireArcaOperatorAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const authUser = await authenticateArcaRequest(req);
+  if (!authUser) {
+    return res.status(401).json({
+      success: false,
+      error: 'No autenticado: se requiere iniciar sesión válida para operar con servicios ARCA.',
+    });
+  }
+
+  if (authUser.active === false) {
+    return res.status(403).json({
+      success: false,
+      error: 'Acceso denegado: el usuario se encuentra deshabilitado o suspendido.',
+    });
+  }
+
+  if (!ALLOWED_OPERATOR_ROLES.has(authUser.role)) {
+    return res.status(403).json({
+      success: false,
+      error: `Acceso denegado: el rol "${authUser.role}" no posee autorización para emitir o autorizar comprobantes fiscales ARCA.`,
+    });
+  }
+
+  (req as any).arcaUser = authUser;
+  next();
+}
+
+export async function requireArcaViewerAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const authUser = await authenticateArcaRequest(req);
+  if (!authUser) {
+    return res.status(401).json({
+      success: false,
+      error: 'No autenticado: se requiere iniciar sesión válida para consultar servicios ARCA.',
+    });
+  }
+
+  if (authUser.active === false) {
+    return res.status(403).json({
+      success: false,
+      error: 'Acceso denegado: el usuario se encuentra deshabilitado o suspendido.',
+    });
+  }
+
+  if (!ALLOWED_VIEWER_ROLES.has(authUser.role)) {
+    return res.status(403).json({
+      success: false,
+      error: `Acceso denegado: el rol "${authUser.role}" no posee autorización para consultar servicios ARCA.`,
+    });
+  }
+
+  (req as any).arcaUser = authUser;
+  next();
+}
+
+// Endpoint to authenticate and issue an HMAC-signed session token (Roles are strictly server-derived)
+app.post('/api/arca/auth-session', async (req, res) => {
   try {
-    const { id, username, role, active } = req.body || {};
-    if (!id || !role || active === false) {
+    const authHeader = String(req.headers.authorization || '').trim();
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+    const { id, username, password, firebaseToken } = req.body || {};
+
+    let verifiedUser: ServerUserRecord | null = null;
+
+    // Method 1: Verified via Firebase ID Token
+    const tokenToVerify = bearerToken || firebaseToken;
+    if (tokenToVerify) {
+      const fbDecoded = await verifyFirebaseIdToken(tokenToVerify);
+      if (fbDecoded) {
+        verifiedUser =
+          (await resolveTrustedUserAsync(fbDecoded.uid)) ||
+          (fbDecoded.email ? await resolveTrustedUserAsync(fbDecoded.email) : null);
+        if (!verifiedUser && fbDecoded.email && fbDecoded.email.toLowerCase() === 'omarenriqueflores@gmail.com') {
+          verifiedUser = {
+            id: fbDecoded.uid,
+            username: fbDecoded.email,
+            email: fbDecoded.email,
+            role: 'SUPERADMIN',
+            active: true,
+          };
+        }
+      }
+    }
+
+    // Method 2: Verified via credentials in trusted server registry or Firestore
+    if (!verifiedUser && (id || username) && password) {
+      const target = await resolveTrustedUserAsync(id || username);
+      if (target && target.password && target.password === password) {
+        verifiedUser = target;
+      }
+    }
+
+    // Method 3: Refreshing an existing valid internal session token
+    if (!verifiedUser && bearerToken) {
+      const existing = verifyArcaSessionToken(bearerToken);
+      if (existing && existing.active !== false) {
+        const target = await resolveTrustedUserAsync(existing.id);
+        if (target && target.active !== false) {
+          verifiedUser = target;
+        }
+      }
+    }
+
+    if (!verifiedUser) {
       return res.status(401).json({
         success: false,
-        error: 'Datos de sesión de usuario inválidos o usuario inactivo.',
-      });
-    }
-    const cleanRole = String(role).trim().toUpperCase();
-    const validRoles = new Set(['SUPERADMIN', 'ADMIN', 'CAJERO', 'CONSULTA', 'ENCARGADO']);
-    if (!validRoles.has(cleanRole)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Rol de usuario no reconocido.',
+        error: 'Autenticación fallida: credenciales o token de sesión inválidos.',
       });
     }
 
-    const token = createArcaSessionToken({
-      id: String(id).trim(),
-      username: String(username || id).trim(),
-      role: cleanRole,
-    });
+    if (verifiedUser.active === false) {
+      return res.status(403).json({
+        success: false,
+        error: 'Acceso denegado: el usuario se encuentra deshabilitado o suspendido.',
+      });
+    }
+
+    // CRITICAL: Role is strictly derived from the verified server record!
+    // Any `role: "SUPERADMIN"` sent in req.body or headers is completely ignored!
+    const token = createArcaSessionToken(verifiedUser);
 
     res.json({
       success: true,
       token,
-      role: cleanRole,
+      role: verifiedUser.role,
+      user: {
+        id: verifiedUser.id,
+        username: verifiedUser.username,
+        role: verifiedUser.role,
+      },
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: 'Error al generar sesión de seguridad.' });
@@ -546,10 +878,10 @@ app.post('/api/arca/save-credentials', requireArcaAdminAuth, (req, res) => {
   }
 });
 
-// ARCA / AFIP Status Endpoint
-app.post('/api/arca/status', async (req, res) => {
+// ARCA / AFIP Status Endpoint (Protected: requires authenticated user with valid role)
+const handleArcaStatus = async (req: express.Request, res: express.Response) => {
   try {
-    const resolved = resolveArcaCreds(req.body);
+    const resolved = resolveArcaCreds(req.body || {});
     const { certPem, keyPem, emisorCuit: cuit, companyName, pointsOfSale: reqPvs, diagnostics } = resolved;
     let { environment, isProd } = resolved;
 
@@ -629,7 +961,10 @@ app.post('/api/arca/status', async (req, res) => {
       error: err.message || 'Error al conectar con ARCA',
     });
   }
-});
+};
+
+app.get('/api/arca/status', requireArcaViewerAuth, handleArcaStatus);
+app.post('/api/arca/status', requireArcaViewerAuth, handleArcaStatus);
 
 // ARCA / AFIP Generate Key & CSR Endpoint (OpenSSL native) - Protected by Admin Auth
 app.post('/api/arca/generate-csr', requireArcaAdminAuth, async (req, res) => {
@@ -1213,8 +1548,8 @@ async function queryPublicPadron(cleanCuit: string) {
 // In-memory Padron Cache for instant sub-10ms subsequent responses
 const padronCache: Record<string, { data: any; timestamp: number }> = {};
 
-// ARCA / AFIP CUIT Lookup Endpoint
-app.post('/api/arca/cuit-lookup', async (req, res) => {
+// ARCA / AFIP CUIT Lookup & Padron Endpoint (Protected by Viewer Auth)
+const handleCuitLookup = async (req: express.Request, res: express.Response) => {
   try {
     const { cuit } = req.body || {};
     if (!cuit) {
@@ -1330,6 +1665,12 @@ app.post('/api/arca/cuit-lookup', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
+};
+
+app.post('/api/arca/cuit-lookup', requireArcaViewerAuth, handleCuitLookup);
+app.get('/api/arca/padron/:cuit', requireArcaViewerAuth, (req, res) => {
+  req.body = { ...(req.body || {}), cuit: req.params.cuit };
+  return handleCuitLookup(req, res);
 });
 
 // Helper: WSFEv1 FECAESolicitar Real AFIP Authorization Call
@@ -1523,7 +1864,7 @@ async function authorizeWithAfipWsfe({
 }
 
 // ARCA / AFIP Electronic Invoice Authorization (WSFEv1: FECAESolicitar)
-app.post('/api/arca/authorize', async (req, res) => {
+app.post('/api/arca/authorize', requireArcaOperatorAuth, async (req, res) => {
   try {
     const {
       branchId,
@@ -1761,7 +2102,7 @@ async function queryAfipUltimoComprobante(
 }
 
 // ARCA / AFIP Check Last Voucher (FECompUltimoAutorizado)
-app.post('/api/arca/last-voucher', async (req, res) => {
+app.post('/api/arca/last-voucher', requireArcaViewerAuth, async (req, res) => {
   try {
     const { pointOfSale = '0017' } = req.body || {};
     const resolved = resolveArcaCreds(req.body);

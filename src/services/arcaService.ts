@@ -122,6 +122,8 @@ interface ActiveAuthUser {
   username: string;
   role: string;
   active?: boolean;
+  password?: string;
+  firebaseToken?: string;
 }
 
 let currentAuthUser: ActiveAuthUser | null = null;
@@ -139,8 +141,8 @@ function purgeLegacyLocalSecrets(): void {
 
 export const arcaService = {
   // Set current authenticated POS user for server RBAC token issuance
-  setAuthUser(user: ActiveAuthUser | null): void {
-    const nextKey = user ? `${user.id}:${user.role}` : null;
+  setAuthUser(user: (ActiveAuthUser & { password?: string; firebaseToken?: string }) | null): void {
+    const nextKey = user ? `${user.id}:${user.role}:${user.firebaseToken || user.password || ''}` : null;
     if (nextKey !== cachedSessionUserKey) {
       cachedSessionToken = null;
       cachedSessionUserKey = nextKey;
@@ -163,6 +165,7 @@ export const arcaService = {
               username: String(parsed.username || parsed.id),
               role: String(parsed.role).toUpperCase(),
               active: parsed.active !== false,
+              password: parsed.password,
             };
           }
         }
@@ -171,7 +174,7 @@ export const arcaService = {
     return null;
   },
 
-  async getAdminAuthHeaders(): Promise<Record<string, string>> {
+  async getAuthHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -180,18 +183,26 @@ export const arcaService = {
       return headers;
     }
 
-    const userKey = `${effUser.id}:${effUser.role}`;
+    const userKey = `${effUser.id}:${effUser.role}:${effUser.firebaseToken || effUser.password || ''}`;
     if (!cachedSessionToken || cachedSessionUserKey !== userKey) {
       try {
+        const bodyPayload: any = {
+          id: effUser.id,
+          username: effUser.username,
+          active: effUser.active !== false,
+        };
+        if (effUser.password) bodyPayload.password = effUser.password;
+        if (effUser.firebaseToken) bodyPayload.firebaseToken = effUser.firebaseToken;
+
+        const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (effUser.firebaseToken) {
+          reqHeaders['Authorization'] = `Bearer ${effUser.firebaseToken}`;
+        }
+
         const res = await fetch('/api/arca/auth-session', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: effUser.id,
-            username: effUser.username,
-            role: effUser.role,
-            active: effUser.active !== false,
-          }),
+          headers: reqHeaders,
+          body: JSON.stringify(bodyPayload),
         });
         if (res.ok) {
           const data = await res.json();
@@ -205,9 +216,12 @@ export const arcaService = {
 
     if (cachedSessionToken) {
       headers['Authorization'] = `Bearer ${cachedSessionToken}`;
-      headers['X-User-Role'] = effUser.role;
     }
     return headers;
+  },
+
+  async getAdminAuthHeaders(): Promise<Record<string, string>> {
+    return this.getAuthHeaders();
   },
 
   // Get stored non-sensitive ARCA config metadata from localStorage (secrets are never stored in browser)
@@ -340,9 +354,10 @@ export const arcaService = {
       pointsOfSale: cfg?.pointsOfSale || stored.pointsOfSale,
     };
     try {
+      const headers = await this.getAuthHeaders();
       const res = await fetch('/api/arca/status', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(mergedCfg),
       });
       if (!res.ok) {
@@ -379,9 +394,10 @@ export const arcaService = {
     };
 
     try {
+      const headers = await this.getAuthHeaders();
       const res = await fetch('/api/arca/cuit-lookup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ cuit: cuitOrDni, ...extraParams }),
       });
 
@@ -407,9 +423,10 @@ export const arcaService = {
         environment: payload.environment || stored.environment || 'produccion',
       };
 
+      const headers = await this.getAuthHeaders();
       const res = await fetch('/api/arca/authorize', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(cleanPayload),
       });
 
@@ -604,9 +621,10 @@ export const arcaService = {
     ];
 
     try {
+      const headers = await this.getAuthHeaders();
       const res = await fetch('/api/arca/last-voucher', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           pointOfSale: pvFormatted,
           environment: effEnv,

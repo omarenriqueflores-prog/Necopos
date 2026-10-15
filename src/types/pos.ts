@@ -12,6 +12,11 @@ export interface Product {
   species?: string;
   unitType: UnitType;
   price: number;
+  costPrice?: number;
+  costo?: number;
+  stockNeco1?: number;
+  stockNeco2?: number;
+  stock?: number;
   vatRate?: number; // 21, 10.5, etc.
   scalePlu: string | null;
   active: boolean;

@@ -3,7 +3,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { app, createArcaSessionToken } from '../server';
+import { app, createArcaSessionToken, registerOrUpdateTrustedUser } from '../server';
 import { arcaService } from '../src/services/arcaService';
 
 describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
@@ -68,7 +68,8 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     });
   });
 
-  it('1. Bloquea solicitudes NO autenticadas (401) en rutas sensibles de credenciales ARCA', async () => {
+  it('1. Bloquea solicitudes NO autenticadas (401) en todas las rutas ARCA sensibles', async () => {
+    // Admin routes
     const getRes = await fetch(`${baseUrl}/api/arca/credentials`);
     expect(getRes.status).toBe(401);
 
@@ -92,17 +93,50 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
       body: JSON.stringify({ certText: testCertPem }),
     });
     expect(parseRes.status).toBe(401);
+
+    // Operator routes
+    const authRes = await fetch(`${baseUrl}/api/arca/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pointOfSale: '0017', cbteTipo: 6 }),
+    });
+    expect(authRes.status).toBe(401);
+
+    // Viewer routes
+    const statusPost = await fetch(`${baseUrl}/api/arca/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cuit: '20-25506516-6' }),
+    });
+    expect(statusPost.status).toBe(401);
+
+    const statusGet = await fetch(`${baseUrl}/api/arca/status`);
+    expect(statusGet.status).toBe(401);
+
+    const lastVoucherRes = await fetch(`${baseUrl}/api/arca/last-voucher`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pointOfSale: '0017' }),
+    });
+    expect(lastVoucherRes.status).toBe(401);
+
+    const cuitLookupRes = await fetch(`${baseUrl}/api/arca/cuit-lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cuit: '20255065166' }),
+    });
+    expect(cuitLookupRes.status).toBe(401);
   });
 
-  it('2. Bloquea usuarios autenticados sin rol administrativo (CAJERO / CONSULTA) con 403 Forbidden', async () => {
+  it('2. Bloquea usuarios autenticados sin rol administrativo (CAJERO / CONSULTA) con 403 Forbidden en credenciales', async () => {
     const cashierToken = createArcaSessionToken({
-      id: 'USR-03',
-      username: 'cajero1',
+      id: 'USR-04',
+      username: 'cajero',
       role: 'CAJERO',
     });
     const viewerToken = createArcaSessionToken({
-      id: 'USR-04',
-      username: 'consulta1',
+      id: 'USR-03',
+      username: 'dueno',
       role: 'CONSULTA',
     });
 
@@ -131,7 +165,113 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     }
   });
 
-  it('3. Rechaza tokens adulterados o expirados con 401 Unauthorized', async () => {
+  it('3. El rol CONSULTA no puede autorizar comprobantes (403), mientras que CAJERO y ADMIN sí tienen autorización de operador', async () => {
+    const viewerToken = createArcaSessionToken({
+      id: 'USR-03',
+      username: 'dueno',
+      role: 'CONSULTA',
+    });
+    const cashierToken = createArcaSessionToken({
+      id: 'USR-04',
+      username: 'cajero',
+      role: 'CAJERO',
+    });
+
+    // CONSULTA attempts to authorize an invoice -> 403 Forbidden
+    const viewerAuthRes = await fetch(`${baseUrl}/api/arca/authorize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${viewerToken}`,
+      },
+      body: JSON.stringify({
+        pointOfSale: '0017',
+        cbteTipo: 6,
+      }),
+    });
+    expect(viewerAuthRes.status).toBe(403);
+
+    // CAJERO attempts to authorize -> Passes operator authorization check (status is not 401 or 403)
+    const cashierAuthRes = await fetch(`${baseUrl}/api/arca/authorize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cashierToken}`,
+      },
+      body: JSON.stringify({
+        pointOfSale: '0017',
+        cbteTipo: 6,
+        simulateError: true,
+      }),
+    });
+    expect(cashierAuthRes.status).not.toBe(401);
+    expect(cashierAuthRes.status).not.toBe(403);
+  });
+
+  it('4. POST /api/arca/auth-session impide forjar rol SUPERADMIN arbitrariamente sin credenciales válidas', async () => {
+    // Attempt 1: Forging SUPERADMIN without password or valid token
+    const forgeRes = await fetch(`${baseUrl}/api/arca/auth-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'hacker-user',
+        username: 'intruder',
+        role: 'SUPERADMIN',
+      }),
+    });
+    expect(forgeRes.status).toBe(401);
+
+    // Attempt 2: Legitimate CAJERO user attempts to demand SUPERADMIN role in request body
+    const cashierLoginRes = await fetch(`${baseUrl}/api/arca/auth-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'cajero',
+        password: 'cajero123',
+        role: 'SUPERADMIN', // Client tries to force SUPERADMIN
+      }),
+    });
+    expect(cashierLoginRes.status).toBe(200);
+    const cashierData = await cashierLoginRes.json();
+    // Server must strictly enforce the trusted role 'CAJERO', completely ignoring client's requested 'SUPERADMIN'
+    expect(cashierData.role).toBe('CAJERO');
+    expect(cashierData.user.role).toBe('CAJERO');
+  });
+
+  it('5. Rechaza usuarios suspendidos o deshabilitados con 403 Forbidden', async () => {
+    registerOrUpdateTrustedUser({
+      id: 'USR-SUSPENDED',
+      username: 'usuario_suspendido',
+      fullName: 'Empleado Suspendido',
+      role: 'ADMIN',
+      active: false,
+      password: 'password123',
+    });
+
+    const loginRes = await fetch(`${baseUrl}/api/arca/auth-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'usuario_suspendido',
+        password: 'password123',
+      }),
+    });
+    expect(loginRes.status).toBe(403);
+
+    const suspendedToken = createArcaSessionToken({
+      id: 'USR-SUSPENDED',
+      username: 'usuario_suspendido',
+      role: 'ADMIN',
+      active: false,
+    });
+
+    const getRes = await fetch(`${baseUrl}/api/arca/credentials`, {
+      headers: { Authorization: `Bearer ${suspendedToken}` },
+    });
+    expect(getRes.status).toBe(403);
+  });
+
+  it('6. Rechaza tokens adulterados o expirados con 401 Unauthorized', async () => {
     const expiredToken = createArcaSessionToken(
       { id: 'USR-01', username: 'admin', role: 'SUPERADMIN' },
       -5000
@@ -146,7 +286,7 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     }
   });
 
-  it('4. POST /api/arca/save-credentials y GET /api/arca/credentials nunca devuelven claves privadas, certificados ni secretos en HTTP', async () => {
+  it('7. POST /api/arca/save-credentials y GET /api/arca/credentials nunca devuelven claves privadas, certificados ni secretos en HTTP', async () => {
     const adminToken = createArcaSessionToken({
       id: 'USR-01',
       username: 'admin',
@@ -199,7 +339,7 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     expect(getBodyText).not.toContain('PRIVATE KEY');
   });
 
-  it('5. POST /api/arca/generate-csr guarda la clave privada en el servidor pero NUNCA la incluye en la respuesta HTTP', async () => {
+  it('8. POST /api/arca/generate-csr guarda la clave privada en el servidor pero NUNCA la incluye en la respuesta HTTP', async () => {
     const adminToken = createArcaSessionToken({
       id: 'USR-02',
       username: 'admin2',
@@ -231,10 +371,20 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     expect(csrBodyText).not.toContain('PRIVATE KEY');
   });
 
-  it('6. POST /api/arca/status informa estado no sensible y diagnóstico de variables de entorno sin exponer secretos', async () => {
+  it('9. GET y POST /api/arca/status requieren viewer auth e informan estado no sensible sin exponer secretos', async () => {
+    const viewerToken = createArcaSessionToken({
+      id: 'USR-03',
+      username: 'dueno',
+      role: 'CONSULTA',
+    });
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${viewerToken}`,
+    };
+
     const statusRes = await fetch(`${baseUrl}/api/arca/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ cuit: '20-25506516-6' }),
     });
 
@@ -252,9 +402,13 @@ describe('Auditoría y Protección de Credenciales ARCA (Etapa 1)', () => {
     expect((statusJson as any).privateKey).toBeUndefined();
     expect(statusJson.wsaa?.token).toBeUndefined();
     expect(statusJson.wsaa?.sign).toBeUndefined();
+
+    // GET /api/arca/status
+    const getStatusRes = await fetch(`${baseUrl}/api/arca/status`, { headers });
+    expect(getStatusRes.status).toBe(200);
   });
 
-  it('7. arcaService en el cliente depura y nunca almacena claves privadas ni certificados en localStorage', () => {
+  it('10. arcaService en el cliente depura y nunca almacena claves privadas ni certificados en localStorage', () => {
     const store: Record<string, string> = {
       necopos_arca_certificate: testCertPem,
       necopos_arca_private_key: testKeyPem,

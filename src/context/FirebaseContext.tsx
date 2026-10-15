@@ -17,8 +17,6 @@ import {
   getDocs,
   deleteDoc,
   writeBatch,
-  updateDoc,
-  deleteField,
   runTransaction,
   query,
   where,
@@ -259,30 +257,56 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsubscribe();
   }, []);
 
-  // Sync localUser to localStorage and arcaService
+  // Sync active user to arcaService and localStorage
   useEffect(() => {
-    arcaService.setAuthUser(localUser);
-    if (typeof window !== 'undefined') {
-      try {
-        if (localUser) {
+    let isCancelled = false;
+    if (localUser) {
+      arcaService.setAuthUser({
+        id: localUser.id,
+        username: localUser.username,
+        role: localUser.role,
+        active: localUser.active !== false,
+        password: localUser.password,
+      });
+      if (typeof window !== 'undefined') {
+        try {
           localStorage.setItem('neco_pos_local_user', JSON.stringify(localUser));
-        } else {
-          localStorage.removeItem('neco_pos_local_user');
+        } catch (err) {
+          console.warn('Error saving local user to localStorage:', err);
         }
-      } catch (err) {
-        console.warn('Error saving local user to localStorage:', err);
+      }
+    } else if (user) {
+      user.getIdToken().then((token) => {
+        if (!isCancelled) {
+          arcaService.setAuthUser({
+            id: user.uid,
+            username: user.email || user.uid,
+            role: 'SUPERADMIN',
+            firebaseToken: token,
+            active: true,
+          });
+        }
+      }).catch(() => {});
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem('neco_pos_local_user');
+        } catch (_) {}
+      }
+    } else {
+      arcaService.setAuthUser(null);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem('neco_pos_local_user');
+        } catch (_) {}
       }
     }
-  }, [localUser]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [user, localUser]);
 
-  // Sync Products from Firestore
+  // Sync Products from Firestore (purely read-only synchronization, no automatic updates or deletions)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('neco_pos_purged', 'true');
-      } catch (_) {}
-    }
-
     const productsPath = 'products';
     const unsub = onSnapshot(
       collection(db, productsPath),
@@ -293,76 +317,70 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const description = String(
             data.description || data.descripcion || data.name || data.nombre || 'PRODUCTO SIN DESCRIPCIÓN'
           );
-          let rubro = String(data.rubro || data.departamento || 'Carnes Vacunas');
-          let category = String(data.category || data.categoria || data.especie || '');
           const descUpper = description.toUpperCase();
-          const rawUnit = String(data.unitType || data.unidad || 'Kg');
-          const isStoreItem = isStoreUnitProduct({
-            description: descUpper,
-            rubro,
-            category,
-            unitType: rawUnit.toLowerCase().includes('u') ? 'Unid' : 'Kg',
-          });
 
-          const catUpper = category.toUpperCase();
-          if (isStoreItem) {
-            const suggestedStoreRubro = getStoreRubroLabel({
+          // Preserve exact rubro and category from Firestore
+          const rawRubro = data.rubro || data.departamento;
+          const rawCategory = data.category || data.categoria || data.especie;
+          const rubro = rawRubro ? String(rawRubro) : 'Carnes Vacunas';
+          const category = rawCategory ? String(rawCategory) : 'Novillito';
+
+          // Preserve exact unitType stored in Firestore without force-converting
+          const rawUnit = data.unitType || data.unidad;
+          let unitType: 'Kg' | 'Unid' = 'Kg';
+          if (rawUnit) {
+            const uLower = String(rawUnit).trim().toLowerCase();
+            unitType = (uLower === 'unid' || uLower === 'u' || uLower === 'unidad' || uLower === 'unidades') ? 'Unid' : 'Kg';
+          } else {
+            // Only infer if completely missing from Firestore
+            const isStoreItem = isStoreUnitProduct({
               description: descUpper,
               rubro,
               category,
             });
-            if (!rubro || rubro === 'Carnes Vacunas') {
-              rubro = suggestedStoreRubro;
-            }
-            if (
-              !category ||
-              ['NOVILLITO', 'NOVILLO', 'NOVILLO PESADO', 'VACA', 'TERNERA', 'VAQUILLONA', 'CARNES VACUNAS', 'CARNE', 'VACUNO'].includes(catUpper)
-            ) {
-              category = suggestedStoreRubro;
-            }
-          } else if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
-            rubro = 'Carnes Vacunas';
-            if (descUpper.includes(' VACA') || descUpper.endsWith('VACA') || descUpper.includes(' - VACA')) {
-              category = 'Vaca';
-            } else if (descUpper.includes(' TERNERA') || descUpper.endsWith('TERNERA')) {
-              category = 'Ternera';
-            } else if (descUpper.includes(' NOVILLITO') || descUpper.endsWith('NOVILLITO')) {
-              category = 'Novillito';
-            } else if (descUpper.includes(' NOVILLO') || descUpper.endsWith('NOVILLO')) {
-              category = 'Novillo Pesado';
-            } else if (descUpper.includes(' VAQUILLONA') || descUpper.endsWith('VAQUILLONA')) {
-              category = 'Vaquillona';
-            } else if (descUpper.includes(' CERDO') || descUpper.includes('PORCINO') || descUpper.includes('CHANCHO')) {
-              category = 'Cerdo';
-              rubro = 'Cerdo';
-            } else {
-              category = 'Novillito';
-            }
+            unitType = isStoreItem ? 'Unid' : 'Kg';
           }
 
-          const unitType: 'Kg' | 'Unid' =
-            isStoreItem || rawUnit.toLowerCase().includes('u') ? 'Unid' : 'Kg';
           const price = Number(data.price ?? data.precio ?? 0);
           const vatRate = Number(data.vatRate ?? data.iva ?? 21);
           const scalePlu =
-            unitType === 'Unid'
-              ? null
-              : data.scalePlu || data.plu
-              ? String(data.scalePlu || data.plu)
-              : code;
+            data.scalePlu !== undefined
+              ? (data.scalePlu ? String(data.scalePlu) : null)
+              : data.plu
+              ? String(data.plu)
+              : (unitType === 'Unid' ? null : code);
           const barcodeRaw = data.barcode || data.codigoBarras || data.ean || null;
           const barcode = barcodeRaw ? String(barcodeRaw).trim() : null;
           const active = data.active !== false;
+
+          // Preserve cost and stock fields without data loss
+          const costPrice =
+            data.costPrice !== undefined
+              ? Number(data.costPrice)
+              : data.costo !== undefined
+              ? Number(data.costo)
+              : undefined;
+          const costo = data.costo !== undefined ? Number(data.costo) : costPrice;
+          const stockNeco1 = data.stockNeco1 !== undefined ? Number(data.stockNeco1) : undefined;
+          const stockNeco2 = data.stockNeco2 !== undefined ? Number(data.stockNeco2) : undefined;
+          const stock = data.stock !== undefined ? Number(data.stock) : undefined;
 
           return {
             code,
             docId: docItem.id,
             barcode,
+            name: data.name ? String(data.name) : undefined,
             description: descUpper,
             rubro,
             category,
+            species: data.species ? String(data.species) : undefined,
             unitType,
             price,
+            costPrice,
+            costo,
+            stockNeco1,
+            stockNeco2,
+            stock,
             vatRate,
             scalePlu,
             active,
@@ -377,68 +395,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setProducts([]);
       }
     );
-
-    // Clean up unwanted legacy fields (costPrice, stock) and fix store items with unitType='Kg' in Firestore
-    const cleanupUnwantedFields = async () => {
-      try {
-        const snap = await getDocs(collection(db, 'products'));
-        for (const docItem of snap.docs) {
-          const d = docItem.data();
-          const desc = String(d.description || d.descripcion || '').toUpperCase();
-          const rubro = String(d.rubro || '');
-          const category = String(d.category || d.categoria || '');
-          const isStore = isStoreUnitProduct({
-            description: desc,
-            rubro,
-            category,
-            unitType: d.unitType,
-          });
-
-          const updates: Record<string, any> = {};
-          if (
-            'costPrice' in d ||
-            'costo' in d ||
-            'stockNeco1' in d ||
-            'stockNeco2' in d ||
-            'stock' in d
-          ) {
-            updates.costPrice = deleteField();
-            updates.costo = deleteField();
-            updates.stockNeco1 = deleteField();
-            updates.stockNeco2 = deleteField();
-            updates.stock = deleteField();
-          }
-
-          if (isStore) {
-            const suggestedRubro = getStoreRubroLabel({
-              description: desc,
-              rubro,
-              category,
-            });
-            if (d.unitType !== 'Unid') {
-              updates.unitType = 'Unid';
-              updates.scalePlu = null;
-            }
-            if (!d.rubro || d.rubro === 'Carnes Vacunas') {
-              updates.rubro = suggestedRubro;
-            }
-            if (
-              !category ||
-              ['Novillito', 'Novillo Pesado', 'Vaca', 'Ternera', 'Vaquillona', 'Carnes Vacunas'].includes(category)
-            ) {
-              updates.category = suggestedRubro;
-            }
-          }
-
-          if (Object.keys(updates).length > 0) {
-            await updateDoc(docItem.ref, updates);
-          }
-        }
-      } catch (err) {
-        // Silently skip if error
-      }
-    };
-    cleanupUnwantedFields();
 
     return () => unsub();
   }, []);
@@ -575,26 +531,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
-  // Sync Cash Closures (con eliminación automática de cierres de sistema)
+  // Sync Cash Closures (strictly read-only synchronization)
   useEffect(() => {
     const unsub = onSnapshot(
       collection(db, 'cashClosures'),
-      async (snapshot) => {
+      (snapshot) => {
         const loaded: CashClosure[] = [];
         for (const docItem of snapshot.docs) {
           const data = docItem.data() as CashClosure;
-          const isAuto =
-            docItem.id.startsWith('Z-AUTO') ||
-            String(data.operator || '').includes('AUTOMÁTICO') ||
-            String(data.notes || '').includes('[AUTO-SISTEMA]') ||
-            String(data.shift || '').includes('AUTOMÁTICO');
-          if (isAuto) {
-            try {
-              await deleteDoc(docItem.ref);
-            } catch (_) {}
-          } else {
-            loaded.push(data);
-          }
+          loaded.push(data);
         }
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setCashClosures(loaded);
@@ -729,7 +674,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsub();
   }, []);
 
-  // Sync Stock Movements
+  // Sync Stock Movements (strictly read-only synchronization)
   useEffect(() => {
     const unsub = onSnapshot(
       collection(db, 'stockMovements'),
@@ -737,11 +682,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const loaded: StockMovement[] = [];
         snapshot.docs.forEach((docItem) => {
           const data = docItem.data() as StockMovement;
-          // Depurar y limpiar movimientos ruidosos con variación 0 de aperturas masivas
-          if (data.type === 'STOCK_INICIAL' && (!data.quantity || data.quantity <= 0)) {
-            deleteDoc(docItem.ref).catch(() => {});
-            return;
-          }
           loaded.push(data);
         });
         loaded.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -898,19 +838,28 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const saveProduct = async (p: Product) => {
     const path = `products/${p.code}`;
-    const cleanProduct = {
+    const cleanProduct: Record<string, any> = {
       code: String(p.code),
-      barcode: p.barcode ? String(p.barcode).trim() : null,
       description: p.description,
-      rubro: p.rubro || 'Carnes Vacunas',
-      category: p.category || 'Novillito',
-      unitType: p.unitType,
       price: Number(p.price),
-      scalePlu: p.scalePlu || null,
       active: p.active !== false,
     };
+    if (p.barcode !== undefined) cleanProduct.barcode = p.barcode ? String(p.barcode).trim() : null;
+    if (p.name !== undefined) cleanProduct.name = p.name;
+    if (p.rubro !== undefined) cleanProduct.rubro = p.rubro;
+    if (p.category !== undefined) cleanProduct.category = p.category;
+    if (p.species !== undefined) cleanProduct.species = p.species;
+    if (p.unitType !== undefined) cleanProduct.unitType = p.unitType;
+    if (p.scalePlu !== undefined) cleanProduct.scalePlu = p.scalePlu;
+    if (p.vatRate !== undefined) cleanProduct.vatRate = p.vatRate;
+    if (p.costPrice !== undefined) cleanProduct.costPrice = p.costPrice;
+    if (p.costo !== undefined) cleanProduct.costo = p.costo;
+    if (p.stockNeco1 !== undefined) cleanProduct.stockNeco1 = p.stockNeco1;
+    if (p.stockNeco2 !== undefined) cleanProduct.stockNeco2 = p.stockNeco2;
+    if (p.stock !== undefined) cleanProduct.stock = p.stock;
+
     try {
-      await setDoc(doc(db, 'products', p.code), cleanProduct);
+      await setDoc(doc(db, 'products', p.code), cleanProduct, { merge: true });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -924,18 +873,27 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const batch = writeBatch(db);
         for (const p of chunk) {
           const docRef = doc(db, 'products', String(p.code));
-          const cleanProduct = {
+          const cleanProduct: Record<string, any> = {
             code: String(p.code),
-            barcode: p.barcode ? String(p.barcode).trim() : null,
             description: p.description,
-            rubro: p.rubro || 'Carnes Vacunas',
-            category: p.category || 'Novillito',
-            unitType: p.unitType,
             price: Number(p.price),
-            scalePlu: p.scalePlu || null,
             active: p.active !== false,
           };
-          batch.set(docRef, cleanProduct);
+          if (p.barcode !== undefined) cleanProduct.barcode = p.barcode ? String(p.barcode).trim() : null;
+          if (p.name !== undefined) cleanProduct.name = p.name;
+          if (p.rubro !== undefined) cleanProduct.rubro = p.rubro;
+          if (p.category !== undefined) cleanProduct.category = p.category;
+          if (p.species !== undefined) cleanProduct.species = p.species;
+          if (p.unitType !== undefined) cleanProduct.unitType = p.unitType;
+          if (p.scalePlu !== undefined) cleanProduct.scalePlu = p.scalePlu;
+          if (p.vatRate !== undefined) cleanProduct.vatRate = p.vatRate;
+          if (p.costPrice !== undefined) cleanProduct.costPrice = p.costPrice;
+          if (p.costo !== undefined) cleanProduct.costo = p.costo;
+          if (p.stockNeco1 !== undefined) cleanProduct.stockNeco1 = p.stockNeco1;
+          if (p.stockNeco2 !== undefined) cleanProduct.stockNeco2 = p.stockNeco2;
+          if (p.stock !== undefined) cleanProduct.stock = p.stock;
+
+          batch.set(docRef, cleanProduct, { merge: true });
         }
         await batch.commit();
       }
@@ -956,7 +914,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         await deleteDoc(doc(db, 'products', code));
       } catch (_) {}
 
-      // Delete any matching product documents in Firestore to guarantee complete removal
+      // Delete by exact matching code only if needed, never by scalePlu!
       const snap = await getDocs(collection(db, 'products'));
       for (const d of snap.docs) {
         const data = d.data();
@@ -964,9 +922,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           d.id === code ||
           d.id === docId ||
           String(data.code) === String(code) ||
-          String(data.codigo) === String(code) ||
-          String(data.id) === String(code) ||
-          String(data.scalePlu) === String(code)
+          String(data.codigo) === String(code)
         ) {
           try {
             await deleteDoc(d.ref);
