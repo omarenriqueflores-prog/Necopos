@@ -37,6 +37,7 @@ import {
   DEBONING_TEMPLATES,
 } from '../../utils/deboningHelper';
 import { formatKg, formatCurrency, isMeatCategory } from '../../utils/stockHelper';
+import { carcassLabel } from '../../utils/receptionHelper';
 import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
 import { TemplateEditorModal } from './TemplateEditorModal';
 
@@ -165,9 +166,7 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
         .filter((c) => newIds.includes(c.id))
         .reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
       
-      if (sumWeight > 0) {
-        setInitialWeightKg(Number(sumWeight.toFixed(3)));
-      }
+      setInitialWeightKg(Number(sumWeight.toFixed(3)));
     }
   };
 
@@ -868,6 +867,71 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* SELECTOR INDIVIDUAL DE MEDIAS RESES DE LA RECEPCIÓN */}
+          {selectedReceptionObj && availableCarcassesForSelected.length > 0 && (
+            <div className="bg-white border border-gray-400 p-2 shadow-sm rounded-sm">
+              <div className="flex items-center justify-between mb-1.5 border-b border-gray-300 pb-1">
+                <span className="font-bold text-[11px] text-[#002046]">
+                  MEDIAS RESES A DESPOSTAR ({selectedCarcassIds.filter((id) => availableCarcassesForSelected.some((c) => c.id === id)).length} de {availableCarcassesForSelected.length} seleccionadas)
+                </span>
+                <div className="flex items-center space-x-1">
+                  <button
+                    type="button"
+                    onClick={handleSelectAllCarcasses}
+                    className="px-2 py-0.5 text-[10px] font-bold border border-blue-400 text-blue-900 bg-blue-50 hover:bg-blue-100"
+                  >
+                    Seleccionar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeselectAllCarcasses}
+                    className="px-2 py-0.5 text-[10px] font-bold border border-gray-400 text-gray-700 bg-gray-50 hover:bg-gray-100"
+                  >
+                    Quitar todas
+                  </button>
+                </div>
+              </div>
+              <table className="w-full text-[11px] border-collapse">
+                <thead className="bg-gray-100 text-gray-700">
+                  <tr>
+                    <th className="p-1 w-8 text-center border border-gray-300">✓</th>
+                    <th className="p-1 w-10 text-center border border-gray-300">N°</th>
+                    <th className="p-1 text-left border border-gray-300">Identificador</th>
+                    <th className="p-1 text-left border border-gray-300">Garfa / Precinto</th>
+                    <th className="p-1 text-left border border-gray-300">Observaciones</th>
+                    <th className="p-1 text-right border border-gray-300">Peso (Kg)</th>
+                    <th className="p-1 text-right border border-gray-300">Costo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {availableCarcassesForSelected.map((c, idx) => {
+                    const checked = selectedCarcassIds.includes(c.id);
+                    return (
+                      <tr
+                        key={c.id}
+                        onClick={() => handleToggleCarcass(c)}
+                        className={`cursor-pointer ${checked ? 'bg-blue-50' : 'bg-white opacity-60'} hover:bg-yellow-50`}
+                      >
+                        <td className="p-1 text-center border border-gray-300">
+                          <input type="checkbox" checked={checked} readOnly className="cursor-pointer" />
+                        </td>
+                        <td className="p-1 text-center font-bold border border-gray-300">{idx + 1}</td>
+                        <td className="p-1 font-mono border border-gray-300">{carcassLabel(c, selectedReceptionObj.carcasses?.indexOf(c) ?? idx)}</td>
+                        <td className="p-1 border border-gray-300">{c.tagNumber || '-'}</td>
+                        <td className="p-1 border border-gray-300 text-gray-600">{c.notes || '-'}</td>
+                        <td className="p-1 text-right font-mono font-bold border border-gray-300">{formatKg(Number(c.weightKg) || 0)}</td>
+                        <td className="p-1 text-right font-mono border border-gray-300">{formatCurrency(Number(c.cost) || 0)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="text-right text-[11px] mt-1 font-bold text-gray-800">
+                Peso a despostar: <span className="text-red-700 font-mono">{formatKg(initialWeightKg)}</span>
+              </div>
+            </div>
+          )}
 
           {/* SECCIÓN 2: AGREGAR CORTES UNO POR UNO TOMADOS DE PRODUCTOS */}
           <div className="bg-white border-2 border-[#002046] shadow-md">

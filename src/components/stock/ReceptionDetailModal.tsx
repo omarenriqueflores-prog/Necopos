@@ -1,3 +1,4 @@
+import { carcassLabel } from '../../utils/receptionHelper';
 import React from 'react';
 import {
   X,
@@ -197,7 +198,7 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
                       {idx + 1}
                     </td>
                     <td className="p-1.5 font-mono font-bold text-blue-900 border-r border-gray-200">
-                      {c.id}
+                      {carcassLabel(c, idx)}
                     </td>
                     <td className="p-1.5 border-r border-gray-200">{c.tagNumber || '-'}</td>
                     <td className="p-1.5 text-right font-bold text-red-700 border-r border-gray-200 bg-yellow-50/50">

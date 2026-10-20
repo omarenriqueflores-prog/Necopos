@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { carcassLabel } from '../utils/receptionHelper';
 import {
   User,
   signInWithPopup,
@@ -148,6 +149,7 @@ interface FirebaseContextType {
   dispatchStockTransfer: (transfer: StockTransfer, operator: string) => Promise<void>;
   receiveStockTransfer: (transfer: StockTransfer, operator: string) => Promise<void>;
   cancelStockTransfer: (transfer: StockTransfer, operator: string, reason?: string) => Promise<void>;
+  deleteStockTransfer: (transfer: StockTransfer, operator: string, reason?: string) => Promise<void>;
   applyPhysicalInventory: (inventory: PhysicalInventory, operator: string) => Promise<void>;
   saveMeatDeboning: (deboning: MeatDeboning) => Promise<void>;
   finalizeMeatDeboning: (deboning: MeatDeboning, operator: string) => Promise<void>;
@@ -182,6 +184,12 @@ interface FirebaseContextType {
 }
 
 const FirebaseContext = createContext<FirebaseContextType | undefined>(undefined);
+
+// Sufijo estable por ítem de traslado: permite varios ítems con el mismo código de producto
+// (p. ej. varias tropas de MEDIA_RES) sin que choquen las claves de idempotencia.
+// Los ítems sin receptionId conservan el formato histórico (solo productCode).
+const transferItemKeySuffix = (item: { productCode: string; receptionId?: string }) =>
+  item.receptionId ? `${item.productCode}_${item.receptionId}` : item.productCode;
 
 export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -1727,18 +1735,27 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
 
-      // 2. Validar disponibilidad de stock en sucursal de origen
+      // 2. Validar disponibilidad de stock en sucursal de origen (sumando ítems con el mismo código)
+      if (!transfer.items || transfer.items.length === 0) {
+        throw new Error('El remito no tiene ítems para despachar.');
+      }
+      const requiredByCode = new Map<string, { qty: number; description: string }>();
       for (const item of transfer.items) {
-        if (!item.productCode || item.quantity <= 0) {
+        if (!item.productCode || !(item.quantity > 0)) {
           throw new Error(`Ítem inválido en transferencia: ${item.productCode || 'Sin código'}`);
         }
-        const stockDocId = `${transfer.originBranch}_${item.productCode}`;
+        const acc = requiredByCode.get(item.productCode) || { qty: 0, description: item.description };
+        acc.qty = Number((acc.qty + item.quantity).toFixed(3));
+        requiredByCode.set(item.productCode, acc);
+      }
+      for (const [code, { qty, description }] of requiredByCode.entries()) {
+        const stockDocId = `${transfer.originBranch}_${code}`;
         const currentStockItem = branchStock.find((s) => s.id === stockDocId);
         const prevStock = currentStockItem ? Number(currentStockItem.currentStock) || 0 : 0;
 
-        if (prevStock < item.quantity - 0.001) {
+        if (prevStock < qty - 0.001) {
           throw new Error(
-            `Stock insuficiente en ${transfer.originBranch} para el producto "${item.description || item.productCode}". Disponible: ${prevStock}, Requerido: ${item.quantity}.`
+            `Stock insuficiente en ${transfer.originBranch} para el producto "${description || code}". Disponible: ${prevStock}, Requerido: ${qty}.`
           );
         }
       }
@@ -1774,7 +1791,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           totalValue: item.totalValue,
           referenceDoc: transfer.transferNumber,
           transferId: transfer.id,
-          idempotencyKey: `TR_OUT_${transfer.id || transfer.transferNumber}_${item.productCode}`,
+          idempotencyKey: `TR_OUT_${transfer.id || transfer.transferNumber}_${transferItemKeySuffix(item)}`,
           operator,
           notes: `Despacho hacia ${transfer.destinationBranch}`,
         });
@@ -1850,7 +1867,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           totalValue: item.totalValue,
           referenceDoc: transfer.transferNumber,
           transferId: transfer.id,
-          idempotencyKey: `TR_IN_${transfer.id || transfer.transferNumber}_${item.productCode}`,
+          idempotencyKey: `TR_IN_${transfer.id || transfer.transferNumber}_${transferItemKeySuffix(item)}`,
           operator,
           notes: `Recepción desde ${transfer.originBranch}`,
         });
@@ -1920,7 +1937,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
           movements.push({
             id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-            idempotencyKey: `TR_REV_${transfer.id || transfer.transferNumber}_${item.productCode}`,
+            idempotencyKey: `TR_REV_${transfer.id || transfer.transferNumber}_${transferItemKeySuffix(item)}`,
             date: dateStr,
             time: timeStr,
             timestamp: Date.now(),
@@ -1955,6 +1972,134 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       await saveStockTransfer(updatedTransfer);
     } catch (error) {
       console.error('Error canceling stock transfer:', error);
+      throw error;
+    }
+  };
+
+  const deleteStockTransfer = async (transfer: StockTransfer, operator: string, reason?: string) => {
+    try {
+      if (!transfer || !transfer.id) {
+        throw new Error('Identificador de remito inválido.');
+      }
+
+      // Estado real en Firestore (evita revertir dos veces o sobre datos viejos de pantalla)
+      const transferRef = doc(db, 'stockTransfers', transfer.id);
+      const transferSnap = await getDoc(transferRef);
+      if (!transferSnap.exists()) {
+        return; // ya fue eliminado
+      }
+      const current = transferSnap.data() as StockTransfer;
+      const status = current.status;
+      const items = current.items || [];
+      const motive = reason?.trim() || 'Eliminación de remito cargado por error';
+
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const chamberOf = (b: 'NECO 1' | 'NECO 2') => (b === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
+
+      const buildMovement = (
+        item: StockTransfer['items'][number],
+        branch: 'NECO 1' | 'NECO 2',
+        type: StockMovementType,
+        factor: 1 | -1,
+        keyPrefix: string,
+        notes: string
+      ): StockMovement => ({
+        id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+        date: dateStr,
+        time: timeStr,
+        timestamp: Date.now(),
+        branchId: branch,
+        chamber: chamberOf(branch),
+        productCode: item.productCode,
+        productDescription: item.description,
+        category: item.category,
+        unitType: item.unitType,
+        type,
+        quantity: item.quantity,
+        factor,
+        previousStock: 0,
+        newStock: 0,
+        unitPrice: item.price,
+        totalValue: item.totalValue,
+        referenceDoc: current.transferNumber,
+        transferId: current.id,
+        idempotencyKey: `${keyPrefix}_${current.id || current.transferNumber}_${transferItemKeySuffix(item)}`,
+        operator,
+        notes,
+      });
+
+      const movements: StockMovement[] = [];
+
+      if (status === 'EN_TRANSITO') {
+        // La mercadería salió del origen y no llegó: se reintegra al origen.
+        for (const item of items) {
+          movements.push(
+            buildMovement(item, current.originBranch, 'DEVOLUCION', 1, 'TR_DEL_ORI',
+              `Reversión por eliminación del traslado ${current.transferNumber}: ${motive}`)
+          );
+        }
+      } else if (status === 'RECIBIDA') {
+        // Ya ingresó en destino: se saca del destino y se reintegra al origen.
+        const requiredByCode = new Map<string, number>();
+        for (const item of items) {
+          requiredByCode.set(item.productCode, Number(((requiredByCode.get(item.productCode) || 0) + item.quantity).toFixed(3)));
+        }
+        for (const [code, qty] of requiredByCode.entries()) {
+          const stockDoc = branchStock.find((s) => s.id === `${current.destinationBranch}_${code}`);
+          const available = stockDoc ? Number(stockDoc.currentStock) || 0 : 0;
+          if (available < qty - 0.001) {
+            throw new Error(
+              `No se puede eliminar: el traslado ya fue recibido y en ${current.destinationBranch} solo quedan ${available} de "${code}" (se necesitan ${qty}). Parte de la mercadería ya se vendió o procesó; corregilo con un ajuste de stock.`
+            );
+          }
+        }
+        for (const item of items) {
+          movements.push(
+            buildMovement(item, current.destinationBranch, 'TRANSFERENCIA_SALIDA', -1, 'TR_DEL_DES',
+              `Reversión por eliminación del traslado ${current.transferNumber}: ${motive}`)
+          );
+          movements.push(
+            buildMovement(item, current.originBranch, 'DEVOLUCION', 1, 'TR_DEL_ORI',
+              `Reversión por eliminación del traslado ${current.transferNumber}: ${motive}`)
+          );
+        }
+      }
+      // BORRADOR y CANCELADA: no movieron stock (o ya fue revertido al cancelar) → solo se elimina el documento.
+
+      if (movements.length > 0) {
+        await recordStockMovementsBatch(movements);
+      }
+
+      // Si la media res había cambiado de cámara por la recepción, volver a dejarla en el origen
+      if (status === 'RECIBIDA') {
+        for (const item of items) {
+          const matches = meatReceptions.filter(
+            (r) =>
+              r.branchId === current.destinationBranch &&
+              r.status === 'CONFIRMADO' &&
+              (item.receptionId ? r.id === item.receptionId : r.productCode === item.productCode)
+          );
+          if (matches.length === 1 && item.quantity >= matches[0].totalWeightKg - 0.01) {
+            const rec = matches[0];
+            await saveMeatReception({
+              ...rec,
+              branchId: current.originBranch,
+              chamber: chamberOf(current.originBranch),
+              carcasses: (rec.carcasses || []).map((c) => ({
+                ...c,
+                branchId: current.originBranch,
+                chamber: chamberOf(current.originBranch),
+              })),
+            });
+          }
+        }
+      }
+
+      await deleteDoc(transferRef);
+    } catch (error) {
+      console.error('Error deleting stock transfer:', error);
       throw error;
     }
   };
@@ -2560,6 +2705,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // Asegurar que cada media res tenga ID único permanente y estado DISPONIBLE
       const normalizedCarcasses: CarcassUnit[] = (reception.carcasses || []).map((c, idx) => ({
         ...c,
+        label: carcassLabel(c, idx),
         id: c.id && c.id.trim() ? c.id.trim() : `${reception.code}-MR-${String(idx + 1).padStart(3, '0')}`,
         receptionId: reception.id,
         tropaNumber: reception.tropaNumber,
@@ -3091,6 +3237,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         dispatchStockTransfer,
         receiveStockTransfer,
         cancelStockTransfer,
+        deleteStockTransfer,
         applyPhysicalInventory,
         saveMeatDeboning,
         finalizeMeatDeboning,

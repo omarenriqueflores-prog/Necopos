@@ -10,8 +10,10 @@ import {
   Eye,
   Send,
   AlertCircle,
+  Trash2,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 import { StockTransfer } from '../../types/pos';
 import { formatKg, formatCurrency, printTransferRemito } from '../../utils/stockHelper';
 
@@ -24,7 +26,8 @@ export const StockTransfersTab: React.FC<StockTransfersTabProps> = ({
   onOpenNewTransfer,
   onViewTransferDetail,
 }) => {
-  const { stockTransfers, dispatchStockTransfer, receiveStockTransfer, cancelStockTransfer, branchConfigs, localUser, user } = useFirebase();
+  const { stockTransfers, dispatchStockTransfer, receiveStockTransfer, cancelStockTransfer, deleteStockTransfer, branchConfigs, localUser, user } = useFirebase();
+  const { showAdminAuth, showAlert } = useDialog();
 
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [cancelModalTransfer, setCancelModalTransfer] = useState<StockTransfer | null>(null);
@@ -68,6 +71,33 @@ export const StockTransfersTab: React.FC<StockTransfersTabProps> = ({
     } catch (err: any) {
       console.error('Error al cancelar traslado:', err);
       setErrorMessage(`Error al cancelar traslado: ${err.message || 'Error inesperado'}`);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  // Eliminación definitiva de un remito (requiere clave de administrador; la clave se valida en el diálogo y nunca se muestra)
+  const handleDeleteTransfer = async (t: StockTransfer) => {
+    const effect =
+      t.status === 'EN_TRANSITO'
+        ? `Está EN TRÁNSITO: se reintegrarán ${formatKg(t.totalKilos)} a la cámara de ${t.originBranch}.`
+        : t.status === 'RECIBIDA'
+        ? `Ya fue RECIBIDO: se descontarán ${formatKg(t.totalKilos)} de ${t.destinationBranch} y se reintegrarán a ${t.originBranch}.`
+        : 'No tiene impacto en el stock.';
+    const authorized = await showAdminAuth(
+      `Eliminar definitivamente el traslado ${t.transferNumber} (${t.originBranch} ➔ ${t.destinationBranch}). ${effect}`,
+      'ELIMINAR TRASLADO'
+    );
+    if (!authorized) return;
+
+    try {
+      setProcessingId(t.id);
+      setErrorMessage(null);
+      await deleteStockTransfer(t, operatorName, 'Eliminado por administrador');
+      await showAlert(`El traslado ${t.transferNumber} fue eliminado correctamente.`, 'TRASLADO ELIMINADO');
+    } catch (err: any) {
+      console.error('Error al eliminar traslado:', err);
+      setErrorMessage(`Error al eliminar traslado: ${err.message || 'Error inesperado'}`);
     } finally {
       setProcessingId(null);
     }
@@ -246,6 +276,16 @@ export const StockTransfersTab: React.FC<StockTransfersTabProps> = ({
                             <XCircle className="w-3.5 h-3.5" />
                           </button>
                         )}
+
+                        {/* Eliminar (cualquier estado, con clave de administrador) */}
+                        <button
+                          disabled={isProcessing}
+                          onClick={() => handleDeleteTransfer(t)}
+                          className="p-1 rounded hover:bg-red-100 text-red-700 disabled:opacity-40"
+                          title="Eliminar traslado (requiere clave de administrador)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>

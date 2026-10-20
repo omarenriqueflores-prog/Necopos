@@ -1,6 +1,25 @@
 import { MeatReception, CarcassUnit, BranchConfig } from '../types/pos';
 import { formatKg, formatCurrency } from './stockHelper';
 
+/** Etiqueta visible de una media res. Usa la guardada o, si no existe (datos antiguos), la posición. */
+export function carcassLabel(c: { label?: string }, index: number): string {
+  return c.label?.trim() || `MR-${String(index + 1).padStart(3, '0')}`;
+}
+
+/** Siguiente número correlativo disponible dentro de una recepción. */
+export function nextCarcassNumber(list: { label?: string }[]): number {
+  let max = 0;
+  list.forEach((c, i) => {
+    const m = /^MR-(\d+)$/.exec(carcassLabel(c, i));
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return max + 1;
+}
+
+export function formatCarcassLabel(n: number): string {
+  return `MR-${String(n).padStart(3, '0')}`;
+}
+
 /**
  * Genera el HTML de impresión oficial para el Remito / Acta de Recepción de Medias Reses en Cámara
  */
@@ -17,7 +36,7 @@ export function generateReceptionVoucherHtml(
       (c, idx) => `
       <tr style="border-bottom: 1px solid #ccc; font-size: 11px;">
         <td style="padding: 4px 6px; text-align: center; font-weight: bold;">${idx + 1}</td>
-        <td style="padding: 4px 6px; font-family: monospace; font-weight: bold;">${c.id}</td>
+        <td style="padding: 4px 6px; font-family: monospace; font-weight: bold;">${carcassLabel(c, idx)}</td>
         <td style="padding: 4px 6px;">${c.tagNumber || 'S/N'}</td>
         <td style="padding: 4px 6px; text-align: right; font-weight: bold;">${formatKg(c.weightKg)}</td>
         <td style="padding: 4px 6px; text-align: right;">${formatCurrency(reception.pricePerKg)}</td>

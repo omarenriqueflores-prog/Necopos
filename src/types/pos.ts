@@ -644,7 +644,8 @@ export type CarcassStatus =
   | 'ESTIMADO';
 
 export interface CarcassUnit {
-  id: string; // Identificador individual único (ej: REC-0001-MR-001)
+  id: string; // Identificador interno único (ej: REC-0001-UNIT-…). No se muestra al usuario.
+  label?: string; // Etiqueta correlativa visible dentro de la recepción (MR-001, MR-002, MR-003…)
   receptionId?: string;
   tropaNumber?: string;
   supplier?: string;

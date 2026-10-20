@@ -15,6 +15,7 @@ import {
 import { useFirebase } from '../../context/FirebaseContext';
 import { useDialog } from '../../context/DialogContext';
 import { MeatReception, CarcassUnit, CarcassStatus, Product, ANIMAL_CATEGORIES } from '../../types/pos';
+import { carcassLabel, nextCarcassNumber, formatCarcassLabel } from '../../utils/receptionHelper';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
 
@@ -62,12 +63,14 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
     return [
       {
         id: 'MR-001',
+        label: 'MR-001',
         tagNumber: '',
         weightKg: 118.5,
         cost: Number((118.5 * (existingReception?.pricePerKg || 4200)).toFixed(2)),
       },
       {
         id: 'MR-002',
+        label: 'MR-002',
         tagNumber: '',
         weightKg: 121.2,
         cost: Number((121.2 * (existingReception?.pricePerKg || 4200)).toFixed(2)),
@@ -158,20 +161,25 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
   // Agregar 1 media res
   const handleAddCarcass = () => {
     const tempId = `TEMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const newUnit: CarcassUnit = {
-      id: tempId,
-      tagNumber: '',
-      weightKg: 120.0,
-      cost: Number((120.0 * pricePerKg).toFixed(2)),
-    };
-    setCarcasses((prev) => [...prev, newUnit]);
+    setCarcasses((prev) => {
+      const newUnit: CarcassUnit = {
+        id: tempId,
+        label: formatCarcassLabel(nextCarcassNumber(prev)),
+        tagNumber: '',
+        weightKg: 120.0,
+        cost: Number((120.0 * pricePerKg).toFixed(2)),
+      };
+      return [...prev, newUnit];
+    });
   };
 
   // Agregar 2 medias reses (1 res entera)
   const handleAddPair = () => {
     const now = Date.now();
+    const next = (prev: CarcassUnit[]) => nextCarcassNumber(prev);
     const item1: CarcassUnit = {
       id: `TEMP-${now}-1`,
+      label: '',
       tagNumber: '',
       weightKg: 119.0,
       cost: Number((119.0 * pricePerKg).toFixed(2)),
@@ -184,7 +192,14 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       cost: Number((120.5 * pricePerKg).toFixed(2)),
       notes: 'Lado Derecho',
     };
-    setCarcasses((prev) => [...prev, item1, item2]);
+    setCarcasses((prev) => {
+      const n = next(prev);
+      return [
+        ...prev,
+        { ...item1, label: formatCarcassLabel(n) },
+        { ...item2, label: formatCarcassLabel(n + 1) },
+      ];
+    });
   };
 
   // Construir objeto de recepción
@@ -205,6 +220,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       return {
         ...c,
         id: stableId,
+        label: carcassLabel(c, idx),
         receptionId: recId,
         tropaNumber: tropaNumber.trim() || `TR-${Date.now().toString().slice(-4)}`,
         supplier: supplier.trim() || 'Proveedor Frigorífico',
@@ -618,7 +634,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                           {idx + 1}
                         </td>
                         <td className="p-1.5 font-mono font-bold text-blue-900 border-r border-gray-200">
-                          {item.id}
+                          {carcassLabel(item, idx)}
                         </td>
                         <td className="p-1.5 border-r border-gray-200">
                           <input

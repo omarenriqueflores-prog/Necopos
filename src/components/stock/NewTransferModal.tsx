@@ -98,10 +98,21 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     return doc ? Number(doc.currentStock) || 0 : 0;
   };
 
+  // Identidad de un ítem del remito: las medias reses se distinguen por recepción (tropa),
+  // aunque todas compartan el mismo código de producto (MEDIA_RES).
+  const itemKey = (it: { productCode: string; receptionId?: string }) => it.receptionId || it.productCode;
+
+  // Cantidad ya cargada en el remito para un código de producto (suma de todos los ítems con ese código)
+  const getQtyInRemitoByCode = (code: string, excludeIndex?: number) =>
+    Number(
+      transferItems
+        .reduce((acc, it, i) => (i !== excludeIndex && it.productCode === code ? acc + it.quantity : acc), 0)
+        .toFixed(3)
+    );
+
   const getRemainingStock = (code: string) => {
     const totalStock = getOriginStock(code);
-    const inRemito = transferItems.find((it) => it.productCode === code)?.quantity || 0;
-    return Number(Math.max(0, totalStock - inRemito).toFixed(3));
+    return Number(Math.max(0, totalStock - getQtyInRemitoByCode(code)).toFixed(3));
   };
 
   const selectedReception = useMemo(() => {
@@ -126,8 +137,10 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   const currentItemRemaining = useMemo(() => {
     if (selectedReception) {
       const prodCode = selectedReception.productCode || 'MEDIA_RES';
-      const inRemito = transferItems.find((it) => it.productCode === prodCode)?.quantity || 0;
-      return Number(Math.max(0, selectedReception.totalWeightKg - inRemito).toFixed(3));
+      const inRemitoThisReception = transferItems.find((it) => it.receptionId === selectedReception.id)?.quantity || 0;
+      const byReception = selectedReception.totalWeightKg - inRemitoThisReception;
+      const byStock = getOriginStock(prodCode) - getQtyInRemitoByCode(prodCode);
+      return Number(Math.max(0, Math.min(byReception, byStock)).toFixed(3));
     }
     if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
       return getRemainingStock(selectedTargetCode);
@@ -150,7 +163,8 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
         return;
       }
 
-      const existingIndex = transferItems.findIndex((it) => it.productCode === prodCode);
+      // Cada tropa/recepción es un ítem propio del remito (se pueden agregar varias)
+      const existingIndex = transferItems.findIndex((it) => it.receptionId === selectedReception.id);
       const currentInRemito = existingIndex >= 0 ? transferItems[existingIndex].quantity : 0;
       const totalRequested = Number((currentInRemito + qty).toFixed(3));
 
@@ -158,6 +172,15 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
         setInlineNotification({
           type: 'error',
           message: `⛔ Stock insuficiente para la media res Tropa #${selectedReception.tropaNumber}. Peso disponible: ${formatQuantity(available, unitType)}.`,
+        });
+        return;
+      }
+
+      const stockForCode = getOriginStock(prodCode);
+      if (getQtyInRemitoByCode(prodCode) + qty > stockForCode + 0.001) {
+        setInlineNotification({
+          type: 'error',
+          message: `⛔ Stock insuficiente en ${originBranch}: hay ${formatQuantity(stockForCode, unitType)} de media res en cámara y el remito ya lleva ${formatQuantity(getQtyInRemitoByCode(prodCode), unitType)}.`,
         });
         return;
       }
@@ -186,6 +209,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
             quantity: qty,
             price,
             totalValue: Number((qty * price).toFixed(2)),
+            receptionId: selectedReception.id,
           },
         ]);
       }
@@ -214,12 +238,13 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
       return;
     }
 
-    const existingIndex = transferItems.findIndex((it) => it.productCode === product.code);
+    const existingIndex = transferItems.findIndex((it) => it.productCode === product.code && !it.receptionId);
     const currentInRemito = existingIndex >= 0 ? transferItems[existingIndex].quantity : 0;
     const totalRequested = Number((currentInRemito + qty).toFixed(3));
 
-    if (totalRequested > available) {
-      const maxAllowed = Number((available - currentInRemito).toFixed(3));
+    // El stock se valida contra TODO lo que ya lleva el remito con ese código (incluye tropas de media res)
+    if (getQtyInRemitoByCode(product.code) + qty > available + 0.001) {
+      const maxAllowed = Number((available - getQtyInRemitoByCode(product.code)).toFixed(3));
       setInlineNotification({
         type: 'error',
         message: `⛔ Stock insuficiente: En ${originBranch} hay ${formatQuantity(available, product.unitType)} de "${product.description}".`,
@@ -266,7 +291,11 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   const handleUpdateItemQty = (index: number, newQtyVal: number) => {
     const updated = [...transferItems];
     const it = updated[index];
-    const avail = getOriginStock(it.productCode);
+    const stockAvail = getOriginStock(it.productCode) - getQtyInRemitoByCode(it.productCode, index);
+    const receptionWeight = it.receptionId
+      ? Number(meatReceptions?.find((r) => r.id === it.receptionId)?.totalWeightKg) || Infinity
+      : Infinity;
+    const avail = Math.max(0, Math.min(stockAvail, receptionWeight));
     const requested = Number(Math.max(0.001, newQtyVal).toFixed(3));
 
     if (requested > avail) {
@@ -314,12 +343,18 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     }
 
     // Validación final de stock de cada corte
+    const totalsByCode = new Map<string, { qty: number; description: string; unitType: any }>();
     for (const it of transferItems) {
-      const avail = getOriginStock(it.productCode);
-      if (it.quantity > avail) {
+      const acc = totalsByCode.get(it.productCode) || { qty: 0, description: it.description, unitType: it.unitType };
+      acc.qty = Number((acc.qty + it.quantity).toFixed(3));
+      totalsByCode.set(it.productCode, acc);
+    }
+    for (const [code, acc] of totalsByCode.entries()) {
+      const avail = getOriginStock(code);
+      if (acc.qty > avail + 0.001) {
         setInlineNotification({
           type: 'error',
-          message: `⛔ No se puede procesar el traslado: "${it.description}" requiere ${formatQuantity(it.quantity, it.unitType)} pero el stock en ${originBranch} es de ${formatQuantity(avail, it.unitType)}.`,
+          message: `⛔ No se puede procesar el traslado: "${acc.description}" requiere ${formatQuantity(acc.qty, acc.unitType)} pero el stock en ${originBranch} es de ${formatQuantity(avail, acc.unitType)}.`,
         });
         return;
       }
@@ -502,6 +537,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                     {filteredReceptions.map((r) => {
                       const targetCode = `REC:${r.id}`;
                       const isSel = selectedTargetCode === targetCode;
+                      const addedQty = transferItems.find((it) => it.receptionId === r.id)?.quantity || 0;
                       return (
                         <div
                           key={r.id}
@@ -521,6 +557,9 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                           </div>
                           <div className="text-right font-bold text-amber-800 font-mono">
                             <span className={isSel ? 'text-white' : ''}>{formatKg(r.totalWeightKg)}</span>
+                            {addedQty > 0 && (
+                              <div className={`text-[10px] ${isSel ? 'text-green-200' : 'text-green-700'}`}>✓ En remito: {formatKg(addedQty)}</div>
+                            )}
                           </div>
                         </div>
                       );
@@ -657,7 +696,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                   </tr>
                 ) : (
                   transferItems.map((item, index) => (
-                    <tr key={item.productCode} className="hover:bg-gray-50">
+                    <tr key={itemKey(item)} className="hover:bg-gray-50">
                       <td className="p-2 text-center font-mono text-gray-700">{item.productCode}</td>
                       <td className="p-2 font-bold text-gray-900">{item.description}</td>
                       <td className="p-2 text-gray-600">{item.category}</td>
