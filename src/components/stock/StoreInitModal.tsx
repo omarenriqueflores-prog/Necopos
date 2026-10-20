@@ -63,6 +63,7 @@ export const StoreInitModal: React.FC<StoreInitModalProps> = ({ onClose }) => {
     return storeProducts.filter(
       (p) =>
         p.code.toLowerCase().includes(q) ||
+        (p.scalePlu && p.scalePlu.toString().toLowerCase().includes(q)) ||
         (p.barcode && p.barcode.toLowerCase().includes(q)) ||
         p.description.toLowerCase().includes(q) ||
         getStoreRubroLabel(p).toLowerCase().includes(q)
@@ -201,8 +202,8 @@ export const StoreInitModal: React.FC<StoreInitModalProps> = ({ onClose }) => {
             <table className="w-full text-left border-collapse text-xs">
               <thead className="bg-[#00522c] text-white sticky top-0">
                 <tr>
-                  <th className="p-2 border-b border-gray-300 w-20 text-center">CÓDIGO</th>
-                  <th className="p-2 border-b border-gray-300 w-36">CÓD. BARRAS (EAN)</th>
+                  <th className="p-2 border-b border-gray-300 w-20 text-center">PLU</th>
+                  <th className="p-2 border-b border-gray-300 w-24 text-center">CÓDIGO</th>
                   <th className="p-2 border-b border-gray-300">ARTÍCULO DE ALMACÉN / VARIOS</th>
                   <th className="p-2 border-b border-gray-300 w-32">RUBRO</th>
                   <th className="p-2 border-b border-gray-300 w-16 text-center">UNIDAD</th>
@@ -221,17 +222,10 @@ export const StoreInitModal: React.FC<StoreInitModalProps> = ({ onClose }) => {
                 ) : (
                   filteredProducts.map((p) => (
                     <tr key={p.code} className="hover:bg-emerald-50/60">
-                      <td className="p-2 text-center font-mono font-bold text-gray-700">{p.code}</td>
-                      <td className="p-2 font-mono text-gray-600">
-                        {p.barcode ? (
-                          <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-900 px-1.5 py-0.5 rounded border border-blue-200 text-[11px] font-bold">
-                            <Barcode className="w-3 h-3 text-blue-700" />
-                            {p.barcode}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
+                      <td className="p-2 text-center font-mono font-bold text-emerald-900 bg-emerald-50/40">
+                        {p.scalePlu || p.code}
                       </td>
+                      <td className="p-2 text-center font-mono font-bold text-gray-700">{p.code}</td>
                       <td className="p-2 font-bold text-gray-900">{p.description}</td>
                       <td className="p-2 text-gray-700 font-semibold">{getStoreRubroLabel(p)}</td>
                       <td className="p-2 text-center font-bold text-emerald-800">Unid</td>

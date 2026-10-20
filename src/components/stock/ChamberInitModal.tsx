@@ -61,6 +61,7 @@ export const ChamberInitModal: React.FC<ChamberInitModalProps> = ({ onClose }) =
     return meatProducts.filter(
       (p) =>
         p.code.toLowerCase().includes(q) ||
+        (p.scalePlu && p.scalePlu.toString().toLowerCase().includes(q)) ||
         p.description.toLowerCase().includes(q) ||
         p.category?.toLowerCase().includes(q)
     );
@@ -186,6 +187,7 @@ export const ChamberInitModal: React.FC<ChamberInitModalProps> = ({ onClose }) =
             <table className="w-full text-left border-collapse text-xs">
               <thead className="bg-[#002046] text-white sticky top-0">
                 <tr>
+                  <th className="p-2 border-b border-gray-300 w-20 text-center">PLU</th>
                   <th className="p-2 border-b border-gray-300 w-20 text-center">CÓDIGO</th>
                   <th className="p-2 border-b border-gray-300">CORTE DE CARNE</th>
                   <th className="p-2 border-b border-gray-300 w-32">CATEGORÍA</th>
@@ -198,6 +200,9 @@ export const ChamberInitModal: React.FC<ChamberInitModalProps> = ({ onClose }) =
               <tbody className="divide-y divide-gray-200">
                 {filteredProducts.map((p) => (
                   <tr key={p.code} className="hover:bg-blue-50">
+                    <td className="p-2 text-center font-mono font-bold text-blue-900 bg-blue-50/40">
+                      {p.scalePlu || p.code}
+                    </td>
                     <td className="p-2 text-center font-mono font-bold text-gray-700">{p.code}</td>
                     <td className="p-2 font-bold text-gray-900">{p.description}</td>
                     <td className="p-2 text-gray-600">{p.category}</td>

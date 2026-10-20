@@ -13,12 +13,18 @@ import {
   Edit2,
   Check,
   X,
+  Beef,
+  CheckCircle2,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
+import { useDialog } from '../../context/DialogContext';
 import { Product, UnitType, ANIMAL_CATEGORIES } from '../../types/pos';
-import { isMeatProduct, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
+import { isMeatProduct, isMeatCategory, formatKg, formatQuantity, formatCurrency } from '../../utils/stockHelper';
 import { Store } from 'lucide-react';
+import { NewReceptionModal } from './NewReceptionModal';
 
 interface ChamberStockTabProps {
   onOpenNewTransfer: (defaultProduct?: Product) => void;
@@ -33,7 +39,24 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   onOpenQuickAdjustment,
   onSwitchToStoreStock,
 }) => {
-  const { products, branchStock, updateProductMinStock } = useFirebase();
+  const { products, branchStock, meatReceptions, finalizeMeatReception, updateProductMinStock, deleteNegativeOrHangingStock, localUser, user } = useFirebase();
+  const { showAdminAuth, showAlert } = useDialog();
+  const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
+
+  const handleCleanNegativeStock = async () => {
+    const authorized = await showAdminAuth(
+      '¿Desea eliminar la media res al gancho (código MEDIA_RES) u otros stocks con saldos negativos (ej. -162kg e importe negativo)? Ingrese la clave de administrador para autorizar la purga.',
+      'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR STOCK / RES NEGATIVA'
+    );
+    if (!authorized) return;
+
+    try {
+      await deleteNegativeOrHangingStock('MEDIA_RES', operatorName);
+      await showAlert('Se ha eliminado exitosamente la media res / stock con saldo negativo de la base de datos.', 'ELIMINACIÓN COMPLETADA');
+    } catch (err: any) {
+      await showAlert(`No se pudo eliminar el stock negativo: ${err.message}`, 'ERROR');
+    }
+  };
 
   const [selectedBranch, setSelectedBranch] = useState<'ALL' | 'NECO 1' | 'NECO 2'>('ALL');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -41,11 +64,147 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [editingMinStockCode, setEditingMinStockCode] = useState<string | null>(null);
   const [tempMinStock, setTempMinStock] = useState<number>(20);
+  const [showNewReceptionModal, setShowNewReceptionModal] = useState(false);
 
-  // Filtrar estrictamente carnes y productos de cámara frigorífica (excluye Coca Cola, almacén, limpieza, carbón, huevos, fideos, etc.)
+  // Medias reses disponibles al gancho y recepciones pendientes
+  const activeReceptions = useMemo(() => {
+    return meatReceptions.filter(
+      (r) =>
+        (selectedBranch === 'ALL' || r.branchId === selectedBranch) &&
+        (r.status === 'CONFIRMADO' || r.status === 'PENDIENTE') &&
+        // Filtrar aquellas que tengan al menos una media res DISPONIBLE
+        (r.carcasses ? r.carcasses.some(c => !c.status || c.status === 'DISPONIBLE') : true)
+    );
+  }, [meatReceptions, selectedBranch]);
+
+  const availableCarcassesSummary = useMemo(() => {
+    let neco1Kg = 0;
+    let neco2Kg = 0;
+    let neco1Units = 0;
+    let neco2Units = 0;
+    let lastPricePerKg = 4200;
+    let lastCategory = 'Novillito';
+
+    meatReceptions.forEach((r) => {
+      if (r.pricePerKg) lastPricePerKg = r.pricePerKg;
+      if (r.category) lastCategory = r.category;
+      if (r.status === 'CONFIRMADO') {
+        const carcasses = r.carcasses || [];
+        if (carcasses.length > 0) {
+          carcasses.forEach((c) => {
+            // Solo considerar disponibles
+            if (c.status === 'DISPONIBLE') {
+              const targetBranch = c.branchId || r.branchId;
+              if (targetBranch === 'NECO 2') {
+                neco2Kg += Number(c.weightKg) || 0;
+                neco2Units += 1;
+              } else {
+                neco1Kg += Number(c.weightKg) || 0;
+                neco1Units += 1;
+              }
+            }
+          });
+        } else {
+          if (r.branchId === 'NECO 2') {
+            neco2Kg += Number(r.totalWeightKg) || 0;
+            neco2Units += Number(r.totalQuantity) || 0;
+          } else {
+            neco1Kg += Number(r.totalWeightKg) || 0;
+            neco1Units += Number(r.totalQuantity) || 0;
+          }
+        }
+      }
+    });
+
+    return {
+      neco1Kg: Number(neco1Kg.toFixed(3)),
+      neco2Kg: Number(neco2Kg.toFixed(3)),
+      totalKg: Number((neco1Kg + neco2Kg).toFixed(3)),
+      neco1Units,
+      neco2Units,
+      totalUnits: neco1Units + neco2Units,
+      lastPricePerKg,
+      lastCategory,
+    };
+  }, [meatReceptions]);
+
+  // Map rápido de existencias: `${branchId}_${productCode}` -> currentStock
+  const stockMap = useMemo(() => {
+    const map = new Map<string, { currentStock: number; minStock: number }>();
+    branchStock.forEach((bs) => {
+      map.set(`${bs.branchId}_${bs.productCode}`, {
+        currentStock: Number(bs.currentStock) || 0,
+        minStock: Number(bs.minStock) || 20,
+      });
+    });
+
+    // Asegurar que MEDIA_RES refleje las medias reses disponibles si aún no están en branchStock
+    const n1MediaRes = map.get('NECO 1_MEDIA_RES');
+    if (!n1MediaRes && availableCarcassesSummary.neco1Kg > 0) {
+      map.set('NECO 1_MEDIA_RES', { currentStock: availableCarcassesSummary.neco1Kg, minStock: 100 });
+    }
+    const n2MediaRes = map.get('NECO 2_MEDIA_RES');
+    if (!n2MediaRes && availableCarcassesSummary.neco2Kg > 0) {
+      map.set('NECO 2_MEDIA_RES', { currentStock: availableCarcassesSummary.neco2Kg, minStock: 100 });
+    }
+
+    return map;
+  }, [branchStock, availableCarcassesSummary]);
+
+  // Filtrar estrictamente carnes y productos de cámara frigorífica + incorporar MEDIA_RES / recepciones de cámara
   const meatProductsOnly = useMemo(() => {
-    return products.filter((p) => isMeatProduct(p));
-  }, [products]);
+    const baseMeat = products.filter((p) => isMeatProduct(p));
+    const codeSet = new Set(baseMeat.map((p) => p.code));
+    const extraMeat: Product[] = [];
+
+    const hasMediaResData =
+      stockMap.has('NECO 1_MEDIA_RES') ||
+      stockMap.has('NECO 2_MEDIA_RES') ||
+      meatReceptions.length > 0;
+
+    if (!codeSet.has('MEDIA_RES') && hasMediaResData) {
+      codeSet.add('MEDIA_RES');
+      extraMeat.push({
+        code: 'MEDIA_RES',
+        scalePlu: 'MEDIA_RES',
+        barcode: null,
+        description: `MEDIA RES AL GANCHO (${availableCarcassesSummary.totalUnits} medias reses disponibles en cámara)`,
+        rubro: 'Carnes Vacunas',
+        category: availableCarcassesSummary.lastCategory,
+        unitType: 'Kg',
+        price: availableCarcassesSummary.lastPricePerKg,
+        costPrice: availableCarcassesSummary.lastPricePerKg,
+        vatRate: 10.5,
+        active: true,
+      });
+    }
+
+    branchStock.forEach((bs) => {
+      if (
+        !codeSet.has(bs.productCode) &&
+        (bs.productCode === 'MEDIA_RES' || isMeatCategory(bs.productCode) || bs.productCode.includes('RES'))
+      ) {
+        codeSet.add(bs.productCode);
+        const matchingRec = meatReceptions.find((r) => r.productCode === bs.productCode);
+        const price = matchingRec?.pricePerKg || availableCarcassesSummary.lastPricePerKg || 4200;
+        extraMeat.push({
+          code: bs.productCode,
+          scalePlu: bs.productCode,
+          barcode: null,
+          description: matchingRec?.productDescription || `MEDIA RES AL GANCHO (${bs.productCode})`,
+          rubro: 'Carnes Vacunas',
+          category: matchingRec?.category || 'Novillito',
+          unitType: 'Kg',
+          price,
+          costPrice: price,
+          vatRate: 10.5,
+          active: true,
+        });
+      }
+    });
+
+    return [...extraMeat, ...baseMeat];
+  }, [products, branchStock, meatReceptions, stockMap, availableCarcassesSummary]);
 
   const storeProductsCount = useMemo(() => {
     return products.filter((p) => !isMeatProduct(p)).length;
@@ -59,18 +218,6 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
     });
     return Array.from(new Set([...ANIMAL_CATEGORIES, ...Array.from(customCats)]));
   }, [meatProductsOnly]);
-
-  // Map rápido de existencias: `${branchId}_${productCode}` -> currentStock
-  const stockMap = useMemo(() => {
-    const map = new Map<string, { currentStock: number; minStock: number }>();
-    branchStock.forEach((bs) => {
-      map.set(`${bs.branchId}_${bs.productCode}`, {
-        currentStock: Number(bs.currentStock) || 0,
-        minStock: Number(bs.minStock) || 20,
-      });
-    });
-    return map;
-  }, [branchStock]);
 
   // Lista procesada de productos CÁRNICOS con sus stocks por cámara frigorífica
   const processedItems = useMemo(() => {
@@ -180,8 +327,8 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
 
   const exportToExcel = () => {
     const data = filteredItems.map((it) => ({
+      'PLU': it.scalePlu || it.code,
       'Código': it.code,
-      'PLU Balanza': it.scalePlu || '-',
       'Descripción': it.description,
       'Categoría': it.category,
       'Rubro Cárnico': it.isMeat ? 'SÍ (Cárnico)' : 'NO (Almacén)',
@@ -334,6 +481,24 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
           )}
 
           <button
+            onClick={() => setShowNewReceptionModal(true)}
+            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-white bg-[#002046] hover:bg-blue-900 cursor-pointer"
+            title="Ingresar nueva recepción de medias reses al gancho en cámara"
+          >
+            <Plus className="w-3.5 h-3.5 text-amber-300" />
+            <span>＋ Ingresar Media Res</span>
+          </button>
+
+          <button
+            onClick={handleCleanNegativeStock}
+            className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-red-900 bg-red-50 border-red-400 hover:bg-red-100 cursor-pointer"
+            title="Eliminar media res o stock con saldo negativo (ej. -162kg) con clave de administrador"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-red-700" />
+            <span>Eliminar Res Negativa</span>
+          </button>
+
+          <button
             onClick={onOpenInitModal}
             className="win-button py-1 px-2.5 flex items-center space-x-1 text-xs font-bold text-gray-800 cursor-pointer"
             title="Cargar stock inicial de cortes cárnicos en cámaras"
@@ -361,6 +526,88 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
           </button>
         </div>
       </div>
+
+      {/* PANEL DE MEDIAS RESES AL GANCHO EN CÁMARA (RECEPCIONES ACTIVAS / PENDIENTES) */}
+      {activeReceptions.length > 0 && (
+        <div className="win-panel bg-white border-l-4 border-l-red-700 p-2.5 space-y-2">
+          <div className="flex items-center justify-between border-b border-gray-200 pb-1.5">
+            <div className="flex items-center space-x-2 text-xs font-bold text-[#002046]">
+              <Beef className="w-4 h-4 text-red-700" />
+              <span>MEDIAS RESES EN CÁMARA FRIGORÍFICA (TROPAS INGRESADAS AL GANCHO)</span>
+            </div>
+            <div className="text-[11px] font-mono font-bold text-gray-700 flex items-center space-x-4">
+              <span>
+                Unidades Disponibles: <strong className="text-red-700">{availableCarcassesSummary.totalUnits} medias reses</strong>
+              </span>
+              <span>
+                Kilos al Gancho: <strong className="text-blue-900">{formatKg(availableCarcassesSummary.totalKg)}</strong>
+              </span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto max-h-40">
+            <table className="w-full text-left border-collapse text-[11px]">
+              <thead className="bg-gray-100 text-gray-700 border-b border-gray-300">
+                <tr>
+                  <th className="p-1.5 border-r border-gray-200">Acta / Código</th>
+                  <th className="p-1.5 border-r border-gray-200">Fecha</th>
+                  <th className="p-1.5 border-r border-gray-200">Sucursal / Cámara</th>
+                  <th className="p-1.5 border-r border-gray-200">Tropa SENASA</th>
+                  <th className="p-1.5 border-r border-gray-200">Proveedor</th>
+                  <th className="p-1.5 border-r border-gray-200">Categoría</th>
+                  <th className="p-1.5 border-r border-gray-200 text-center">Medias Reses (Disp. / Total)</th>
+                  <th className="p-1.5 border-r border-gray-200 text-right">Peso Total (Kg)</th>
+                  <th className="p-1.5 border-r border-gray-200 text-right">Costo $/Kg</th>
+                  <th className="p-1.5 text-center">Estado en Cámara</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {activeReceptions.map((rec) => {
+                  const availCount = (rec.carcasses || []).filter(
+                    (c) => !c.status || c.status === 'DISPONIBLE' || c.status === 'PENDIENTE'
+                  ).length || rec.totalQuantity;
+                  return (
+                    <tr key={rec.id} className="hover:bg-blue-50/60">
+                      <td className="p-1.5 font-mono font-bold text-blue-900 border-r border-gray-200">{rec.code}</td>
+                      <td className="p-1.5 border-r border-gray-200 text-gray-600">{rec.date} {rec.time}</td>
+                      <td className="p-1.5 border-r border-gray-200 font-bold text-gray-800">{rec.branchId} — {rec.chamber}</td>
+                      <td className="p-1.5 border-r border-gray-200 font-mono font-bold text-indigo-900">{rec.tropaNumber}</td>
+                      <td className="p-1.5 border-r border-gray-200 text-gray-800">{rec.supplier}</td>
+                      <td className="p-1.5 border-r border-gray-200 font-semibold text-gray-700">{rec.species} ({rec.category})</td>
+                      <td className="p-1.5 border-r border-gray-200 text-center font-mono font-bold text-black">
+                        {availCount} / {rec.totalQuantity} un.
+                      </td>
+                      <td className="p-1.5 border-r border-gray-200 text-right font-mono font-bold text-red-700 bg-yellow-50/60">
+                        {formatKg(rec.totalWeightKg)}
+                      </td>
+                      <td className="p-1.5 border-r border-gray-200 text-right font-mono text-gray-700">
+                        {formatCurrency(rec.pricePerKg)}
+                      </td>
+                      <td className="p-1.5 text-center">
+                        {rec.status === 'CONFIRMADO' ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800 border border-green-300">
+                            EN CÁMARA ({availCount} DISP.)
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => finalizeMeatReception(rec, operatorName)}
+                            className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500 hover:bg-green-700 text-white shadow-sm flex items-center space-x-1 mx-auto cursor-pointer"
+                            title="Confirmar e impactar esta recepción pendiente en el stock de cámara"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Confirmar Ingreso a Cámara</span>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* TABLA DE EXISTENCIAS */}
       <div className="win-panel flex-1 overflow-auto bg-white">
@@ -418,8 +665,8 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
                       index % 2 === 0 ? 'bg-white' : 'bg-gray-50'
                     } ${item.status === 'OUT' ? 'bg-red-50/50' : item.status === 'LOW' ? 'bg-amber-50/50' : ''}`}
                   >
-                    <td className="p-2 text-center font-mono font-bold text-gray-600 border border-gray-200">
-                      {item.scalePlu || '-'}
+                    <td className="p-2 text-center font-mono font-bold text-blue-900 bg-blue-50/40 border border-gray-200">
+                      {item.scalePlu || item.code}
                     </td>
                     <td className="p-2 text-center font-mono font-bold text-gray-800 border border-gray-200">
                       {item.code}
@@ -605,6 +852,13 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
           </span>
         </div>
       </div>
+
+      {showNewReceptionModal && (
+        <NewReceptionModal
+          onClose={() => setShowNewReceptionModal(false)}
+          existingReception={null}
+        />
+      )}
     </div>
   );
 };

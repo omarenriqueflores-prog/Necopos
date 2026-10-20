@@ -152,7 +152,7 @@ const STORE_RUBRO_KEYWORDS = [
   'fiambreria (unid)',
 ];
 
-const MEAT_KEYWORDS = [
+export const MEAT_KEYWORDS = [
   'asado',
   'vacio',
   'matambre',
@@ -160,18 +160,40 @@ const MEAT_KEYWORDS = [
   'peceto',
   'cuadril',
   'colita',
+  'colita de cuadril',
+  'picana',
+  'picanha',
+  'tapa de picana',
+  'tapa de asado',
+  'tapa de nalga',
+  'tapa de cuadril',
+  'tapa de bife',
+  'tapa de pecho',
+  'tapa de costilla',
+  'marucha',
+  'azotillo',
+  'cogote',
+  'quijada',
+  'bola de lomo',
+  'cuadrada',
   'bife',
+  'bife angosto',
+  'bife ancho',
+  'bife de chorizo',
+  'ojo de bife',
   'lomo',
   'entraña',
   'entrana',
   'falda',
   'aguja',
   'roast beef',
+  'roast',
   'tortuguita',
   'paleta',
   'palomita',
   'carnaza',
   'osobuco',
+  'ossobuco',
   'picada',
   'molida',
   'costilla',
@@ -183,6 +205,7 @@ const MEAT_KEYWORDS = [
   'chorizo',
   'morcilla',
   'salchicha parrillera',
+  'salchicha',
   'chinchulin',
   'molleja',
   'riñon',
@@ -197,6 +220,7 @@ const MEAT_KEYWORDS = [
   'alita',
   'menudo',
   'milanesa',
+  'vaca',
   'novillito',
   'novillo',
   'ternera',
@@ -206,10 +230,19 @@ const MEAT_KEYWORDS = [
   'cordero',
   'lechón',
   'lechon',
+  'carne',
+  'vacun',
+  'hueso',
+  'grasa',
+  'churrasco',
+  'entrecot',
+  'carne picada',
+  'albondiga',
+  'hamburguesa',
 ];
 
 const STORE_DESC_REGEX =
-  /\b(\d+([.,]\d+)?\s*(cc|ml|lt|lts|litro|litros|gr|grs|gramos|unid|unidades|pack|paq|lata|botella|caja|sobre|frasco|pote|docena|maple)|coca|pepsi|fanta|sprite|manaos|schwe?ppes|7up|paso de los toros|gaseosa|agua|soda|jugo|cepita|baggio|citric|levite|aquarius|vino|cerveza|quilmes|brahma|stella|heineken|corona|patagonia|fernet|gancia|sidra|mayonesa|hellmanns|natura|fanacoa|danica|ketchup|mostaza|salsa|tomate|pur[eé]|aceite|vinagre|aceto|sal\b|celusal|azucar|yerba|cafe|mate cocido|fideo|tallarin|tirabuzon|moñito|mostachol|spaghetti|raviol|ñoqui|noqui|tapa|empanada|pascualina|arroz|harina|polenta|pan rallado|rebozador|galletita|pan\b|lactal|huevo|leche|manteca|margarina|crema|dulce de leche|yogur|queso rallado|carbon|carbón|leña|lena|briqueta|fosforo|encendedor|servilleta|rollo|papel|detergente|lavandina|jabon|esponja|bolsa|chimichurri|provenzal|oregano|aji|pimenton|comino|pimienta|laurel|condimento|caldo|sopa|arveja|choclo|lenteja|garbanzo|poroto|atun|caballa|sardina|durazno|aceituna|mermelada|miel|alfajor|chocolate|papas fritas|snack|mani)\b/i;
+  /\b(\d+([.,]\d+)?\s*(cc|ml|lt|lts|litro|litros|gr|grs|gramos|unid|unidades|pack|paq|lata|botella|caja|sobre|frasco|pote|docena|maple)|coca|pepsi|fanta|sprite|manaos|schwe?ppes|7up|paso de los toros|gaseosa|agua|soda|jugo|cepita|baggio|citric|levite|aquarius|vino|cerveza|quilmes|brahma|stella|heineken|corona|patagonia|fernet|gancia|sidra|mayonesa|hellmanns|natura|fanacoa|danica|ketchup|mostaza|salsa|tomate|pur[eé]|aceite|vinagre|aceto|sal\b|celusal|azucar|yerba|cafe|mate cocido|fideo|tallarin|tirabuzon|moñito|mostachol|spaghetti|raviol|ñoqui|noqui|tapas?\s*(de\s*)?(empanada|pascualina|tarta)s?|empanadas?\b|pascualinas?\b|arroz|harina|polenta|pan rallado|rebozador|galletita|pan\b|lactal|huevo|leche|manteca|margarina|crema|dulce de leche|yogur|queso rallado|carbon|carbón|leña|lena|briqueta|fosforo|encendedor|servilleta|rollo|papel|detergente|lavandina|jabon|esponja|bolsa|chimichurri|provenzal|oregano|aji|pimenton|comino|pimienta|laurel|condimento|caldo|sopa|arveja|choclo|lenteja|garbanzo|poroto|atun|caballa|sardina|durazno|aceituna|mermelada|miel|alfajor|chocolate|papas fritas|snack|mani)\b/i;
 
 export function isStoreUnitProduct(p: {
   description?: string;
@@ -217,8 +250,6 @@ export function isStoreUnitProduct(p: {
   category?: string;
   unitType?: string;
 }): boolean {
-  if (p.unitType === 'Unid') return true;
-
   const norm = (s?: string) =>
     (s || '')
       .toLowerCase()
@@ -230,6 +261,40 @@ export function isStoreUnitProduct(p: {
   const catNorm = norm(p.category);
   const descNorm = norm(p.description);
 
+  const hasMeatKeyword = MEAT_KEYWORDS.some(
+    (mk) => descNorm.includes(mk) || catNorm.includes(mk) || rubroNorm.includes(mk)
+  );
+  if (hasMeatKeyword) return false;
+
+  // 1. Si el producto tiene explícitamente rubro o categoría CÁRNICA (vacuno, vaca, cerdo, pollo, etc.):
+  // NUNCA es producto de almacén si su venta es por Kg o no forzado a unidad no cárnica.
+  const isMeatRubCat =
+    rubroNorm.includes('carne') ||
+    rubroNorm.includes('vacun') ||
+    rubroNorm.includes('cerdo') ||
+    rubroNorm.includes('porcin') ||
+    rubroNorm.includes('pollo') ||
+    rubroNorm.includes('granja') ||
+    rubroNorm.includes('achura') ||
+    rubroNorm.includes('embutid') ||
+    catNorm.includes('vaca') ||
+    catNorm.includes('novill') ||
+    catNorm.includes('terner') ||
+    catNorm.includes('vaquillon') ||
+    catNorm.includes('cerdo') ||
+    catNorm.includes('porcin') ||
+    catNorm.includes('pollo') ||
+    catNorm.includes('achura') ||
+    catNorm.includes('embutid');
+
+  if (isMeatRubCat && p.unitType !== 'Unid') {
+    return false;
+  }
+
+  // 2. Si es venta por unidad explícita y no es rubro cárnico, es artículo de almacén
+  if (p.unitType === 'Unid') return true;
+
+  // 3. Si rubro o categoría coincide con palabras clave de almacén/bebidas/limpieza
   if (
     STORE_RUBRO_KEYWORDS.some(
       (kw) => rubroNorm.includes(kw) || catNorm.includes(kw)
@@ -238,6 +303,7 @@ export function isStoreUnitProduct(p: {
     return true;
   }
 
+  // 4. Si la descripción coincide con productos típicos de almacén
   if (STORE_DESC_REGEX.test(descNorm)) {
     const isExplicitMeat = MEAT_KEYWORDS.some((mk) => descNorm.includes(mk));
     if (!isExplicitMeat) {

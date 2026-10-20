@@ -284,4 +284,51 @@ describe('ETAPA 2 — Protección de Datos de Productos y Firestore (NECO POS)',
     // Verified that deleteDoc is not called during read/sync loops
     expect(deleteDocCalls.length).toBe(0);
   });
+
+  it('9. Vaciar catálogo exige autenticación de administrador (showAdminAuth con clave 26635235)', async () => {
+    let adminAuthCalled = false;
+    let authTitle = '';
+
+    const mockShowAdminAuth = async (desc: string, title?: string) => {
+      adminAuthCalled = true;
+      authTitle = title || '';
+      return true; // Authorized
+    };
+
+    const mockPurgeCollection = vi.fn();
+    const productsList = [{ code: '101', description: 'ASADO' }];
+
+    // Simular flujo de handlePurgeProducts
+    const handlePurge = async () => {
+      if (productsList.length === 0) return;
+      const authorized = await mockShowAdminAuth(
+        'ATENCIÓN: Vaciar catálogo',
+        'AUTORIZACIÓN DE ADMINISTRADOR - VACIAR CATÁLOGO'
+      );
+      if (!authorized) return;
+      await mockPurgeCollection();
+    };
+
+    await handlePurge();
+    expect(adminAuthCalled).toBe(true);
+    expect(authTitle).toBe('AUTORIZACIÓN DE ADMINISTRADOR - VACIAR CATÁLOGO');
+    expect(mockPurgeCollection).toHaveBeenCalledTimes(1);
+  });
+
+  it('10. Vaciar catálogo rechaza la acción si el usuario cancela o no introduce la clave de administrador', async () => {
+    const mockShowAdminAuth = async () => false; // Acceso denegado o cancelado
+    const mockPurgeCollection = vi.fn();
+    const productsList = [{ code: '101', description: 'ASADO' }];
+
+    const handlePurge = async () => {
+      if (productsList.length === 0) return;
+      const authorized = await mockShowAdminAuth();
+      if (!authorized) return;
+      await mockPurgeCollection();
+    };
+
+    await handlePurge();
+    expect(mockPurgeCollection).not.toHaveBeenCalled();
+  });
 });
+

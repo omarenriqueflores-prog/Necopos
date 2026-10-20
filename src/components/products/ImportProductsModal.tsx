@@ -6,7 +6,6 @@ import {
   Download,
   AlertCircle,
   CheckCircle2,
-  X,
   FileUp,
   Loader2,
 } from 'lucide-react';
@@ -40,58 +39,66 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
   const handleDownloadTemplate = () => {
     const templateData = [
       {
+        PLU: '101',
         CODIGO: '101',
-        CODIGO_BARRAS: '',
         DESCRIPCION: 'ASADO DE TIRA',
-        RUBRO: 'Novillito',
+        RUBRO: 'Carnes Vacunas',
+        CATEGORIA: 'Novillito',
         UNIDAD: 'Kg',
         PRECIO: 11500,
-        PLU_BALANZA: '101',
       },
       {
+        PLU: '102',
         CODIGO: '102',
-        CODIGO_BARRAS: '',
         DESCRIPCION: 'VACIO ESPECIAL',
-        RUBRO: 'Ternera',
+        RUBRO: 'Carnes Vacunas',
+        CATEGORIA: 'Ternera',
         UNIDAD: 'Kg',
         PRECIO: 12900,
-        PLU_BALANZA: '102',
       },
       {
+        PLU: '10112',
         CODIGO: '10112',
-        CODIGO_BARRAS: '7790895000997',
         DESCRIPCION: 'COCA COLA X 2.250ML',
         RUBRO: 'Bebidas',
+        CATEGORIA: 'Bebidas',
         UNIDAD: 'Unid',
         PRECIO: 4500,
-        PLU_BALANZA: '',
       },
       {
+        PLU: '10113',
         CODIGO: '10113',
-        CODIGO_BARRAS: '7790070411716',
         DESCRIPCION: 'MAYONESA NATURA X 500G',
         RUBRO: 'Almacén',
+        CATEGORIA: 'Almacén',
         UNIDAD: 'Unid',
         PRECIO: 2800,
-        PLU_BALANZA: '',
       },
     ];
 
     const ws = XLSX.utils.json_to_sheet(templateData);
     ws['!cols'] = [
+      { wch: 12 }, // PLU
       { wch: 12 }, // CODIGO
-      { wch: 18 }, // CODIGO_BARRAS
       { wch: 32 }, // DESCRIPCION
       { wch: 20 }, // RUBRO
+      { wch: 18 }, // CATEGORIA
       { wch: 10 }, // UNIDAD
       { wch: 14 }, // PRECIO
-      { wch: 14 }, // PLU_BALANZA
     ];
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Plantilla_Articulos');
     XLSX.writeFile(wb, 'plantilla_articulos_necopos.xlsx');
   };
+
+  const normalizeKey = (s: string): string =>
+    String(s || '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
 
   const processFile = async (file: File) => {
     setErrorMsg('');
@@ -103,7 +110,84 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         throw new Error('El archivo Excel no contiene hojas de cálculo legibles.');
       }
       const firstSheet = wb.Sheets[wb.SheetNames[0]];
-      const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, { defval: '' });
+
+      // Read as 2D array first to locate the actual header row even if there are title/empty rows above
+      const aoa = XLSX.utils.sheet_to_json<any[]>(firstSheet, { header: 1, defval: '' });
+      if (!aoa || aoa.length === 0) {
+        throw new Error('No se detectaron filas de datos en la primera hoja del archivo.');
+      }
+
+      const headerKeywords = [
+        'plu',
+        'plubalanza',
+        'nroplu',
+        'codplu',
+        'codigoplu',
+        'codigo',
+        'cod',
+        'code',
+        'id',
+        'articulo',
+        'item',
+        'descripcion',
+        'desc',
+        'nombre',
+        'detalle',
+        'producto',
+        'corte',
+        'denominacion',
+        'rubro',
+        'departamento',
+        'seccion',
+        'familia',
+        'categoria',
+        'especie',
+        'category',
+        'unidad',
+        'unidaddemedida',
+        'um',
+        'medida',
+        'unit',
+        'tipo',
+        'precio',
+        'precioventa',
+        'price',
+        'pvp',
+        'venta',
+        'importe',
+        'valor',
+        'costo',
+        'preciocosto',
+        'stock',
+        'existencia',
+      ];
+
+      let headerRowIndex = 0;
+      let maxMatches = 0;
+      const scanLimit = Math.min(15, aoa.length);
+      for (let r = 0; r < scanLimit; r++) {
+        const rowCells = Array.isArray(aoa[r]) ? aoa[r] : [];
+        let matches = 0;
+        for (const cell of rowCells) {
+          const normCell = normalizeKey(String(cell ?? ''));
+          if (normCell && headerKeywords.some((hk) => normCell === hk || (hk.length >= 4 && normCell.includes(hk)))) {
+            matches++;
+          }
+        }
+        if (matches > maxMatches) {
+          maxMatches = matches;
+          headerRowIndex = r;
+        }
+        if (matches >= 2) {
+          headerRowIndex = r;
+          break;
+        }
+      }
+
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, {
+        defval: '',
+        range: headerRowIndex,
+      });
 
       if (!rawRows || rawRows.length === 0) {
         throw new Error('No se detectaron filas de datos en la primera hoja del archivo.');
@@ -112,27 +196,18 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
       const productsMapped: Product[] = [];
 
       rawRows.forEach((row, idx) => {
-        // Find keys with exact match first, avoiding partial false positives (e.g. 'rubro' matching 'u')
         const normKeys = Object.keys(row).map((k) => ({
           original: k,
-          norm: k
-            .trim()
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]/g, ''),
+          norm: normalizeKey(k),
         }));
 
-        const getVal = (possibleKeys: string[]): any => {
-          // 1. Exact match
+        const getVal = (
+          possibleKeys: string[],
+          excludeSubstrings: string[] = []
+        ): any => {
+          // 1. Exact match on normalized key
           for (const pk of possibleKeys) {
-            const cleanPk = pk
-              .trim()
-              .toLowerCase()
-              .normalize('NFD')
-              .replace(/[\u0300-\u036f]/g, '')
-              .replace(/[^a-z0-9]/g, '');
-
+            const cleanPk = normalizeKey(pk);
             const found = normKeys.find((k) => k.norm === cleanPk);
             if (
               found &&
@@ -144,18 +219,16 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
             }
           }
 
-          // 2. Starts with / includes keyword (min 3 chars to prevent false substring matches)
+          // 2. Column header contains keyword (k.norm.includes(cleanPk) ONLY — never cleanPk.includes(k.norm))
           for (const pk of possibleKeys) {
-            const cleanPk = pk
-              .trim()
-              .toLowerCase()
-              .normalize('NFD')
-              .replace(/[\u0300-\u036f]/g, '')
-              .replace(/[^a-z0-9]/g, '');
-
+            const cleanPk = normalizeKey(pk);
             if (cleanPk.length < 3) continue;
 
-            const found = normKeys.find((k) => k.norm.includes(cleanPk) || cleanPk.includes(k.norm));
+            const found = normKeys.find(
+              (k) =>
+                k.norm.includes(cleanPk) &&
+                !excludeSubstrings.some((ex) => k.norm.includes(ex))
+            );
             if (
               found &&
               row[found.original] !== undefined &&
@@ -169,45 +242,95 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           return undefined;
         };
 
+        const rawPlu = getVal([
+          'plu',
+          'plubalanza',
+          'nroplu',
+          'numeroplu',
+          'codplu',
+          'codigoplu',
+          'balanza',
+        ]);
+        const rawCode = getVal(
+          ['codigo', 'cod', 'code', 'codinterno', 'codigointerno', 'id', 'articulo', 'item'],
+          ['barra', 'ean', 'gtin', 'plu']
+        );
         const rawBarcode = getVal([
           'codigobarras',
           'codigodebarras',
           'codbarras',
+          'codbarra',
           'barras',
           'barcode',
-          'ean',
           'ean13',
           'gtin',
         ]);
-        const rawCode = getVal(['codigo', 'cod', 'code', 'id', 'articulo', 'item', 'plu']);
-        const rawDesc = getVal(['descripcion', 'desc', 'nombre', 'detalle', 'producto', 'denominacion']);
-        const rawRubro = getVal(['rubro', 'departamento', 'seccion']);
-        const rawCategory = getVal(['categoria', 'especie', 'category']);
-        const rawUnit = getVal(['unidad', 'unidaddemedida', 'um', 'medida', 'unit', 'tipo']);
-        const rawPrice = getVal(['precio', 'precioventa', 'price', 'pvp', 'venta', 'importe']);
-        const rawPlu = getVal(['plubalanza', 'balanza', 'plu', 'pesable']);
+        const rawDesc = getVal([
+          'descripcion',
+          'desc',
+          'nombre',
+          'detalle',
+          'producto',
+          'corte',
+          'denominacion',
+          'articulodescripcion',
+        ]);
+        const rawRubro = getVal(['rubro', 'departamento', 'seccion', 'familia']);
+        const rawCategory = getVal(['categoria', 'especie', 'category', 'subrubro', 'grupo']);
+        const rawUnit = getVal(['unidad', 'unidaddemedida', 'um', 'medida', 'unit', 'tipo', 'tipoventa']);
+        const rawPrice = getVal(['precio', 'precioventa', 'price', 'pvp', 'venta', 'importe', 'valor']);
+        const rawCost = getVal(['costo', 'preciocosto', 'cost', 'costprice', 'pcosto']);
+        const rawStockNeco1 = getVal(['stockneco1', 'neco1', 'camaraneco1', 'almacenneco1']);
+        const rawStockNeco2 = getVal(['stockneco2', 'neco2', 'camaraneco2', 'almacenneco2']);
+        const rawStock = getVal(['stock', 'stocktotal', 'existencia', 'existencias', 'cantidad']);
+        const rawVat = getVal(['iva', 'alicuota', 'vat', 'tasaiva']);
         const rawActive = getVal(['activo', 'active', 'estado', 'habilitado']);
 
-        const description = String(rawDesc || rawCode || '').trim().toUpperCase();
-        if (!description) return; // Skip empty rows
+        const description = String(rawDesc || '').trim().toUpperCase();
+        if (!description) return; // Skip empty or header-repeat rows
 
-        const code = String(rawCode || `00${idx + 101}`).trim();
+        const pluClean =
+          rawPlu !== undefined && rawPlu !== null && String(rawPlu).trim() !== ''
+            ? String(rawPlu).trim()
+            : null;
+        const codeClean =
+          rawCode !== undefined && rawCode !== null && String(rawCode).trim() !== ''
+            ? String(rawCode).trim()
+            : null;
+
+        // If Excel has PLU and no separate CODIGO, use PLU as code; if it has CODIGO and no PLU, use CODIGO as PLU
+        const code = codeClean || pluClean || String(idx + 1);
+        const scalePlu = pluClean || codeClean || String(idx + 1);
+
+        // Only set barcode if the Excel explicitly has a barcode column with a value
         const barcode =
           rawBarcode !== undefined && rawBarcode !== null && String(rawBarcode).trim() !== ''
             ? String(rawBarcode).trim()
-            : /^\d{8,14}$/.test(code) && !code.startsWith('20')
-            ? code
             : null;
 
         const parseNum = (val: any, fallback = 0): number => {
           if (val === undefined || val === null || val === '') return fallback;
           if (typeof val === 'number') return isNaN(val) ? fallback : val;
-          const str = String(val).replace('$', '').replace(/\./g, '').replace(',', '.').trim();
+          let str = String(val).replace('$', '').replace(/\s/g, '').trim();
+          if (str.includes(',') && str.includes('.')) {
+            if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
+              str = str.replace(/\./g, '').replace(',', '.');
+            } else {
+              str = str.replace(/,/g, '');
+            }
+          } else if (str.includes(',')) {
+            str = str.replace(',', '.');
+          }
           const n = parseFloat(str);
           return isNaN(n) ? fallback : n;
         };
 
         const price = parseNum(rawPrice, 0);
+        const costPrice = rawCost !== undefined && rawCost !== '' ? parseNum(rawCost, 0) : undefined;
+        const stockNeco1 = rawStockNeco1 !== undefined && rawStockNeco1 !== '' ? parseNum(rawStockNeco1, 0) : undefined;
+        const stockNeco2 = rawStockNeco2 !== undefined && rawStockNeco2 !== '' ? parseNum(rawStockNeco2, 0) : undefined;
+        const stock = rawStock !== undefined && rawStock !== '' ? parseNum(rawStock, 0) : undefined;
+        const vatRate = rawVat !== undefined && rawVat !== '' ? parseNum(rawVat, 21) : undefined;
 
         let rubro = String(rawRubro || '').trim();
         let category = String(rawCategory || '').trim();
@@ -218,78 +341,72 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           category,
         });
 
-        const catUpper = category.toUpperCase();
-        if (isStoreItem) {
-          if (!rubro || rubro.toUpperCase() === 'CARNES VACUNAS') {
-            rubro = category && !['NOVILLITO', 'NOVILLO', 'VACA', 'TERNERA', 'VAQUILLONA'].includes(catUpper)
-              ? category
-              : 'Almacén';
-          }
-          if (!category || ['NOVILLITO', 'CARNES VACUNAS', 'CARNE', 'VACUNO'].includes(catUpper)) {
-            category = rubro || 'Almacén';
-          }
-        } else if (!category || catUpper === 'CARNES VACUNAS' || catUpper === 'CARNE' || catUpper === 'VACUNO') {
-          rubro = rubro || 'Carnes Vacunas';
-          if (description.includes(' VACA') || description.endsWith('VACA') || description.includes(' - VACA')) {
-            category = 'Vaca';
-          } else if (description.includes(' TERNERA') || description.endsWith('TERNERA')) {
-            category = 'Ternera';
-          } else if (description.includes(' NOVILLITO') || description.endsWith('NOVILLITO')) {
-            category = 'Novillito';
-          } else if (description.includes(' NOVILLO') || description.endsWith('NOVILLO')) {
-            category = 'Novillo Pesado';
-          } else if (description.includes(' VAQUILLONA') || description.endsWith('VAQUILLONA')) {
-            category = 'Vaquillona';
-          } else if (description.includes(' CERDO') || description.includes('PORCINO')) {
-            category = 'Cerdo';
-            rubro = 'Cerdo';
+        // Preserve exact rubro and category from the Excel if provided
+        if (rubro && !category) {
+          category = rubro;
+        } else if (category && !rubro) {
+          rubro = category;
+        } else if (!rubro && !category) {
+          if (isStoreItem) {
+            rubro = 'Almacén';
+            category = 'Almacén';
           } else {
-            category = 'Novillito';
+            rubro = 'Carnes Vacunas';
+            if (description.includes(' VACA') || description.endsWith('VACA') || description.includes(' - VACA')) {
+              category = 'Vaca';
+            } else if (description.includes(' TERNERA') || description.endsWith('TERNERA')) {
+              category = 'Ternera';
+            } else if (description.includes(' NOVILLITO') || description.endsWith('NOVILLITO')) {
+              category = 'Novillito';
+            } else if (description.includes(' NOVILLO') || description.endsWith('NOVILLO')) {
+              category = 'Novillo Pesado';
+            } else if (description.includes(' VAQUILLONA') || description.endsWith('VAQUILLONA')) {
+              category = 'Vaquillona';
+            } else if (description.includes(' CERDO') || description.includes('PORCINO')) {
+              category = 'Cerdo';
+              rubro = 'Cerdo';
+            } else {
+              category = 'Novillito';
+            }
           }
         }
 
-        // Robust detection of unit: KG vs UNID
+        // Respect explicit UNIDAD from Excel first; only infer if missing in Excel
         const unitValStr = String(rawUnit || '')
           .trim()
           .toLowerCase()
           .normalize('NFD')
           .replace(/[\u0300-\u036f]/g, '');
 
-        let unitType: 'Kg' | 'Unid' = isStoreItem || Boolean(barcode) ? 'Unid' : 'Kg';
-        if (
-          unitValStr.includes('unid') ||
-          unitValStr.includes('uni') ||
-          unitValStr === 'u' ||
-          unitValStr === 'un' ||
-          unitValStr.includes('pieza') ||
-          unitValStr.includes('pza') ||
-          unitValStr.includes('pack') ||
-          unitValStr.includes('lata') ||
-          unitValStr.includes('botella') ||
-          isStoreItem ||
-          Boolean(barcode)
-        ) {
-          unitType = 'Unid';
-        } else if (
-          unitValStr.includes('kg') ||
-          unitValStr.includes('kilo') ||
-          unitValStr === 'k' ||
-          unitValStr.includes('gram') ||
-          unitValStr.includes('pesable') ||
-          unitValStr.includes('peso')
-        ) {
-          unitType = 'Kg';
+        let unitType: 'Kg' | 'Unid' = 'Kg';
+        if (unitValStr) {
+          if (
+            unitValStr.includes('unid') ||
+            unitValStr.includes('uni') ||
+            unitValStr === 'u' ||
+            unitValStr === 'un' ||
+            unitValStr.includes('pieza') ||
+            unitValStr.includes('pza') ||
+            unitValStr.includes('pack') ||
+            unitValStr.includes('lata') ||
+            unitValStr.includes('botella') ||
+            unitValStr.includes('bolsa') ||
+            unitValStr.includes('caja')
+          ) {
+            unitType = 'Unid';
+          } else {
+            unitType = 'Kg';
+          }
+        } else {
+          unitType = isStoreItem ? 'Unid' : 'Kg';
         }
 
-        const scalePlu =
-          unitType === 'Unid'
-            ? null
-            : rawPlu !== undefined && rawPlu !== ''
-            ? String(rawPlu).trim()
-            : code;
-        const active = rawActive === undefined || rawActive === '' ? true : !['no', 'false', '0', 'inactivo'].includes(String(rawActive).toLowerCase().trim());
+        const active =
+          rawActive === undefined || rawActive === ''
+            ? true
+            : !['no', 'false', '0', 'inactivo', 'baja'].includes(String(rawActive).toLowerCase().trim());
 
-        productsMapped.push({
+        const productObj: Product = {
           code,
           barcode,
           description,
@@ -299,11 +416,22 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           price,
           scalePlu,
           active,
-        });
+        };
+
+        if (costPrice !== undefined) {
+          productObj.costPrice = costPrice;
+          productObj.costo = costPrice;
+        }
+        if (stockNeco1 !== undefined) productObj.stockNeco1 = stockNeco1;
+        if (stockNeco2 !== undefined) productObj.stockNeco2 = stockNeco2;
+        if (stock !== undefined) productObj.stock = stock;
+        if (vatRate !== undefined) productObj.vatRate = vatRate;
+
+        productsMapped.push(productObj);
       });
 
       if (productsMapped.length === 0) {
-        throw new Error('No se encontraron columnas reconocibles (ej. Código, Descripción, Precio). Asegúrese de incluir encabezados.');
+        throw new Error('No se encontraron columnas reconocibles (ej. PLU, Código, Descripción, Precio). Asegúrese de incluir encabezados.');
       }
 
       setParsedProducts(productsMapped);
@@ -368,10 +496,10 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
             <FileSpreadsheet className="w-5 h-5 text-[#002046] shrink-0 mt-0.5" />
             <div>
               <div className="font-bold text-[13px] text-[#002046]">
-                Importador Masivo de Catálogo y Precios
+                Importador Masivo de Catálogo, PLU y Precios
               </div>
               <div className="text-[#44474e] text-[11px]">
-                Sube tu listado de artículos en formato Excel (.xlsx, .xls) o CSV para actualizar precios, costos, stock o dar de alta todo tu inventario en segundos.
+                Sube tu listado de artículos en formato Excel (.xlsx, .xls) o CSV para cargar PLU, códigos, descripciones, rubros, precios, costos o stock tal cual están en tu planilla.
               </div>
             </div>
           </div>
@@ -466,33 +594,34 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
               </div>
             </div>
 
-            <div className="max-h-[180px] overflow-y-auto border border-[#74777f] bg-white">
+            <div className="max-h-[240px] overflow-y-auto border border-[#74777f] bg-white">
               <table className="w-full text-left border-collapse text-[11px]">
                 <thead className="bg-[#e5e8ec] font-bold text-[#181c1f] sticky top-0 border-b border-[#c4c6cf]">
                   <tr className="h-6">
+                    <th className="px-2 text-center border-r border-[#c4c6cf] bg-[#dce5f5] text-[#002046]">PLU</th>
                     <th className="px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
-                    <th className="px-2 border-r border-[#c4c6cf]">CÓD. BARRAS</th>
                     <th className="px-2 border-r border-[#c4c6cf]">DESCRIPCIÓN</th>
-                    <th className="px-2 border-r border-[#c4c6cf]">RUBRO</th>
+                    <th className="px-2 border-r border-[#c4c6cf]">RUBRO / CATEGORÍA</th>
                     <th className="px-2 text-center border-r border-[#c4c6cf]">UNIDAD (CLIC CAMBIAR)</th>
                     <th className="px-2 text-right border-r border-[#c4c6cf]">PRECIO</th>
-                    <th className="px-2 text-center border-r border-[#c4c6cf]">PLU</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#ebeef2]">
-                  {parsedProducts.slice(0, 10).map((p, i) => (
+                  {parsedProducts.map((p, i) => (
                     <tr key={`imp-${p.code || i}-${i}`} className="h-6 hover:bg-[#f1f4f8]">
+                      <td className="px-2 text-center font-mono font-bold text-[#002046] bg-[#f5f8ff] border-r border-[#c4c6cf]">
+                        {p.scalePlu || p.code}
+                      </td>
                       <td className="px-2 font-mono font-bold text-[#002046] border-r border-[#c4c6cf]">
                         {p.code}
                       </td>
-                      <td className="px-2 font-mono text-[#002046] border-r border-[#c4c6cf]">
-                        {p.barcode || '-'}
-                      </td>
-                      <td className="px-2 font-bold border-r border-[#c4c6cf] truncate max-w-[200px]">
+                      <td className="px-2 font-bold border-r border-[#c4c6cf] truncate max-w-[260px]">
                         {p.description}
                       </td>
                       <td className="px-2 border-r border-[#c4c6cf] text-[#44474e]">
-                        {p.category}
+                        {p.rubro && p.category && p.rubro !== p.category
+                          ? `${p.rubro} / ${p.category}`
+                          : p.rubro || p.category}
                       </td>
                       <td className="px-2 text-center border-r border-[#c4c6cf]">
                         <button
@@ -510,9 +639,6 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
                       </td>
                       <td className="px-2 text-right font-mono font-bold text-[#002046] border-r border-[#c4c6cf]">
                         {formatCurrency(p.price)}
-                      </td>
-                      <td className="px-2 text-center font-mono text-[#002046] border-r border-[#c4c6cf]">
-                        {p.scalePlu || '-'}
                       </td>
                     </tr>
                   ))}

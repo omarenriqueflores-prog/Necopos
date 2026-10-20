@@ -198,6 +198,7 @@ export const StockValorizationTab: React.FC = () => {
       rows.push({
         'Rubro': 'Cárnico',
         'Categoría': it.category,
+        'PLU': it.scalePlu || it.code,
         'Código': it.code,
         'Descripción del Corte': it.description,
         'Unidad': it.unitType,
@@ -489,6 +490,7 @@ export const StockValorizationTab: React.FC = () => {
                           <table className="w-full text-xs border border-gray-300 bg-white">
                             <thead className="bg-gray-100 text-gray-700">
                               <tr>
+                                <th className="p-1.5 border border-gray-300 text-center">PLU</th>
                                 <th className="p-1.5 border border-gray-300">CÓDIGO</th>
                                 <th className="p-1.5 border border-gray-300">DESCRIPCIÓN</th>
                                 <th className="p-1.5 border border-gray-300 text-right">PRECIO VIGENTE</th>
@@ -503,6 +505,9 @@ export const StockValorizationTab: React.FC = () => {
                             <tbody>
                               {cat.cuts.map((cut) => (
                                 <tr key={cut.code} className="hover:bg-gray-50 font-normal">
+                                  <td className="p-1.5 border border-gray-200 font-mono text-center font-bold text-blue-900 bg-blue-50/40">
+                                    {cut.scalePlu || cut.code}
+                                  </td>
                                   <td className="p-1.5 border border-gray-200 font-mono text-center">
                                     {cut.code}
                                   </td>

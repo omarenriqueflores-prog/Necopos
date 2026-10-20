@@ -322,6 +322,7 @@ export interface ArcaConfig {
   certificateSubject?: string;
   certificateIssuer?: string;
   certificateValidTo?: string;
+  vaultBundle?: string;
 }
 
 export interface AuditLog {
@@ -668,7 +669,7 @@ export interface MeatReception {
   timestamp: number;
   branchId: 'NECO 1' | 'NECO 2';
   chamber: string;
-  status: 'PENDIENTE' | 'CONFIRMADO' | 'ANULADO';
+  status: 'PENDIENTE' | 'CONFIRMADO' | 'ANULADO' | 'FINALIZADO';
   operator: string;
   // Origen y Proveedor
   supplier: string; // Frigorífico / Matarife

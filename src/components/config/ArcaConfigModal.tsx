@@ -90,17 +90,25 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
 
   const wasOpenRef = useRef<boolean>(false);
 
-  // Sync state ONLY when modal transitions from closed to open
+  // Sync state when modal opens and whenever Firestore config delivers saved credentials
   useEffect(() => {
+    const latestStored = arcaService.getStoredConfig();
+    const combinedVault = arcaService.encodeVaultBundle(
+      config.certificate,
+      config.privateKey,
+      config.vaultBundle || latestStored.vaultBundle
+    );
+    const decodedVault = arcaService.decodeVaultBundle(combinedVault);
+    const hasCert = Boolean(decodedVault.c || config.hasCertificate || latestStored.hasCertificate);
+    const hasKey = Boolean(decodedVault.k || config.hasPrivateKey || latestStored.hasPrivateKey);
+
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true;
-      const latestStored = arcaService.getStoredConfig();
-      const hasCert = Boolean(config.hasCertificate || latestStored.hasCertificate);
-      const hasKey = Boolean(config.hasPrivateKey || latestStored.hasPrivateKey);
 
       setFormConfig({
         ...latestStored,
         ...config,
+        ...(combinedVault ? { vaultBundle: combinedVault } : {}),
         hasCertificate: hasCert,
         hasPrivateKey: hasKey,
         certificateLinked: Boolean(hasCert && hasKey),
@@ -119,25 +127,143 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
       setKeyInput('');
       setAlias(config.alias || latestStored.alias || 'necopos');
 
-      // Query non-sensitive credential status from protected server endpoint
-      arcaService.fetchServerCredentials().then((srv) => {
-        if (srv) {
-          setFormConfig((prev) => {
-            const nextHasCert = Boolean(srv.hasCertificate ?? prev.hasCertificate);
-            const nextHasKey = Boolean(srv.hasPrivateKey ?? prev.hasPrivateKey);
-            return {
-              ...prev,
-              ...(srv.cuit ? { cuit: srv.cuit } : {}),
-              ...(srv.companyName ? { companyName: srv.companyName } : {}),
-              ...(srv.environment ? { environment: srv.environment } : {}),
-              ...(srv.alias ? { alias: srv.alias } : {}),
-              hasCertificate: nextHasCert,
-              hasPrivateKey: nextHasKey,
-              certificateLinked: Boolean(nextHasCert && nextHasKey),
-            };
+      if (hasCert) {
+        setParsedCert({
+          success: true,
+          subject:
+            config.certificateSubject ||
+            config.certSubject ||
+            latestStored.certificateSubject ||
+            'Vinculado en Base de Datos y Servidor',
+          issuer:
+            config.certificateIssuer ||
+            config.certIssuer ||
+            latestStored.certificateIssuer ||
+            'ARCA / AFIP',
+          validFrom: '',
+          validTo:
+            config.certificateValidTo ||
+            config.certExpiration ||
+            latestStored.certificateValidTo ||
+            'Vigente',
+          serial: '',
+          cuit: config.cuit || latestStored.cuit,
+          detectedEnvironment: (config.environment || latestStored.environment) as any,
+          hasCertificate: true,
+          isExpired: false,
+          isValid: true,
+          message: 'Certificado X.509 guardado permanentemente en Base de Datos y Servidor',
+        });
+      }
+
+      // Query & self-heal credential status with server endpoint
+      arcaService
+        .fetchServerCredentials({
+          ...latestStored,
+          ...config,
+          ...(combinedVault ? { vaultBundle: combinedVault } : {}),
+        })
+        .then((srv) => {
+          if (srv) {
+            setFormConfig((prev) => {
+              const nextHasCert = Boolean(srv.hasCertificate || prev.hasCertificate || hasCert);
+              const nextHasKey = Boolean(srv.hasPrivateKey || prev.hasPrivateKey || hasKey);
+              return {
+                ...prev,
+                ...(srv.cuit ? { cuit: srv.cuit } : {}),
+                ...(srv.companyName ? { companyName: srv.companyName } : {}),
+                ...(srv.environment ? { environment: srv.environment } : {}),
+                ...(srv.alias ? { alias: srv.alias } : {}),
+                ...(srv.certificateSubject ? { certificateSubject: srv.certificateSubject } : {}),
+                ...(srv.certificateIssuer ? { certificateIssuer: srv.certificateIssuer } : {}),
+                ...(srv.certificateValidTo ? { certificateValidTo: srv.certificateValidTo } : {}),
+                ...(srv.vaultBundle ? { vaultBundle: srv.vaultBundle } : {}),
+                hasCertificate: nextHasCert,
+                hasPrivateKey: nextHasKey,
+                certificateLinked: Boolean(nextHasCert && nextHasKey),
+              };
+            });
+            if (srv.hasCertificate || hasCert) {
+              setParsedCert({
+                success: true,
+                subject:
+                  srv.certificateSubject ||
+                  config.certificateSubject ||
+                  latestStored.certificateSubject ||
+                  'Vinculado en Base de Datos y Servidor',
+                issuer:
+                  srv.certificateIssuer ||
+                  config.certificateIssuer ||
+                  latestStored.certificateIssuer ||
+                  'ARCA / AFIP',
+                validFrom: '',
+                validTo:
+                  srv.certificateValidTo ||
+                  config.certificateValidTo ||
+                  latestStored.certificateValidTo ||
+                  'Vigente',
+                serial: '',
+                cuit: srv.cuit || config.cuit,
+                detectedEnvironment: (srv.environment || config.environment) as any,
+                hasCertificate: true,
+                isExpired: false,
+                isValid: true,
+                message: 'Certificado X.509 guardado permanentemente en Base de Datos y Servidor',
+              });
+            }
+          }
+        });
+    } else if (isOpen && wasOpenRef.current) {
+      // If Firestore finishes loading saved certificates while modal is already open, reflect them immediately
+      if (hasCert || hasKey) {
+        setFormConfig((prev) => {
+          const nextCert = Boolean(prev.hasCertificate || hasCert);
+          const nextKey = Boolean(prev.hasPrivateKey || hasKey);
+          if (
+            prev.hasCertificate === nextCert &&
+            prev.hasPrivateKey === nextKey &&
+            prev.vaultBundle === (combinedVault || prev.vaultBundle)
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            ...(config.cuit ? { cuit: config.cuit } : {}),
+            ...(config.companyName ? { companyName: config.companyName } : {}),
+            ...(config.environment ? { environment: config.environment } : {}),
+            ...(config.certificateSubject
+              ? { certificateSubject: config.certificateSubject }
+              : {}),
+            ...(config.certificateIssuer ? { certificateIssuer: config.certificateIssuer } : {}),
+            ...(config.certificateValidTo
+              ? { certificateValidTo: config.certificateValidTo }
+              : {}),
+            ...(combinedVault ? { vaultBundle: combinedVault } : {}),
+            hasCertificate: nextCert,
+            hasPrivateKey: nextKey,
+            certificateLinked: Boolean(nextCert && nextKey),
+          };
+        });
+        if (hasCert && !parsedCert) {
+          setParsedCert({
+            success: true,
+            subject:
+              config.certificateSubject ||
+              latestStored.certificateSubject ||
+              'Vinculado en Base de Datos y Servidor',
+            issuer: config.certificateIssuer || latestStored.certificateIssuer || 'ARCA / AFIP',
+            validFrom: '',
+            validTo: config.certificateValidTo || latestStored.certificateValidTo || 'Vigente',
+            serial: '',
+            cuit: config.cuit || latestStored.cuit,
+            detectedEnvironment: (config.environment || latestStored.environment) as any,
+            hasCertificate: true,
+            isExpired: false,
+            isValid: true,
+            message: 'Certificado X.509 guardado permanentemente en Base de Datos y Servidor',
           });
         }
-      });
+      }
     } else if (!isOpen) {
       wasOpenRef.current = false;
     }
@@ -154,19 +280,37 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
       const text = (event.target?.result as string) || '';
       if (text.trim()) {
         const cleanText = text.trim();
+        if (!cleanText.includes('PRIVATE KEY')) {
+          await showAlert(
+            '⚠️ El archivo seleccionado no contiene una Clave Privada (.key) válida en formato PEM (debe comenzar con -----BEGIN ... PRIVATE KEY-----).'
+          );
+          return;
+        }
         setKeyInput(cleanText);
+        const hasCertNow = Boolean(
+          certInput.trim() || formConfig.certificate || formConfig.hasCertificate
+        );
         const updated: ArcaConfig = {
           ...formConfig,
           privateKey: cleanText,
           hasPrivateKey: true,
-          certificateLinked: Boolean((certInput.trim() || formConfig.certificate) && cleanText),
+          hasCertificate: hasCertNow,
+          certificateLinked: Boolean(hasCertNow && cleanText),
         };
         setFormConfig(updated);
-        arcaService.persistCredentials(updated);
+        const saved = await arcaService.saveCredentialsToServer(updated);
+        setFormConfig((prev) => ({
+          ...prev,
+          ...saved,
+          privateKey: cleanText,
+          hasPrivateKey: true,
+          hasCertificate: Boolean(saved.hasCertificate || hasCertNow),
+          certificateLinked: Boolean(saved.hasCertificate || hasCertNow),
+        }));
         try {
-          await onSaveConfig(updated);
+          await onSaveConfig({ ...updated, ...saved, privateKey: cleanText, hasPrivateKey: true });
         } catch (_) {}
-        showAlert('✅ Clave Privada (.key) cargada y vinculada de forma permanente en el sistema.');
+        showAlert('✅ Clave Privada (.key) cargada y vinculada de forma permanente en el servidor.');
       }
     };
     reader.readAsText(file);
@@ -289,23 +433,35 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
           : formConfig.cuit;
 
         const currentKey = keyInput.trim() || formConfig.privateKey || '';
+        const hasKeyNow = Boolean(currentKey || formConfig.hasPrivateKey);
         const updated: ArcaConfig = {
           ...formConfig,
           cuit: extractedCuit || formConfig.cuit,
           environment: detectedEnv,
           certificate: cleanCert,
-          privateKey: currentKey,
+          ...(currentKey ? { privateKey: currentKey } : {}),
           hasCertificate: true,
-          hasPrivateKey: Boolean(currentKey),
-          certificateLinked: Boolean(cleanCert && currentKey),
+          hasPrivateKey: hasKeyNow,
+          certificateLinked: Boolean(hasKeyNow),
           certExpiration: res.validTo,
           certIssuer: res.issuer,
           certSubject: res.subject,
+          certificateValidTo: res.validTo,
+          certificateIssuer: res.issuer,
+          certificateSubject: res.subject,
         };
         setFormConfig(updated);
-        arcaService.persistCredentials(updated);
+        const saved = await arcaService.saveCredentialsToServer(updated);
+        setFormConfig((prev) => ({
+          ...prev,
+          ...saved,
+          certificate: cleanCert,
+          hasCertificate: true,
+          hasPrivateKey: Boolean(saved.hasPrivateKey || hasKeyNow),
+          certificateLinked: Boolean(saved.hasPrivateKey || hasKeyNow),
+        }));
         try {
-          await onSaveConfig(updated);
+          await onSaveConfig({ ...updated, ...saved, certificate: cleanCert, hasCertificate: true });
         } catch (_) {}
       }
     } catch (err: any) {
@@ -332,7 +488,7 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
           lastChecked: new Date().toISOString(),
         };
         setFormConfig(nextCfg);
-        arcaService.persistCredentials(nextCfg);
+        await arcaService.saveCredentialsToServer(nextCfg);
       }
     } catch (err: any) {
       setTestResult({
@@ -361,8 +517,8 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
       const pv2 = (formConfig.pointsOfSale?.['NECO 2'] || '0018').padStart(4, '0');
 
       const stored = arcaService.getStoredConfig();
-      const uploadedCert = certInput.trim() || undefined;
-      const uploadedKey = keyInput.trim() || undefined;
+      const uploadedCert = certInput.trim() || formConfig.certificate || undefined;
+      const uploadedKey = keyInput.trim() || formConfig.privateKey || undefined;
       const hasCert = Boolean(uploadedCert || formConfig.hasCertificate || stored.hasCertificate);
       const hasKey = Boolean(uploadedKey || formConfig.hasPrivateKey || stored.hasPrivateKey);
 
@@ -379,8 +535,13 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
         },
       };
 
-      arcaService.persistCredentials(cleanedConfig);
-      await onSaveConfig(cleanedConfig);
+      const saved = await arcaService.saveCredentialsToServer(cleanedConfig);
+      await onSaveConfig({
+        ...cleanedConfig,
+        ...saved,
+        ...(uploadedCert ? { certificate: uploadedCert } : {}),
+        ...(uploadedKey ? { privateKey: uploadedKey } : {}),
+      });
       setCertInput('');
       setKeyInput('');
       await showAlert('✅ Configuración ARCA, Certificados Digitales y Puntos de Venta guardados exitosamente en el servidor.');
@@ -947,10 +1108,23 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                   </span>
                 </div>
 
+                {(formConfig.hasPrivateKey || formConfig.privateKey) && !keyInput && (
+                  <div className="p-2 bg-emerald-50 border border-emerald-400 text-emerald-950 text-[11px] flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>
+                      <strong>Clave Privada (.key) guardada permanentemente en la Base de Datos:</strong> Ya se encuentra configurada y activa en el sistema. No necesita volver a subirla (cargue un archivo solo si desea reemplazarla).
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2 flex-wrap">
                   <label className="h-[28px] px-3 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] font-bold text-[11px] flex items-center gap-1.5 cursor-pointer">
                     <Upload className="w-3.5 h-3.5 text-[#002046]" />
-                    <span>Subir archivo necopos_privada.key</span>
+                    <span>
+                      {formConfig.hasPrivateKey
+                        ? 'Reemplazar archivo necopos_privada.key'
+                        : 'Subir archivo necopos_privada.key'}
+                    </span>
                     <input
                       type="file"
                       accept=".key,.pem,.txt"
@@ -984,7 +1158,7 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                   }}
                   placeholder={
                     formConfig.hasPrivateKey
-                      ? '🔒 Clave privada resguardada en el servidor (pegue una nueva solo si desea reemplazarla)'
+                      ? '🔒 Clave privada guardada permanentemente en la Base de Datos y en el Servidor (pegue una nueva solo si desea reemplazarla)'
                       : '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----'
                   }
                   rows={2}
@@ -1012,10 +1186,24 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                   </span>
                 </div>
 
+                {(formConfig.hasCertificate || formConfig.certificate || parsedCert?.isValid) &&
+                  !certInput && (
+                    <div className="p-2 bg-emerald-50 border border-emerald-400 text-emerald-950 text-[11px] flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        <strong>Certificado Digital (.crt) guardado permanentemente en la Base de Datos:</strong> Ya se encuentra configurado y activo en el sistema. No necesita volver a subirlo (cargue un archivo solo si desea reemplazarlo).
+                      </span>
+                    </div>
+                  )}
+
                 <div className="flex items-center gap-3">
                   <label className="h-[28px] px-3 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] font-bold text-[11px] flex items-center gap-1.5 cursor-pointer">
                     <Upload className="w-3.5 h-3.5 text-[#002046]" />
-                    <span>Seleccionar archivo .crt descargado de ARCA</span>
+                    <span>
+                      {formConfig.hasCertificate
+                        ? 'Reemplazar archivo .crt descargado de ARCA'
+                        : 'Seleccionar archivo .crt descargado de ARCA'}
+                    </span>
                     <input
                       type="file"
                       accept=".crt,.pem,.cer,.txt"
@@ -1041,12 +1229,16 @@ export const ArcaConfigModal: React.FC<ArcaConfigModalProps> = ({
                     } else {
                       setFormConfig((prev) => ({
                         ...prev,
-                        certificate: '',
-                        hasCertificate: false,
+                        certificate: undefined,
+                        hasCertificate: Boolean(prev.hasCertificate),
                       }));
                     }
                   }}
-                  placeholder="-----BEGIN CERTIFICATE-----&#10;MIID...&#10;-----END CERTIFICATE-----"
+                  placeholder={
+                    formConfig.hasCertificate
+                      ? '🔒 Certificado Digital X.509 (.crt) guardado permanentemente en la Base de Datos y en el Servidor (pegue uno nuevo solo si desea reemplazarlo)'
+                      : '-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----'
+                  }
                   rows={3}
                   className="w-full p-2 bg-white border border-[#74777f] font-mono text-[10px] text-[#002046] resize-none"
                 />

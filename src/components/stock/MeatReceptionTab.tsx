@@ -28,7 +28,7 @@ import { NewReceptionModal } from './NewReceptionModal';
 import { ReceptionDetailModal } from './ReceptionDetailModal';
 
 export const MeatReceptionTab: React.FC = () => {
-  const { meatReceptions, branchConfigs, finalizeMeatReception, deleteOrCancelMeatReception, localUser, user } = useFirebase();
+  const { meatReceptions, branchConfigs, finalizeMeatReception, updateMeatReceptionStatus, deleteOrCancelMeatReception, localUser, user } = useFirebase();
   const { showAlert, showConfirm, showAdminAuth } = useDialog();
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
@@ -71,7 +71,7 @@ export const MeatReceptionTab: React.FC = () => {
 
       return true;
     });
-  }, [meatReceptions, selectedBranch, selectedStatus, searchQuery]);
+  }, [meatReceptions, selectedBranch, selectedStatus, selectedCategory, searchQuery]);
 
   // Métricas agregadas
   const metrics = useMemo(() => {
@@ -433,6 +433,26 @@ export const MeatReceptionTab: React.FC = () => {
                   </td>
                   <td className="p-1.5 text-center">
                     <div className="flex items-center justify-center space-x-1">
+                      {r.status === 'PENDIENTE' && (
+                        <button
+                          type="button"
+                          onClick={() => finalizeMeatReception(r, operatorName)}
+                          className="p-1 bg-green-100 hover:bg-green-200 rounded text-green-800"
+                          title="Confirmar e ingresar en cámara"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {r.status === 'CONFIRMADO' && (
+                        <button
+                          type="button"
+                          onClick={() => updateMeatReceptionStatus(r.id, 'FINALIZADO', operatorName)}
+                          className="p-1 bg-blue-100 hover:bg-blue-200 rounded text-blue-800"
+                          title="Marcar como Finalizada (ya despostada)"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setViewingReception(r)}
@@ -503,6 +523,10 @@ export const MeatReceptionTab: React.FC = () => {
         <ReceptionDetailModal
           reception={viewingReception}
           onClose={() => setViewingReception(null)}
+          onConfirmDraft={async (rec) => {
+            await finalizeMeatReception(rec, operatorName);
+            setViewingReception(null);
+          }}
         />
       )}
     </div>

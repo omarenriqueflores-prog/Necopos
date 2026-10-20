@@ -88,14 +88,15 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
 
   // Productos filtrados para el selector (también busca por código de barras)
   const filteredProducts = useMemo(() => {
-    if (!productSearch.trim()) return products.slice(0, 120);
+    const validProducts = (products || []).filter(Boolean);
+    if (!productSearch.trim()) return validProducts.slice(0, 120);
     const q = productSearch.toLowerCase().trim();
-    return products.filter(
+    return validProducts.filter(
       (p) =>
-        p.code.toLowerCase().includes(q) ||
-        (p.barcode && p.barcode.toLowerCase().includes(q)) ||
-        p.description.toLowerCase().includes(q) ||
-        p.scalePlu?.toString().includes(q)
+        (p?.code && p.code.toLowerCase().includes(q)) ||
+        (p?.barcode && p.barcode.toLowerCase().includes(q)) ||
+        (p?.description && p.description.toLowerCase().includes(q)) ||
+        (p?.scalePlu && p.scalePlu.toString().includes(q))
     );
   }, [products, productSearch]);
 
@@ -452,10 +453,10 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                         }`}
                       >
                         <div>
-                          <span className="font-mono font-bold">[{p.code}]</span> {p.description} ({p.category})
+                          <span className="font-mono font-bold">[{p.code}]</span> {p.description || p.code} ({p.category || 'General'})
                         </div>
                         <div className="text-right">
-                          {formatCurrency(p.price)} / {p.unitType}
+                          {formatCurrency(p.price || 0)} / {p.unitType || 'Unid'}
                         </div>
                       </div>
                     );
@@ -479,10 +480,10 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                         }`}
                       >
                         <div>
-                          <span className="font-mono font-bold">[{p.code}]</span> {p.description} ({getStoreRubroLabel(p)})
+                          <span className="font-mono font-bold">[{p.code}]</span> {p.description || p.code} ({getStoreRubroLabel(p)})
                         </div>
                         <div className="text-right">
-                          {formatCurrency(p.price)} / Unid
+                          {formatCurrency(p.price || 0)} / Unid
                         </div>
                       </div>
                     );

@@ -19,6 +19,7 @@ import {
   Calendar,
   X,
   FileSpreadsheet,
+  Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useFirebase } from '../../context/FirebaseContext';
@@ -29,12 +30,25 @@ import { generateDeboningVoucherHtml } from '../../utils/deboningHelper';
 import { NewDeboningModal } from './NewDeboningModal';
 import { DeboningDetailModal } from './DeboningDetailModal';
 import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
+import { YieldTemplatesManager } from './YieldTemplatesManager';
 import { WindowsModal } from '../common/WindowsModal';
 import { Lock, ShieldAlert } from 'lucide-react';
 
 export const MeatDeboningTab: React.FC = () => {
-  const { meatDebonings, branchConfigs, localUser, user, finalizeMeatDeboning, deleteOrCancelMeatDeboning } = useFirebase();
+  const {
+    meatDebonings,
+    branchConfigs,
+    localUser,
+    user,
+    finalizeMeatDeboning,
+    deleteOrCancelMeatDeboning,
+    deboningTemplates,
+    purgeAllCancelledDebonings,
+  } = useFirebase();
   const { showAdminAuth, showAlert, showConfirm } = useDialog();
+
+  // Vista activa: Órdenes de desposte vs Planillas de rendimiento base
+  const [activeView, setActiveView] = useState<'ORDERS' | 'TEMPLATES'>('ORDERS');
 
   const [selectedBranch, setSelectedBranch] = useState<'ALL' | 'NECO 1' | 'NECO 2'>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'FINALIZADO' | 'BORRADOR' | 'ANULADO'>('ALL');
@@ -49,6 +63,8 @@ export const MeatDeboningTab: React.FC = () => {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [password, setPassword] = useState('');
   const [deboningToDelete, setDeboningToDelete] = useState<MeatDeboning | null>(null);
+  const [eliminateCarcasses, setEliminateCarcasses] = useState(true);
+  const [eliminateCuts, setEliminateCuts] = useState(true);
   const [passwordError, setPasswordError] = useState('');
 
   // Filtrado
@@ -140,26 +156,41 @@ export const MeatDeboningTab: React.FC = () => {
     }
   };
 
-  // Eliminar o anular desposte con autorización de administrador
-  const handleDeleteDeboning = async (deb: MeatDeboning) => {
+  // Cantidad de despostes anulados
+  const cancelledCount = useMemo(() => {
+    return meatDebonings.filter((d) => d.status === 'ANULADO').length;
+  }, [meatDebonings]);
+
+  // Abrir modal de confirmación con opciones completas de eliminación (cortes y medias res)
+  const openDeleteModal = (deb: MeatDeboning) => {
+    setDeboningToDelete(deb);
+    setEliminateCuts(true);
+    setEliminateCarcasses(true);
+    setPassword('');
+    setPasswordError('');
+    setShowPasswordModal(true);
+  };
+
+  // Purgar todos los despostes anulados con clave admin
+  const handlePurgeCancelled = async () => {
+    const cancelled = meatDebonings.filter((d) => d.status === 'ANULADO');
+    if (cancelled.length === 0) return;
+
     try {
       const authorized = await showAdminAuth(
-        `¿Desea anular o eliminar el desposte ${deb.code} (Tropa ${deb.tropaNumber}, ${formatKg(deb.initialWeightKg)})?\n\nEsta operación revertirá el stock de cortes y restablecerá la media res. Ingrese la clave de administrador para confirmar.`,
-        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR DESPOSTE'
+        `¿Desea eliminar definitivamente los ${cancelled.length} despostes anulados de la base de datos?\n\nEsta acción depurará el historial y limpiará cualquier media res residual en cámara. Ingrese la clave de administrador.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - PURGAR ANULADOS'
       );
-
       if (authorized) {
         const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
-        await deleteOrCancelMeatDeboning(deb.id, operator);
-        await showAlert(`El desposte ${deb.code} fue anulado correctamente y el stock ha sido revertido.`, 'DESPOSTE ANULADO');
+        await purgeAllCancelledDebonings(operator, true);
+        await showAlert(
+          `Se eliminaron definitivamente ${cancelled.length} despostes anulados de la base de datos.`,
+          'DESPOSTES PURGADOS'
+        );
       }
     } catch (err: any) {
-      console.error('Error al autorizar eliminación de desposte:', err);
-      // Fallback a modal directo si showAdminAuth fallara por cualquier motivo
-      setDeboningToDelete(deb);
-      setPassword('');
-      setPasswordError('');
-      setShowPasswordModal(true);
+      console.error('Error al purgar despostes anulados:', err);
     }
   };
 
@@ -200,80 +231,149 @@ export const MeatDeboningTab: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-[#f1f4f8] space-y-2 select-none overflow-hidden p-2 text-xs">
-      {/* TARJETAS RESUMEN KPIS */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 shrink-0">
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Tropas Faenadas</span>
-            <Beef className="w-3.5 h-3.5 text-blue-800" />
-          </div>
-          <div className="text-lg font-bold text-[#002046] mt-0.5">{metrics.countFinalized}</div>
-          <div className="text-[10px] text-gray-600 font-semibold">{metrics.totalOrders} órdenes totales</div>
+      {/* BARRA SUPERIOR DE SELECTOR DE VISTA: ÓRDENES vs PLANILLAS */}
+      <div className="flex items-center justify-between bg-white border border-[#c4c6cf] px-2 py-1.5 rounded shadow-sm shrink-0">
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={() => setActiveView('ORDERS')}
+            className={`px-3 py-1 font-bold rounded flex items-center space-x-1.5 text-xs transition-colors cursor-pointer ${
+              activeView === 'ORDERS'
+                ? 'bg-[#002046] text-white shadow-sm'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            <Beef className="w-3.5 h-3.5 text-amber-400" />
+            <span>Órdenes de Desposte ({meatDebonings.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveView('TEMPLATES')}
+            className={`px-3 py-1 font-bold rounded flex items-center space-x-1.5 text-xs transition-colors cursor-pointer ${
+              activeView === 'TEMPLATES'
+                ? 'bg-[#002046] text-white shadow-sm'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+            }`}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Planillas de Rendimiento Base ({deboningTemplates.length})</span>
+          </button>
         </div>
 
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Kilos Procesados</span>
-            <Scale className="w-3.5 h-3.5 text-indigo-700" />
-          </div>
-          <div className="text-lg font-bold text-indigo-900 mt-0.5">{formatKg(metrics.totalInitialKg)}</div>
-          <div className="text-[10px] text-indigo-700 font-semibold">{formatKg(metrics.totalOutputKg)} obtenidos</div>
-        </div>
-
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Rend. Carne Útil</span>
-            <TrendingUp className="w-3.5 h-3.5 text-green-700" />
-          </div>
-          <div className="text-lg font-bold text-green-800 mt-0.5">{metrics.netMeatYieldPct}%</div>
-          <div className="text-[10px] text-green-700 font-semibold">{formatKg(metrics.totalNetMeatKg)} mostrador</div>
-        </div>
-
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Merma Técnica</span>
-            <TrendingDown className="w-3.5 h-3.5 text-amber-700" />
-          </div>
-          <div className={`text-lg font-bold mt-0.5 ${metrics.shrinkagePct <= 2.5 ? 'text-gray-800' : 'text-red-700'}`}>
-            {metrics.shrinkagePct}%
-          </div>
-          <div className="text-[10px] text-gray-600 font-semibold">{formatKg(metrics.shrinkageKg)} oreo/aserrín</div>
-        </div>
-
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Valor Comercial</span>
-            <DollarSign className="w-3.5 h-3.5 text-blue-700" />
-          </div>
-          <div className="text-lg font-bold text-blue-900 mt-0.5">{formatCurrency(metrics.totalCommercialValue)}</div>
-          <div className="text-[10px] text-blue-700 font-semibold">Costo: {formatCurrency(metrics.totalInitialCost)}</div>
-        </div>
-
-        <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
-          <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
-            <span>Margen Bruto</span>
-            <DollarSign className="w-3.5 h-3.5 text-green-700" />
-          </div>
-          <div className="text-lg font-bold text-green-800 mt-0.5">+{metrics.grossMarginPct}%</div>
-          <div className="text-[10px] text-green-700 font-semibold">{formatCurrency(metrics.grossMarginTotal)} ({metrics.multiplicationFactor}x)</div>
+        <div className="flex items-center space-x-2 text-[11px]">
+          {activeView === 'ORDERS' && cancelledCount > 0 && (
+            <button
+              type="button"
+              onClick={handlePurgeCancelled}
+              className="px-2.5 py-1 bg-red-50 hover:bg-red-100 border border-red-300 text-red-700 rounded font-bold flex items-center space-x-1 cursor-pointer"
+              title="Eliminar definitivamente todos los despostes anulados de la base de datos"
+            >
+              <Trash2 className="w-3 h-3 text-red-600" />
+              <span>Purgar Anulados ({cancelledCount})</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* BARRA DE HERRAMIENTAS Y FILTROS */}
-      <div className="bg-white border border-[#c4c6cf] p-2 flex flex-wrap items-center justify-between gap-2 shadow-sm shrink-0">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Botón Nuevo Desposte */}
-          <button
-            type="button"
-            onClick={() => {
+      {/* CONTENIDO SEGÚN VISTA SELECCIONADA */}
+      {activeView === 'TEMPLATES' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <YieldTemplatesManager
+            onOpenNewDeboningWithTemplate={() => {
+              setActiveView('ORDERS');
               setEditingDeboning(null);
               setShowNewModal(true);
             }}
-            className="px-3 py-1.5 bg-[#002046] hover:bg-blue-900 text-white font-bold flex items-center space-x-1.5 shadow-sm text-xs cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5 text-green-400" />
-            <span>NUEVO DESPOSTE DE TROPA / MEDIA RES</span>
-          </button>
+          />
+        </div>
+      ) : (
+        <>
+          {/* TARJETAS RESUMEN KPIS */}
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 shrink-0">
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Tropas Faenadas</span>
+                <Beef className="w-3.5 h-3.5 text-blue-800" />
+              </div>
+              <div className="text-lg font-bold text-[#002046] mt-0.5">{metrics.countFinalized}</div>
+              <div className="text-[10px] text-gray-600 font-semibold">{metrics.totalOrders} órdenes totales</div>
+            </div>
+
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Kilos Procesados</span>
+                <Scale className="w-3.5 h-3.5 text-indigo-700" />
+              </div>
+              <div className="text-lg font-bold text-indigo-900 mt-0.5">{formatKg(metrics.totalInitialKg)}</div>
+              <div className="text-[10px] text-indigo-700 font-semibold">{formatKg(metrics.totalOutputKg)} obtenidos</div>
+            </div>
+
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Rend. Carne Útil</span>
+                <TrendingUp className="w-3.5 h-3.5 text-green-700" />
+              </div>
+              <div className="text-lg font-bold text-green-800 mt-0.5">{metrics.netMeatYieldPct}%</div>
+              <div className="text-[10px] text-green-700 font-semibold">{formatKg(metrics.totalNetMeatKg)} mostrador</div>
+            </div>
+
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Merma Técnica</span>
+                <TrendingDown className="w-3.5 h-3.5 text-amber-700" />
+              </div>
+              <div className={`text-lg font-bold mt-0.5 ${metrics.shrinkagePct <= 2.5 ? 'text-gray-800' : 'text-red-700'}`}>
+                {metrics.shrinkagePct}%
+              </div>
+              <div className="text-[10px] text-gray-600 font-semibold">{formatKg(metrics.shrinkageKg)} oreo/aserrín</div>
+            </div>
+
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Valor Comercial</span>
+                <DollarSign className="w-3.5 h-3.5 text-blue-700" />
+              </div>
+              <div className="text-lg font-bold text-blue-900 mt-0.5">{formatCurrency(metrics.totalCommercialValue)}</div>
+              <div className="text-[10px] text-blue-700 font-semibold">Costo: {formatCurrency(metrics.totalInitialCost)}</div>
+            </div>
+
+            <div className="bg-white border border-[#c4c6cf] p-2 rounded shadow-sm">
+              <div className="text-[10px] text-gray-500 uppercase font-semibold flex items-center justify-between">
+                <span>Margen Bruto</span>
+                <DollarSign className="w-3.5 h-3.5 text-green-700" />
+              </div>
+              <div className="text-lg font-bold text-green-800 mt-0.5">+{metrics.grossMarginPct}%</div>
+              <div className="text-[10px] text-green-700 font-semibold">{formatCurrency(metrics.grossMarginTotal)} ({metrics.multiplicationFactor}x)</div>
+            </div>
+          </div>
+
+          {/* BARRA DE HERRAMIENTAS Y FILTROS */}
+          <div className="bg-white border border-[#c4c6cf] p-2 flex flex-wrap items-center justify-between gap-2 shadow-sm shrink-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Botón Nuevo Desposte */}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingDeboning(null);
+                  setShowNewModal(true);
+                }}
+                className="px-3 py-1.5 bg-[#002046] hover:bg-blue-900 text-white font-bold flex items-center space-x-1.5 shadow-sm text-xs cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 text-green-400" />
+                <span>NUEVO DESPOSTE DE TROPA / MEDIA RES</span>
+              </button>
+
+              {/* Botón Acceso Rápido a Planillas Base */}
+              <button
+                type="button"
+                onClick={() => setActiveView('TEMPLATES')}
+                className="px-2.5 py-1.5 bg-emerald-800 hover:bg-emerald-900 text-white font-bold flex items-center space-x-1.5 shadow-sm text-xs cursor-pointer"
+                title="Ver, editar y crear planillas base de rendimiento"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
+                <span>PLANILLAS BASE ({deboningTemplates.length})</span>
+              </button>
 
           {/* Filtro Sucursal */}
           <div className="flex items-center space-x-1 border border-gray-300 rounded px-1.5 py-0.5 bg-[#f8f9fa]">
@@ -486,16 +586,19 @@ export const MeatDeboningTab: React.FC = () => {
                             <CheckCircle2 className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        {deb.status !== 'ANULADO' && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteDeboning(deb)}
-                            className="p-1 text-red-700 hover:bg-red-100 rounded"
-                            title="Eliminar / Anular Desposte (Clave Admin)"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        {/* Eliminar Desposte (Activo para TODOS los estados: FINALIZADO, BORRADOR y ANULADO) */}
+                        <button
+                          type="button"
+                          onClick={() => openDeleteModal(deb)}
+                          className="p-1 text-red-700 hover:bg-red-100 rounded cursor-pointer"
+                          title={
+                            deb.status === 'ANULADO'
+                              ? 'Eliminar Desposte Anulado de la Base de Datos (Clave Admin)'
+                              : 'Eliminar Desposte y Revertir Cortes / Medias Res de Cámara (Clave Admin)'
+                          }
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -517,6 +620,8 @@ export const MeatDeboningTab: React.FC = () => {
           </div>
         </div>
       </div>
+      </>
+      )}
 
       {/* MODAL NUEVO / EDITAR DESPOSTE */}
       {showNewModal && (
@@ -554,7 +659,7 @@ export const MeatDeboningTab: React.FC = () => {
           }}
           title="AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR DESPOSTE"
           icon={<ShieldAlert className="w-4 h-4 text-[#ffdad6]" />}
-          maxWidth="max-w-md"
+          maxWidth="max-w-lg"
           zIndex="z-[9999]"
         >
           <form
@@ -567,37 +672,89 @@ export const MeatDeboningTab: React.FC = () => {
               }
               if (cleanPass === '26635235') {
                 const operator = localUser?.fullName || user?.displayName || user?.email || 'Administrador';
-                await deleteOrCancelMeatDeboning(deboningToDelete.id, operator);
+                await deleteOrCancelMeatDeboning(
+                  deboningToDelete.id,
+                  operator,
+                  'Eliminado definitivamente por Administrador',
+                  true,
+                  eliminateCarcasses
+                );
                 setShowPasswordModal(false);
                 setPassword('');
                 setPasswordError('');
                 setDeboningToDelete(null);
-                await showAlert(`El desposte ${deboningToDelete.code} fue anulado correctamente y el stock ha sido revertido.`, 'DESPOSTE ANULADO');
+                await showAlert(
+                  `El desposte ${deboningToDelete.code} fue eliminado definitivamente y el stock de cortes y medias reses en cámara ha sido actualizado.`,
+                  'DESPOSTE ELIMINADO'
+                );
               } else {
                 setPasswordError('Clave incorrecta. Acceso denegado.');
                 setPassword('');
               }
             }}
-            className="flex flex-col gap-3 p-2 text-sm select-none"
+            className="flex flex-col gap-3 p-3 text-sm select-none"
           >
             <div className="flex items-start gap-3">
-              <div className="p-2 bg-[#ffdad6] border border-[#ba1a1a] rounded shrink-0">
+              <div className="p-2.5 bg-[#ffdad6] border border-[#ba1a1a] rounded shrink-0">
                 <Lock className="w-6 h-6 text-[#aa3531]" />
               </div>
               <div className="flex flex-col gap-1 flex-1">
-                <div className="text-[12px] font-bold text-[#181c1f] leading-snug">
-                  ¿Confirma la anulación o eliminación del desposte {deboningToDelete.code}?
+                <div className="text-[13px] font-bold text-[#181c1f] leading-snug flex items-center justify-between">
+                  <span>¿Eliminar Desposte {deboningToDelete.code}?</span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    deboningToDelete.status === 'FINALIZADO'
+                      ? 'bg-green-100 text-green-800 border border-green-300'
+                      : deboningToDelete.status === 'ANULADO'
+                      ? 'bg-red-100 text-red-800 border border-red-300'
+                      : 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                  }`}>
+                    {deboningToDelete.status}
+                  </span>
                 </div>
-                <div className="text-[11px] text-[#44474e]">
-                  Tropa {deboningToDelete.tropaNumber} ({formatKg(deboningToDelete.initialWeightKg)}). Esta acción revertirá los kilos sumados al stock y restaurará la media res.
+                <div className="text-[11px] text-[#44474e] mt-1 space-y-0.5 bg-gray-50 p-2 rounded border border-gray-200">
+                  <div>Tropa SENASA: <strong>{deboningToDelete.tropaNumber}</strong> — Proveedor: <strong>{deboningToDelete.supplier}</strong></div>
+                  <div>Peso Gancho Entrada: <strong className="text-blue-900">{formatKg(deboningToDelete.initialWeightKg)}</strong> ({deboningToDelete.animalCategory})</div>
+                  <div>Peso Cortes Salida: <strong className="text-green-800">{formatKg(deboningToDelete.totalOutputWeightKg)}</strong> ({deboningToDelete.cuts?.length || 0} cortes)</div>
                 </div>
               </div>
+            </div>
+
+            {/* OPCIONES DE REVERSIÓN Y LIMPIEZA DE CÁMARA */}
+            <div className="bg-amber-50 border border-amber-300 p-2.5 rounded text-xs space-y-2">
+              <div className="font-bold text-amber-900 flex items-center gap-1.5 text-[11px]">
+                <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>Acciones sobre el Stock de Cámara Frigorífica:</span>
+              </div>
+
+              <label className="flex items-start space-x-2 cursor-pointer text-gray-800">
+                <input
+                  type="checkbox"
+                  checked={eliminateCuts}
+                  onChange={(e) => setEliminateCuts(e.target.checked)}
+                  className="mt-0.5 text-blue-900 focus:ring-blue-500 rounded cursor-pointer"
+                />
+                <span className="text-[11px] font-semibold">
+                  <strong>Eliminar / Descontar Cortes de Cámara:</strong> Revertirá los {formatKg(deboningToDelete.totalOutputWeightKg)} de cortes ingresados por este desposte.
+                </span>
+              </label>
+
+              <label className="flex items-start space-x-2 cursor-pointer text-gray-800">
+                <input
+                  type="checkbox"
+                  checked={eliminateCarcasses}
+                  onChange={(e) => setEliminateCarcasses(e.target.checked)}
+                  className="mt-0.5 text-blue-900 focus:ring-blue-500 rounded cursor-pointer"
+                />
+                <span className="text-[11px] font-semibold">
+                  <strong>Eliminar / Dar de Baja Medias Reses de Cámara:</strong> Evitará que las medias reses ({formatKg(deboningToDelete.initialWeightKg)}) vuelvan a quedar cargadas o disponibles en existencias.
+                </span>
+              </label>
             </div>
 
             <div className="flex flex-col gap-1 mt-1">
               <label className="text-[11px] font-bold text-[#002046] flex items-center gap-1">
                 <ShieldAlert className="w-3.5 h-3.5 text-[#aa3531]" />
-                Clave de Administrador:
+                Clave de Administrador para Confirmar:
               </label>
               <input
                 type="password"
@@ -606,7 +763,7 @@ export const MeatDeboningTab: React.FC = () => {
                   setPassword(e.target.value);
                   if (passwordError) setPasswordError('');
                 }}
-                placeholder="Ingrese clave..."
+                placeholder="Ingrese clave de administrador..."
                 className="w-full h-[32px] px-2.5 bg-white border border-[#74777f] focus:border-[#002046] focus:outline-none text-[12px] font-mono shadow-inner"
                 autoFocus
               />
@@ -634,8 +791,8 @@ export const MeatDeboningTab: React.FC = () => {
                 type="submit"
                 className="h-[28px] px-5 bg-[#aa3531] hover:bg-[#8b2926] border border-[#8b2926] text-white text-[12px] font-bold cursor-pointer flex items-center gap-1.5"
               >
-                <Lock className="w-3.5 h-3.5" />
-                Autorizar y Eliminar
+                <Trash2 className="w-3.5 h-3.5" />
+                Eliminar Definitivamente
               </button>
             </div>
           </form>

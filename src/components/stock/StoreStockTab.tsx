@@ -125,10 +125,11 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchCode = item.code.toLowerCase().includes(q);
+        const matchPlu = item.scalePlu?.toString().toLowerCase().includes(q);
         const matchBarcode = item.barcode?.toLowerCase().includes(q);
         const matchDesc = item.description.toLowerCase().includes(q);
         const matchRubro = item.storeRubro.toLowerCase().includes(q);
-        if (!matchCode && !matchBarcode && !matchDesc && !matchRubro) return false;
+        if (!matchCode && !matchPlu && !matchBarcode && !matchDesc && !matchRubro) return false;
       }
 
       if (selectedRubro !== 'ALL' && item.storeRubro !== selectedRubro) {
@@ -282,11 +283,11 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
 
   const exportToExcel = () => {
     const data = filteredItems.map((it) => ({
+      PLU: it.scalePlu || it.code,
       Código: it.code,
-      'Código de Barras (EAN)': it.barcode || '-',
       'Artículo de Almacén': it.description,
       'Rubro / Sector': it.storeRubro,
-      Unidad: 'Unid',
+      Unidad: it.unitType || 'Unid',
       'Almacén NECO 1 (Unid)': it.neco1Stock,
       'Almacén NECO 2 (Unid)': it.neco2Stock,
       'Total Consolidado (Unid)': it.totalStock,
@@ -505,8 +506,8 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
         <table className="w-full text-left border-collapse text-xs">
           <thead className="bg-[#00522c] text-white sticky top-0 z-10 select-none">
             <tr>
-              <th className="p-2 border border-[#003d20] w-20 text-center">CÓDIGO</th>
-              <th className="p-2 border border-[#003d20] w-36">CÓD. DE BARRAS (EAN)</th>
+              <th className="p-2 border border-[#003d20] w-20 text-center">PLU</th>
+              <th className="p-2 border border-[#003d20] w-24 text-center">CÓDIGO</th>
               <th className="p-2 border border-[#003d20]">
                 ARTÍCULO DE ALMACÉN / BEBIDAS / LIMPIEZA / VARIOS
               </th>
@@ -564,18 +565,11 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
                         : ''
                     }`}
                   >
+                    <td className="p-2 text-center font-mono font-bold text-emerald-900 bg-emerald-50/40 border border-gray-200">
+                      {item.scalePlu || item.code}
+                    </td>
                     <td className="p-2 text-center font-mono font-bold text-gray-800 border border-gray-200">
                       {item.code}
-                    </td>
-                    <td className="p-2 font-mono border border-gray-200">
-                      {item.barcode ? (
-                        <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-900 px-1.5 py-0.5 rounded border border-blue-200 text-[11px] font-bold">
-                          <Barcode className="w-3 h-3 text-blue-700" />
-                          {item.barcode}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400 text-[11px]">Sin código</span>
-                      )}
                     </td>
                     <td className="p-2 border border-gray-200 font-bold text-gray-900">
                       <div className="flex items-center space-x-1.5">
@@ -592,7 +586,7 @@ export const StoreStockTab: React.FC<StoreStockTabProps> = ({
                       </span>
                     </td>
                     <td className="p-2 border border-gray-200 text-center font-bold text-emerald-800">
-                      Unid
+                      {item.unitType || 'Unid'}
                     </td>
 
                     {/* Stock Almacén NECO 1 */}

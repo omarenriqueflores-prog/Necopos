@@ -57,6 +57,7 @@ export const PhysicalInventoryTab: React.FC = () => {
 
         return {
           productCode: p.code,
+          scalePlu: p.scalePlu || p.code,
           description: p.description,
           category: p.category,
           unitType: p.unitType,
@@ -81,8 +82,9 @@ export const PhysicalInventoryTab: React.FC = () => {
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchCode = item.productCode.toLowerCase().includes(q);
+        const matchPlu = item.scalePlu.toLowerCase().includes(q);
         const matchDesc = item.description.toLowerCase().includes(q);
-        if (!matchCode && !matchDesc) return false;
+        if (!matchCode && !matchPlu && !matchDesc) return false;
       }
       return true;
     });
@@ -409,6 +411,7 @@ export const PhysicalInventoryTab: React.FC = () => {
         <table className="w-full text-left border-collapse text-xs">
           <thead className="bg-[#002046] text-white sticky top-0 z-10 select-none">
             <tr>
+              <th className="p-2 border border-[#00152e] w-16 text-center">PLU</th>
               <th className="p-2 border border-[#00152e] w-20 text-center">CÓDIGO</th>
               <th className="p-2 border border-[#00152e]">DESCRIPCIÓN DEL CORTE CÁRNICO</th>
               <th className="p-2 border border-[#00152e] w-36">CATEGORÍA</th>
@@ -426,7 +429,7 @@ export const PhysicalInventoryTab: React.FC = () => {
           <tbody className="divide-y divide-gray-200 font-sans">
             {filteredChamberItems.length === 0 ? (
               <tr>
-                <td colSpan={10} className="p-8 text-center text-gray-500 italic">
+                <td colSpan={11} className="p-8 text-center text-gray-500 italic">
                   No se encontraron cortes de carne para auditar con los filtros aplicados.
                 </td>
               </tr>
@@ -442,6 +445,9 @@ export const PhysicalInventoryTab: React.FC = () => {
                       index % 2 === 0 ? 'bg-white' : 'bg-gray-50'
                     } ${hasDiff ? (isSurplus ? 'bg-emerald-50/40' : 'bg-red-50/40') : ''}`}
                   >
+                    <td className="p-2 text-center font-mono font-bold text-blue-900 bg-blue-50/40 border border-gray-200">
+                      {item.scalePlu || item.productCode}
+                    </td>
                     <td className="p-2 text-center font-mono font-bold text-gray-700 border border-gray-200">
                       {item.productCode}
                     </td>

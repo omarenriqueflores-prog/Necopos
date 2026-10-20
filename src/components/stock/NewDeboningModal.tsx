@@ -38,6 +38,7 @@ import {
 } from '../../utils/deboningHelper';
 import { formatKg, formatCurrency, isMeatCategory } from '../../utils/stockHelper';
 import { SaveYieldTemplateModal } from './SaveYieldTemplateModal';
+import { TemplateEditorModal } from './TemplateEditorModal';
 
 interface NewDeboningModalProps {
   onClose: () => void;
@@ -584,7 +585,7 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     try {
       setIsSubmitting(true);
       setErrorMessage(null);
-      const deboning = buildDeboningObject('FINALIZADO');
+      const deboning = buildDeboningObject('BORRADOR');
       await finalizeMeatDeboning(deboning, operatorName);
       onClose();
     } catch (err: any) {
@@ -669,6 +670,8 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
                     onChange={(e) => {
                       const rec = availableReceptions.find((r) => r.id === e.target.value);
                       if (rec) {
+                        setSelectedReceptionId(rec.id);
+                        setSelectedCarcassIds(rec.carcasses?.map(c => c.id) || []);
                         setBranchId(rec.branchId);
                         setChamber(rec.chamber);
                         setTropaNumber(rec.tropaNumber);
@@ -1347,13 +1350,32 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
 
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
+                console.log('existingDeboning:', existingDeboning);
+                console.log('existingDeboning.status:', existingDeboning?.status);
                 setErrorMessage(null);
-                // Regla 1: Bloquear el guardado de planillas no finalizadas
+                // Regla A.2: Si no está finalizado, ofrecer finalizar automáticamente para guardar planilla
                 if (!existingDeboning || existingDeboning.status !== 'FINALIZADO') {
-                  setErrorMessage(
-                    'Regla A.2: Solo es posible guardar una planilla de rendimiento a partir de una orden de desposte cuya finalización real esté confirmada y persistida en el sistema. Finalice e impacte en stock la orden primero.'
+                  const confirmFinalizeAndSave = window.confirm(
+                    'Regla A.2: Para guardar esta planilla de rendimiento, el desposte debe estar finalizado e impactado en stock.\n\n¿Desea finalizar e impactar en stock este desposte automáticamente para guardarlo como planilla?'
                   );
+                  if (!confirmFinalizeAndSave) {
+                    setErrorMessage(
+                      'Regla A.2: Solo es posible guardar una planilla de rendimiento a partir de una orden de desposte cuya finalización real esté confirmada y persistida en el sistema. Finalice e impacte en stock la orden primero.'
+                    );
+                    return;
+                  }
+                  try {
+                    setIsSubmitting(true);
+                    const deboning = buildDeboningObject('BORRADOR');
+                    await finalizeMeatDeboning(deboning, operatorName);
+                    setShowSaveTemplateModal(true);
+                  } catch (err: any) {
+                    console.error('Error auto-finalizando desposte:', err);
+                    setErrorMessage(`Error al finalizar desposte automáticamente: ${err.message || 'Error desconocido'}`);
+                  } finally {
+                    setIsSubmitting(false);
+                  }
                   return;
                 }
                 if (existingDeboning.status === 'ANULADO') {

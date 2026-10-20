@@ -4,8 +4,7 @@ import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-// Force default Firestore database as requested by the user
-export const db = getFirestore(app);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 
 async function testConnection() {

@@ -117,9 +117,9 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
     reader.onload = async (ev) => {
       const text = (ev.target?.result as string)?.trim() || '';
       if (text.includes('BEGIN CERTIFICATE')) {
-        const merged = arcaService.persistCredentials({ certificate: text, hasCertificate: true });
+        const merged = await arcaService.saveCredentialsToServer({ certificate: text, hasCertificate: true });
         if (fb?.saveArcaConfig) {
-          await fb.saveArcaConfig(merged).catch(() => {});
+          await fb.saveArcaConfig({ ...merged, certificate: text, hasCertificate: true }).catch(() => {});
         }
         fetchLastVouchers(selectedPv);
       } else {
@@ -137,9 +137,9 @@ export const LastVouchersModal: React.FC<LastVouchersModalProps> = ({
     reader.onload = async (ev) => {
       const text = (ev.target?.result as string)?.trim() || '';
       if (text.includes('PRIVATE KEY')) {
-        const merged = arcaService.persistCredentials({ privateKey: text, hasPrivateKey: true });
+        const merged = await arcaService.saveCredentialsToServer({ privateKey: text, hasPrivateKey: true });
         if (fb?.saveArcaConfig) {
-          await fb.saveArcaConfig(merged).catch(() => {});
+          await fb.saveArcaConfig({ ...merged, privateKey: text, hasPrivateKey: true }).catch(() => {});
         }
         fetchLastVouchers(selectedPv);
       } else {

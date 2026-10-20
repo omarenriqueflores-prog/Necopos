@@ -118,9 +118,9 @@ interface FirebaseContextType {
   meatReceptions: MeatReception[];
   deboningTemplates: DeboningYieldTemplate[];
   saveDeboningTemplate: (template: DeboningYieldTemplate) => Promise<void>;
-  deleteDeboningTemplate: (id: string) => Promise<void>;
+  deleteDeboningTemplate: (id: string, hardDelete?: boolean) => Promise<void>;
   saveProduct: (p: Product) => Promise<void>;
-  saveProductsBatch: (items: Product[]) => Promise<void>;
+  saveProductsBatch: (items: Product[], replaceAll?: boolean) => Promise<void>;
   deleteProduct: (code: string, docId?: string) => Promise<void>;
   saveCustomer: (c: Customer) => Promise<void>;
   saveEmployee: (e: Employee) => Promise<void>;
@@ -151,11 +151,15 @@ interface FirebaseContextType {
   applyPhysicalInventory: (inventory: PhysicalInventory, operator: string) => Promise<void>;
   saveMeatDeboning: (deboning: MeatDeboning) => Promise<void>;
   finalizeMeatDeboning: (deboning: MeatDeboning, operator: string) => Promise<void>;
-  deleteOrCancelMeatDeboning: (deboningId: string, operator: string, reason?: string) => Promise<void>;
+  deleteOrCancelMeatDeboning: (deboningId: string, operator: string, reason?: string, hardDelete?: boolean, eliminateCarcassesFromChamber?: boolean) => Promise<void>;
+  hardDeleteMeatDeboning: (deboningId: string, operator: string, eliminateCarcassesFromChamber?: boolean) => Promise<void>;
+  purgeAllCancelledDebonings: (operator: string, eliminateCarcassesFromChamber?: boolean) => Promise<void>;
   saveMeatReception: (reception: MeatReception) => Promise<void>;
   finalizeMeatReception: (reception: MeatReception, operator: string) => Promise<void>;
   deleteOrCancelMeatReception: (receptionId: string, operator: string, reason?: string, hardDelete?: boolean) => Promise<void>;
   deleteMeatReception: (receptionId: string, operator: string, reason?: string) => Promise<void>;
+  deleteNegativeOrHangingStock: (productCode: string, operator: string) => Promise<void>;
+  updateMeatReceptionStatus: (receptionId: string, status: 'FINALIZADO', operator: string) => Promise<void>;
   initializeChamberStock: (
     branchId: 'NECO 1' | 'NECO 2',
     items: Array<{ productCode: string; stock: number; minStock?: number }>,
@@ -227,36 +231,63 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
           const userDocRef = doc(db, 'users', userId);
           const userSnap = await getDoc(userDocRef);
+          const lowerEmail = userEmail.toLowerCase();
+          const isOwnerAdmin =
+            lowerEmail === 'omarenriqueflores@gmail.com' ||
+            lowerEmail === 'necovilla@necopos.com' ||
+            lowerEmail === 'admin@necopos.com' ||
+            lowerEmail.startsWith('necovilla@') ||
+            lowerEmail.startsWith('admin@') ||
+            lowerEmail.startsWith('omar');
 
           if (!userSnap.exists()) {
-            const isOwnerAdmin = userEmail.toLowerCase() === "omarenriqueflores@gmail.com";
             const newUserDoc: UserAccount = {
               id: userId,
               username: userEmail,
               fullName: userDisplayName,
-              role: isOwnerAdmin ? "SUPERADMIN" : "CAJERO",
-              branch: "NECO 1",
+              role: isOwnerAdmin ? 'SUPERADMIN' : 'CAJERO',
+              branch: 'NECO 1',
               active: true,
-              lastLogin: new Date().toLocaleString("es-AR"),
-              permissions: isOwnerAdmin ? {
-                canApplyDiscounts: true,
-                canCancelTickets: true,
-                canModifyPrices: true,
-                canViewCosts: true,
-                canOpenDrawerWithoutSale: true,
-                canViewReports: true,
-                canPerformClosureZ: true,
-              } : {
-                canApplyDiscounts: false,
-                canCancelTickets: false,
-                canModifyPrices: false,
-                canViewCosts: false,
-                canOpenDrawerWithoutSale: false,
-                canViewReports: false,
-                canPerformClosureZ: false,
-              },
+              lastLogin: new Date().toLocaleString('es-AR'),
+              permissions: isOwnerAdmin
+                ? {
+                    canApplyDiscounts: true,
+                    canCancelTickets: true,
+                    canModifyPrices: true,
+                    canViewCosts: true,
+                    canOpenDrawerWithoutSale: true,
+                    canViewReports: true,
+                    canPerformClosureZ: true,
+                  }
+                : {
+                    canApplyDiscounts: false,
+                    canCancelTickets: false,
+                    canModifyPrices: false,
+                    canViewCosts: false,
+                    canOpenDrawerWithoutSale: false,
+                    canViewReports: false,
+                    canPerformClosureZ: false,
+                  },
             };
             await setDoc(userDocRef, newUserDoc);
+          } else if (isOwnerAdmin && userSnap.data()?.role !== 'SUPERADMIN') {
+            await setDoc(
+              userDocRef,
+              {
+                role: 'SUPERADMIN',
+                active: true,
+                permissions: {
+                  canApplyDiscounts: true,
+                  canCancelTickets: true,
+                  canModifyPrices: true,
+                  canViewCosts: true,
+                  canOpenDrawerWithoutSale: true,
+                  canViewReports: true,
+                  canPerformClosureZ: true,
+                },
+              },
+              { merge: true }
+            );
           }
         } catch (err) {
           console.warn('Auto registration error for user:', err);
@@ -354,13 +385,16 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const price = Number(data.price ?? data.precio ?? 0);
           const vatRate = Number(data.vatRate ?? data.iva ?? 21);
           const scalePlu =
-            data.scalePlu !== undefined
-              ? (data.scalePlu ? String(data.scalePlu) : null)
-              : data.plu
-              ? String(data.plu)
-              : (unitType === 'Unid' ? null : code);
+            data.scalePlu !== undefined && data.scalePlu !== null && String(data.scalePlu).trim() !== ''
+              ? String(data.scalePlu).trim()
+              : data.plu !== undefined && data.plu !== null && String(data.plu).trim() !== ''
+              ? String(data.plu).trim()
+              : code;
           const barcodeRaw = data.barcode || data.codigoBarras || data.ean || null;
-          const barcode = barcodeRaw ? String(barcodeRaw).trim() : null;
+          const barcode =
+            barcodeRaw && String(barcodeRaw).trim() !== '' && String(barcodeRaw).trim() !== code
+              ? String(barcodeRaw).trim()
+              : null;
           const active = data.active !== false;
 
           // Preserve cost and stock fields without data loss
@@ -407,7 +441,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     );
 
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Customers from Firestore
   useEffect(() => {
@@ -423,7 +457,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Employees from Firestore
   useEffect(() => {
@@ -438,9 +472,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
-  // Sync Branches from Firestore (with bootstrapping if empty)
+  // Sync Branches from Firestore (with bootstrapping and default merging if partial/empty)
   useEffect(() => {
     const unsub = onSnapshot(
       collection(db, 'branches'),
@@ -454,12 +488,34 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               console.error('Error bootstrapping branch:', key, err);
             }
           }
+          setBranchConfigs(INITIAL_BRANCH_CONFIGS);
         } else {
-          const loaded: any = {};
-          snapshot.docs.forEach((docItem) => {
-            loaded[docItem.id] = docItem.data() as BranchConfig;
-          });
-          setBranchConfigs(loaded);
+          const loaded: Record<string, BranchConfig> = {
+            ...INITIAL_BRANCH_CONFIGS,
+          };
+          for (const docItem of snapshot.docs) {
+            const key = docItem.id as 'NECO 1' | 'NECO 2';
+            const rawData = docItem.data() as Partial<BranchConfig>;
+            const defaults = INITIAL_BRANCH_CONFIGS[key] || INITIAL_BRANCH_CONFIGS['NECO 1'];
+            const mergedBranch: BranchConfig = {
+              ...defaults,
+              ...rawData,
+              cuit: rawData.cuit || defaults.cuit,
+              name: rawData.name || defaults.name,
+              fantasyName: rawData.fantasyName || defaults.fantasyName,
+              businessName: rawData.businessName || defaults.businessName,
+              address: rawData.address || defaults.address,
+              pointOfSale: rawData.pointOfSale || defaults.pointOfSale,
+              ticketPrinter: rawData.ticketPrinter || defaults.ticketPrinter,
+            };
+            loaded[key] = mergedBranch;
+            if (!rawData.cuit || !rawData.name) {
+              try {
+                await setDoc(doc(db, 'branches', key), mergedBranch, { merge: true });
+              } catch (_) {}
+            }
+          }
+          setBranchConfigs(loaded as any);
         }
       },
       (error) => {
@@ -467,7 +523,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Users from Firestore (with bootstrapping if empty)
   useEffect(() => {
@@ -507,7 +563,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Account Movements
   useEffect(() => {
@@ -523,7 +579,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Cash Movements
   useEffect(() => {
@@ -539,7 +595,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Cash Closures (strictly read-only synchronization)
   useEffect(() => {
@@ -559,7 +615,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Sales
   useEffect(() => {
@@ -575,7 +631,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Electronic Invoices from Firestore
   useEffect(() => {
@@ -591,67 +647,131 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
-  // Sync ARCA Config from Firestore (non-sensitive status only; secrets remain on server)
+  // Sync ARCA Config & Certificates from Firestore & Server (with automatic two-way persistence)
   useEffect(() => {
+    const syncFromServerAndLocal = async (firestoreData?: Partial<ArcaConfig>) => {
+      const localStored = arcaService.getStoredConfig();
+      const combinedVault = arcaService.encodeVaultBundle(
+        firestoreData?.certificate,
+        firestoreData?.privateKey,
+        firestoreData?.vaultBundle || localStored.vaultBundle
+      );
+
+      const serverStored = await arcaService.fetchServerCredentials({
+        ...localStored,
+        ...(firestoreData || {}),
+        ...(combinedVault ? { vaultBundle: combinedVault } : {}),
+      });
+
+      const finalVault = arcaService.encodeVaultBundle(
+        firestoreData?.certificate,
+        firestoreData?.privateKey,
+        serverStored?.vaultBundle || combinedVault || localStored.vaultBundle
+      );
+      const decodedVault = arcaService.decodeVaultBundle(finalVault);
+
+      const hasCert = Boolean(
+        decodedVault.c ||
+          serverStored?.hasCertificate ||
+          firestoreData?.hasCertificate ||
+          localStored.hasCertificate
+      );
+      const hasKey = Boolean(
+        decodedVault.k ||
+          serverStored?.hasPrivateKey ||
+          firestoreData?.hasPrivateKey ||
+          localStored.hasPrivateKey
+      );
+
+      // Strip undefined keys from serverStored so unconfigured container defaults never wipe Firestore metadata
+      const cleanServer: Partial<ArcaConfig> = {};
+      if (serverStored) {
+        if (serverStored.cuit) cleanServer.cuit = serverStored.cuit;
+        if (serverStored.companyName) cleanServer.companyName = serverStored.companyName;
+        if (serverStored.environment) cleanServer.environment = serverStored.environment;
+        if (serverStored.alias) cleanServer.alias = serverStored.alias;
+        if (serverStored.pointsOfSale) cleanServer.pointsOfSale = serverStored.pointsOfSale;
+        if (serverStored.certificateSubject)
+          cleanServer.certificateSubject = serverStored.certificateSubject;
+        if (serverStored.certificateIssuer)
+          cleanServer.certificateIssuer = serverStored.certificateIssuer;
+        if (serverStored.certificateValidTo)
+          cleanServer.certificateValidTo = serverStored.certificateValidTo;
+      }
+
+      const merged: ArcaConfig = {
+        ...DEFAULT_ARCA_CONFIG,
+        ...localStored,
+        ...cleanServer,
+        ...(firestoreData || {}),
+        ...(cleanServer.certificateSubject
+          ? { certificateSubject: cleanServer.certificateSubject }
+          : {}),
+        ...(cleanServer.certificateIssuer
+          ? { certificateIssuer: cleanServer.certificateIssuer }
+          : {}),
+        ...(cleanServer.certificateValidTo
+          ? { certificateValidTo: cleanServer.certificateValidTo }
+          : {}),
+        hasCertificate: hasCert,
+        hasPrivateKey: hasKey,
+        certificateLinked: Boolean(hasCert && hasKey),
+        ...(finalVault ? { vaultBundle: finalVault } : {}),
+      };
+      delete merged.certificate;
+      delete merged.privateKey;
+
+      // Always keep localStorage & server synced with the Firestore vaultBundle
+      arcaService.persistCredentials(merged);
+      setArcaConfig(merged);
+
+      // If we have credentials in server/localStorage that were not yet saved in Firestore, persist them to Firestore now
+      if (
+        finalVault &&
+        firestoreData &&
+        (firestoreData.vaultBundle !== finalVault ||
+          !firestoreData.hasCertificate ||
+          !firestoreData.hasPrivateKey)
+      ) {
+        try {
+          await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(merged), {
+            merge: true,
+          });
+        } catch (_) {}
+      }
+
+      return { merged, serverStored };
+    };
+
+    // Immediately load from server/localStorage regardless of Firestore rules
+    syncFromServerAndLocal();
+
     const unsub = onSnapshot(
       doc(db, 'arcaConfig', 'main'),
       async (docSnap) => {
-        const localStored = arcaService.getStoredConfig();
-        const serverStored = await arcaService.fetchServerCredentials();
-
         if (!docSnap.exists()) {
           try {
-            const initialCfg: ArcaConfig = {
-              ...DEFAULT_ARCA_CONFIG,
-              ...localStored,
-              ...(serverStored || {}),
-              hasCertificate: Boolean(serverStored?.hasCertificate ?? localStored.hasCertificate),
-              hasPrivateKey: Boolean(serverStored?.hasPrivateKey ?? localStored.hasPrivateKey),
-              certificateLinked: Boolean(
-                (serverStored?.hasCertificate ?? localStored.hasCertificate) &&
-                  (serverStored?.hasPrivateKey ?? localStored.hasPrivateKey)
-              ),
-            };
-            delete initialCfg.certificate;
-            delete initialCfg.privateKey;
-            await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(initialCfg), { merge: true });
-            setArcaConfig(initialCfg);
-            arcaService.persistCredentials(initialCfg);
+            const { merged: initialCfg } = await syncFromServerAndLocal();
+            await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(initialCfg), {
+              merge: true,
+            });
           } catch (err) {
-            console.error('Error bootstrapping arcaConfig:', err);
+            console.warn('Error bootstrapping arcaConfig in Firestore (usando servidor local):', err);
           }
         } else {
           const data = docSnap.data() as ArcaConfig;
-          const hasCert = Boolean(
-            serverStored?.hasCertificate ?? data.hasCertificate ?? localStored.hasCertificate
-          );
-          const hasKey = Boolean(
-            serverStored?.hasPrivateKey ?? data.hasPrivateKey ?? localStored.hasPrivateKey
-          );
-
-          const merged: ArcaConfig = {
-            ...DEFAULT_ARCA_CONFIG,
-            ...data,
-            ...(serverStored || {}),
-            hasCertificate: hasCert,
-            hasPrivateKey: hasKey,
-            certificateLinked: Boolean(hasCert && hasKey),
-          };
-          delete merged.certificate;
-          delete merged.privateKey;
-
-          setArcaConfig(merged);
-          arcaService.persistCredentials(merged);
+          await syncFromServerAndLocal(data);
         }
       },
-      (error) => {
-        console.warn('Firestore ARCA Config sync error:', error);
+      async (error) => {
+        console.warn('Firestore ARCA Config sync warning (usando respaldo del servidor):', error);
+        await syncFromServerAndLocal();
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Audit Logs from Firestore
   useEffect(() => {
@@ -667,7 +787,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync BranchStock
   useEffect(() => {
@@ -682,7 +802,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Stock Movements (strictly read-only synchronization)
   useEffect(() => {
@@ -702,7 +822,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Stock Transfers
   useEffect(() => {
@@ -718,7 +838,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Physical Inventories
   useEffect(() => {
@@ -734,7 +854,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Meat Debonings
   useEffect(() => {
@@ -750,7 +870,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Meat Receptions
   useEffect(() => {
@@ -766,7 +886,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   // Sync Deboning Templates
   useEffect(() => {
@@ -782,7 +902,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     );
     return () => unsub();
-  }, []);
+  }, [user?.uid, localUser?.id]);
 
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
@@ -878,19 +998,36 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const saveProductsBatch = async (items: Product[]) => {
+  const saveProductsBatch = async (items: Product[], replaceAll?: boolean) => {
     try {
-      const chunkSize = 450;
+      if (replaceAll) {
+        const incomingCodes = new Set(items.map((p) => String(p.code)));
+        const existingSnap = await getDocs(collection(db, 'products'));
+        const docsToDelete = existingSnap.docs.filter(
+          (d) => !incomingCodes.has(d.id) && !incomingCodes.has(String(d.data()?.code || ''))
+        );
+        const delChunkSize = 450;
+        for (let i = 0; i < docsToDelete.length; i += delChunkSize) {
+          const delBatch = writeBatch(db);
+          docsToDelete.slice(i, i + delChunkSize).forEach((d) => delBatch.delete(d.ref));
+          await delBatch.commit();
+        }
+      }
+
+      const chunkSize = 150;
+      const nowIso = new Date().toISOString();
       for (let i = 0; i < items.length; i += chunkSize) {
         const chunk = items.slice(i, i + chunkSize);
         const batch = writeBatch(db);
         for (const p of chunk) {
-          const docRef = doc(db, 'products', String(p.code));
+          const codeStr = String(p.code);
+          const docRef = doc(db, 'products', codeStr);
           const cleanProduct: Record<string, any> = {
-            code: String(p.code),
+            code: codeStr,
             description: p.description,
             price: Number(p.price),
             active: p.active !== false,
+            scalePlu: p.scalePlu !== undefined && p.scalePlu !== null && String(p.scalePlu).trim() !== '' ? String(p.scalePlu).trim() : codeStr,
           };
           if (p.barcode !== undefined) cleanProduct.barcode = p.barcode ? String(p.barcode).trim() : null;
           if (p.name !== undefined) cleanProduct.name = p.name;
@@ -898,7 +1035,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (p.category !== undefined) cleanProduct.category = p.category;
           if (p.species !== undefined) cleanProduct.species = p.species;
           if (p.unitType !== undefined) cleanProduct.unitType = p.unitType;
-          if (p.scalePlu !== undefined) cleanProduct.scalePlu = p.scalePlu;
           if (p.vatRate !== undefined) cleanProduct.vatRate = p.vatRate;
           if (p.costPrice !== undefined) cleanProduct.costPrice = p.costPrice;
           if (p.costo !== undefined) cleanProduct.costo = p.costo;
@@ -907,6 +1043,40 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (p.stock !== undefined) cleanProduct.stock = p.stock;
 
           batch.set(docRef, cleanProduct, { merge: true });
+
+          // If stock columns were provided in the Excel, also sync to branchStock
+          if (p.stockNeco1 !== undefined || p.stock !== undefined) {
+            const s1 = p.stockNeco1 !== undefined ? Number(p.stockNeco1) : Number(p.stock || 0);
+            const bs1Id = `NECO 1_${codeStr}`;
+            batch.set(
+              doc(db, 'branchStock', bs1Id),
+              {
+                id: bs1Id,
+                branchId: 'NECO 1',
+                productCode: codeStr,
+                currentStock: s1,
+                minStock: p.unitType === 'Unid' ? 10 : 20,
+                lastUpdated: nowIso,
+              },
+              { merge: true }
+            );
+          }
+          if (p.stockNeco2 !== undefined) {
+            const s2 = Number(p.stockNeco2);
+            const bs2Id = `NECO 2_${codeStr}`;
+            batch.set(
+              doc(db, 'branchStock', bs2Id),
+              {
+                id: bs2Id,
+                branchId: 'NECO 2',
+                productCode: codeStr,
+                currentStock: s2,
+                minStock: p.unitType === 'Unid' ? 10 : 20,
+                lastUpdated: nowIso,
+              },
+              { merge: true }
+            );
+          }
         }
         await batch.commit();
       }
@@ -1193,11 +1363,29 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const saveArcaConfig = async (cfg: ArcaConfig) => {
-    const path = `arcaConfig/main`;
     try {
       const stored = arcaService.getStoredConfig();
-      const hasCert = Boolean(cfg.certificate || cfg.hasCertificate || arcaConfig.hasCertificate || stored.hasCertificate);
-      const hasKey = Boolean(cfg.privateKey || cfg.hasPrivateKey || arcaConfig.hasPrivateKey || stored.hasPrivateKey);
+      const combinedVault = arcaService.encodeVaultBundle(
+        cfg.certificate,
+        cfg.privateKey,
+        cfg.vaultBundle || arcaConfig.vaultBundle || stored.vaultBundle
+      );
+      const decodedVault = arcaService.decodeVaultBundle(combinedVault);
+
+      const hasCert = Boolean(
+        cfg.certificate ||
+          decodedVault.c ||
+          cfg.hasCertificate ||
+          arcaConfig.hasCertificate ||
+          stored.hasCertificate
+      );
+      const hasKey = Boolean(
+        cfg.privateKey ||
+          decodedVault.k ||
+          cfg.hasPrivateKey ||
+          arcaConfig.hasPrivateKey ||
+          stored.hasPrivateKey
+      );
 
       const mergedWithUpload: ArcaConfig = {
         ...stored,
@@ -1206,24 +1394,44 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         hasCertificate: hasCert,
         hasPrivateKey: hasKey,
         certificateLinked: Boolean(hasCert && hasKey),
+        ...(combinedVault ? { vaultBundle: combinedVault } : {}),
       };
 
-      // Forward any uploaded certificate/privateKey to the server and persist only sanitized metadata locally
-      const sanitized = arcaService.persistCredentials(mergedWithUpload);
+      // Forward any uploaded certificate/privateKey to the server and await confirmation
+      const sanitized = await arcaService.saveCredentialsToServer(mergedWithUpload);
       setArcaConfig(sanitized);
-      await setDoc(doc(db, 'arcaConfig', 'main'), sanitizeForFirestore(sanitized), { merge: true });
 
-      // Sync points of sale back to branches if they were updated in arcaConfig
-      if (sanitized.pointsOfSale) {
-        const batch = writeBatch(db);
-        for (const [branchKey, ptoVta] of Object.entries(sanitized.pointsOfSale)) {
-          const branchRef = doc(db, 'branches', branchKey);
-          batch.set(branchRef, { pointOfSale: ptoVta }, { merge: true });
+      // Permanently persist ARCA configuration and encoded vaultBundle to Firestore database
+      try {
+        await setDoc(
+          doc(db, 'arcaConfig', 'main'),
+          sanitizeForFirestore({
+            ...sanitized,
+            ...(sanitized.vaultBundle || combinedVault
+              ? { vaultBundle: sanitized.vaultBundle || combinedVault }
+              : {}),
+            hasCertificate: Boolean(sanitized.hasCertificate || hasCert),
+            hasPrivateKey: Boolean(sanitized.hasPrivateKey || hasKey),
+            certificateLinked: Boolean(
+              (sanitized.hasCertificate || hasCert) && (sanitized.hasPrivateKey || hasKey)
+            ),
+            updatedAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        );
+        if (sanitized.pointsOfSale) {
+          const batch = writeBatch(db);
+          for (const [branchKey, ptoVta] of Object.entries(sanitized.pointsOfSale)) {
+            const branchRef = doc(db, 'branches', branchKey);
+            batch.set(branchRef, { pointOfSale: ptoVta }, { merge: true });
+          }
+          await batch.commit();
         }
-        await batch.commit();
+      } catch (fsErr) {
+        console.warn('Aviso de sincronización Firestore arcaConfig (credenciales guardadas en servidor):', fsErr);
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
+      console.warn('Aviso en saveArcaConfig:', error);
     }
   };
 
@@ -1816,14 +2024,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const finalizeMeatDeboning = async (deboning: MeatDeboning, operator: string) => {
+    console.log('Finalizando desposte:', deboning.code, deboning.status);
     try {
       // 1. Idempotencia y validaciones básicas
       if (deboning.status === 'FINALIZADO') {
         console.warn('El desposte ya fue finalizado previamente (idempotencia):', deboning.code);
         return;
       }
-
-      // Regla C.7: Al menos una salida válida para finalizar un desposte comercial
+      console.log('Validando desposte...');
       const validCuts = deboning.cuts.filter((c) => Number(c.weightKg) > 0);
       if (validCuts.length === 0) {
         throw new Error('Regla C.7: Debe registrar al menos un corte con peso positivo para finalizar el desposte.');
@@ -1902,7 +2110,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!rawMaterialCode && hasCarcasses) {
         const firstCarcassId = deboning.selectedCarcassIds![0];
         const parentReception = meatReceptions.find((r) => r.carcasses?.some((c) => c.id === firstCarcassId));
-        rawMaterialCode = parentReception?.productCode?.trim();
+        rawMaterialCode = parentReception?.productCode?.trim() || 'MEDIA_RES';
       }
 
       if (!rawMaterialCode) {
@@ -1975,19 +2183,28 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // 4. Actualizar estados de unidades y desposte
       const batch = writeBatch(db);
 
-      // Marcar unidades como DESPOSTADAS
+      // Marcar unidades como DESPOSTADAS y actualizar recepción a FINALIZADO si se consumió
       if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
         for (const rec of meatReceptions) {
           const matchingCarcasses = rec.carcasses?.filter((c) => deboning.selectedCarcassIds?.includes(c.id));
           if (matchingCarcasses && matchingCarcasses.length > 0) {
-            const updatedCarcasses = rec.carcasses.map((c) => {
+            const updatedCarcasses = (rec.carcasses || []).map((c) => {
               if (deboning.selectedCarcassIds?.includes(c.id)) {
+                // Marcar como consumido/despostado y quitar de disponibilidad
                 return { ...c, status: 'DESPOSTADO' as CarcassStatus, deboningId: deboning.id };
               }
               return c;
             });
+            const allDespostadas = updatedCarcasses.every((c) => c.status === 'DESPOSTADO');
+            const newRecStatus = allDespostadas ? ('FINALIZADO' as const) : rec.status;
             const recRef = doc(db, 'meatReceptions', rec.id);
-            batch.set(recRef, sanitizeForFirestore({ ...rec, carcasses: updatedCarcasses }), { merge: true });
+            // Asegurar que la actualización es completa y marca el consumo
+            batch.set(recRef, sanitizeForFirestore({ ...rec, carcasses: updatedCarcasses, status: newRecStatus }), { merge: true });
+            setMeatReceptions((prev) =>
+              prev.map((r) =>
+                r.id === rec.id ? { ...r, carcasses: updatedCarcasses, status: newRecStatus } : r
+              )
+            );
           }
         }
       }
@@ -2023,120 +2240,159 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const deleteOrCancelMeatDeboning = async (deboningId: string, operator: string, reason?: string) => {
+  const deleteOrCancelMeatDeboning = async (
+    deboningId: string,
+    operator: string,
+    reason?: string,
+    hardDelete?: boolean,
+    eliminateCarcassesFromChamber: boolean = true
+  ) => {
     try {
       const deboning = meatDebonings.find((d) => d.id === deboningId);
       if (!deboning) return;
-      if (deboning.status === 'ANULADO') {
-        console.warn('El desposte ya se encuentra anulado.');
-        return;
-      }
 
-      if (deboning.status === 'BORRADOR') {
-        await deleteDoc(doc(db, 'meatDebonings', deboningId));
-        return;
-      }
+      const shouldHardDelete = hardDelete || deboning.status === 'ANULADO' || deboning.status === 'BORRADOR';
 
-      // Si fue FINALIZADO, generar movimientos inversos de reversión trazables con claves estables
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
-      const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const reverseMovements: StockMovement[] = [];
+      // Si fue FINALIZADO (y no ha sido anulado previamente), revertir los movimientos de stock
+      // (eliminar cortes ingresados en cámara y gestionar la media res según la preferencia)
+      if (deboning.status === 'FINALIZADO') {
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+        const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const reverseMovements: StockMovement[] = [];
 
-      // A. Revertir cortes obtenidos (descontar con AJUSTE_NEGATIVO)
-      for (let i = 0; i < deboning.cuts.length; i++) {
-        const cut = deboning.cuts[i];
-        if (!cut.weightKg || cut.weightKg <= 0) continue;
+        // A. Revertir cortes obtenidos en cámara (descontar con AJUSTE_NEGATIVO para eliminarlos del stock)
+        for (let i = 0; i < deboning.cuts.length; i++) {
+          const cut = deboning.cuts[i];
+          if (!cut.weightKg || cut.weightKg <= 0) continue;
 
-        reverseMovements.push({
-          id: `SM-REV-DEB-${Date.now()}-${i}-${Math.floor(1000 + Math.random() * 9000)}`,
-          idempotencyKey: `REV_DEB_CUT_${deboning.code || deboning.id}_${cut.productCode}_${i}`,
-          date: dateStr,
-          time: timeStr,
-          timestamp: Date.now() + i,
-          branchId: deboning.branchId,
-          chamber: deboning.chamber,
-          productId: cut.productId,
-          productCode: cut.productCode,
-          productDescription: cut.description,
-          category: cut.category,
-          unitType: cut.unitType || 'Kg',
-          type: 'AJUSTE_NEGATIVO',
-          quantity: cut.weightKg,
-          factor: -1,
-          previousStock: 0,
-          newStock: 0,
-          unitPrice: cut.currentSalePrice,
-          totalValue: cut.totalSaleValue,
-          referenceDoc: `REV-${deboning.code}`,
-          reversalOf: deboning.code,
-          operator,
-          notes: `Reversión por anulación de Desposte ${deboning.code} (Corte ${cut.description})`,
-        });
-      }
+          reverseMovements.push({
+            id: `SM-REV-DEB-${Date.now()}-${i}-${Math.floor(1000 + Math.random() * 9000)}`,
+            idempotencyKey: `REV_DEB_CUT_${deboning.code || deboning.id}_${cut.productCode}_${i}`,
+            date: dateStr,
+            time: timeStr,
+            timestamp: Date.now() + i,
+            branchId: deboning.branchId,
+            chamber: deboning.chamber,
+            productId: cut.productId,
+            productCode: cut.productCode,
+            productDescription: cut.description,
+            category: cut.category,
+            unitType: cut.unitType || 'Kg',
+            type: 'AJUSTE_NEGATIVO',
+            quantity: cut.weightKg,
+            factor: -1,
+            previousStock: 0,
+            newStock: 0,
+            unitPrice: cut.currentSalePrice,
+            totalValue: cut.totalSaleValue,
+            referenceDoc: `REV-${deboning.code}`,
+            reversalOf: deboning.code,
+            operator,
+            notes: `Eliminación de desposte ${deboning.code}: Descuento de corte ${cut.description} de cámara`,
+          });
+        }
 
-      // B. Restaurar materia prima / media res (reincorporar con AJUSTE_POSITIVO)
-      let rawMaterialCode = deboning.sourceProductCode?.trim();
-      if (!rawMaterialCode && deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
-        const firstCarcassId = deboning.selectedCarcassIds[0];
-        const parentReception = meatReceptions.find((r) => r.carcasses?.some((c) => c.id === firstCarcassId));
-        rawMaterialCode = parentReception?.productCode || parentReception?.category || (deboning.animalCategory || 'Novillito');
-      }
+        // B. Gestión de Medias Reses / Materia Prima en Cámara
+        if (!eliminateCarcassesFromChamber) {
+          // Si el usuario NO desea eliminar las medias reses de cámara, las reincorpora al stock
+          let rawMaterialCode = deboning.sourceProductCode?.trim();
+          if (!rawMaterialCode && deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+            const firstCarcassId = deboning.selectedCarcassIds[0];
+            const parentReception = meatReceptions.find((r) => r.carcasses?.some((c) => c.id === firstCarcassId));
+            rawMaterialCode = parentReception?.productCode || parentReception?.category || (deboning.animalCategory || 'Novillito');
+          }
 
-      if (rawMaterialCode) {
-        reverseMovements.push({
-          id: `SM-REV-SRC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-          idempotencyKey: `REV_DEB_SRC_${deboning.code || deboning.id}`,
-          date: dateStr,
-          time: timeStr,
-          timestamp: Date.now(),
-          branchId: deboning.branchId,
-          chamber: deboning.chamber,
-          productCode: rawMaterialCode,
-          productDescription: `Materia Prima Reincorporada - Tropa ${deboning.tropaNumber}`,
-          category: deboning.animalCategory || 'Novillito',
-          unitType: 'Kg',
-          type: 'AJUSTE_POSITIVO',
-          quantity: deboning.initialWeightKg,
-          factor: 1,
-          previousStock: 0,
-          newStock: 0,
-          unitPrice: deboning.costPerKgInitial,
-          totalValue: deboning.totalInitialCost,
-          referenceDoc: `REV-${deboning.code}`,
-          reversalOf: deboning.code,
-          operator,
-          notes: `Restauración de materia prima por anulación de desposte ${deboning.code}`,
-        });
-      }
-
-      if (reverseMovements.length > 0) {
-        await recordStockMovementsBatch(reverseMovements);
-      }
-
-      // C. Restaurar estado de las medias reses en meatReceptions
-      // Verificar que los estados correspondan a esa orden y no sobrescribir cambios de otra operación
-      if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
-        for (const rec of meatReceptions) {
-          const hasMatching = rec.carcasses?.some(
-            (c) => deboning.selectedCarcassIds?.includes(c.id) && c.deboningId === deboning.id
-          );
-          if (hasMatching) {
-            const updatedCarcasses = rec.carcasses.map((c) => {
-              if (deboning.selectedCarcassIds?.includes(c.id) && c.deboningId === deboning.id) {
-                return { ...c, status: 'DISPONIBLE' as CarcassStatus, deboningId: undefined };
-              }
-              return c;
+          if (rawMaterialCode) {
+            reverseMovements.push({
+              id: `SM-REV-SRC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+              idempotencyKey: `REV_DEB_SRC_${deboning.code || deboning.id}`,
+              date: dateStr,
+              time: timeStr,
+              timestamp: Date.now(),
+              branchId: deboning.branchId,
+              chamber: deboning.chamber,
+              productCode: rawMaterialCode,
+              productDescription: `Materia Prima Reincorporada - Tropa ${deboning.tropaNumber}`,
+              category: deboning.animalCategory || 'Novillito',
+              unitType: 'Kg',
+              type: 'AJUSTE_POSITIVO',
+              quantity: deboning.initialWeightKg,
+              factor: 1,
+              previousStock: 0,
+              newStock: 0,
+              unitPrice: deboning.costPerKgInitial,
+              totalValue: deboning.totalInitialCost,
+              referenceDoc: `REV-${deboning.code}`,
+              reversalOf: deboning.code,
+              operator,
+              notes: `Restauración de materia prima por anulación de desposte ${deboning.code}`,
             });
-            await saveMeatReception({
-              ...rec,
-              carcasses: updatedCarcasses,
-            });
+          }
+        }
+
+        if (reverseMovements.length > 0) {
+          await recordStockMovementsBatch(reverseMovements);
+        }
+
+        // C. Actualizar estado de las medias reses en meatReceptions
+        if (deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+          for (const rec of meatReceptions) {
+            const hasMatching = rec.carcasses?.some(
+              (c) => deboning.selectedCarcassIds?.includes(c.id)
+            );
+            if (hasMatching) {
+              const updatedCarcasses = rec.carcasses.map((c) => {
+                if (deboning.selectedCarcassIds?.includes(c.id)) {
+                  // Si se deben eliminar de cámara, marcar como ANULADO para que no sumen en existencias
+                  const newStatus: CarcassStatus = eliminateCarcassesFromChamber ? 'ANULADO' : 'DISPONIBLE';
+                  return { ...c, status: newStatus, deboningId: undefined };
+                }
+                return c;
+              });
+
+              // Si todas las medias reses quedaron anuladas, anular la recepción completa
+              const allAnuladas = updatedCarcasses.every((c) => c.status === 'ANULADO');
+
+              await saveMeatReception({
+                ...rec,
+                status: allAnuladas ? 'ANULADO' : 'CONFIRMADO',
+                carcasses: updatedCarcasses,
+              });
+            }
+          }
+        }
+      } else {
+        // Si el desposte ya estaba ANULADO o BORRADOR pero el usuario solicita eliminar medias reses cargadas
+        if (eliminateCarcassesFromChamber && deboning.selectedCarcassIds && deboning.selectedCarcassIds.length > 0) {
+          for (const rec of meatReceptions) {
+            const hasMatching = rec.carcasses?.some(
+              (c) => deboning.selectedCarcassIds?.includes(c.id)
+            );
+            if (hasMatching) {
+              const updatedCarcasses = rec.carcasses.map((c) => {
+                if (deboning.selectedCarcassIds?.includes(c.id)) {
+                  return { ...c, status: 'ANULADO' as CarcassStatus, deboningId: undefined };
+                }
+                return c;
+              });
+              await saveMeatReception({
+                ...rec,
+                carcasses: updatedCarcasses,
+              });
+            }
           }
         }
       }
 
-      // D. Marcar desposte como ANULADO (solo tras completar todas las reversiones)
+      // Si es eliminación definitiva física (o si ya era ANULADO o BORRADOR):
+      if (shouldHardDelete) {
+        await deleteDoc(doc(db, 'meatDebonings', deboningId));
+        setMeatDebonings((prev) => prev.filter((d) => d.id !== deboningId));
+        return;
+      }
+
+      // De lo contrario (anulación suave):
       const updated: MeatDeboning = {
         ...deboning,
         status: 'ANULADO',
@@ -2146,6 +2402,53 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       await saveMeatDeboning(updated);
     } catch (error) {
       console.error('Error deleting or cancelling meat deboning:', error);
+      throw error;
+    }
+  };
+
+  const hardDeleteMeatDeboning = async (
+    deboningId: string,
+    operator: string,
+    eliminateCarcassesFromChamber: boolean = true
+  ) => {
+    return deleteOrCancelMeatDeboning(
+      deboningId,
+      operator,
+      'Eliminado definitivamente por Administrador',
+      true,
+      eliminateCarcassesFromChamber
+    );
+  };
+
+  const purgeAllCancelledDebonings = async (
+    operator: string,
+    eliminateCarcassesFromChamber: boolean = true
+  ) => {
+    try {
+      const cancelled = meatDebonings.filter((d) => d.status === 'ANULADO');
+      for (const d of cancelled) {
+        if (eliminateCarcassesFromChamber && d.selectedCarcassIds && d.selectedCarcassIds.length > 0) {
+          for (const rec of meatReceptions) {
+            const hasMatching = rec.carcasses?.some((c) => d.selectedCarcassIds?.includes(c.id));
+            if (hasMatching) {
+              const updatedCarcasses = rec.carcasses.map((c) => {
+                if (d.selectedCarcassIds?.includes(c.id)) {
+                  return { ...c, status: 'ANULADO' as CarcassStatus, deboningId: undefined };
+                }
+                return c;
+              });
+              await saveMeatReception({
+                ...rec,
+                carcasses: updatedCarcasses,
+              });
+            }
+          }
+        }
+        await deleteDoc(doc(db, 'meatDebonings', d.id));
+      }
+      setMeatDebonings((prev) => prev.filter((d) => d.status !== 'ANULADO'));
+    } catch (error) {
+      console.error('Error purging cancelled debonings:', error);
       throw error;
     }
   };
@@ -2174,11 +2477,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const deleteDeboningTemplate = async (id: string) => {
+  const deleteDeboningTemplate = async (id: string, hardDelete = true) => {
     const path = `deboningTemplates/${id}`;
     try {
-      // Regla A.3 y Regla 2: Mantener el comportamiento de desactivación sin borrado físico
       const templateRef = doc(db, 'deboningTemplates', id);
+      if (hardDelete) {
+        await deleteDoc(templateRef);
+        setDeboningTemplates((prev) => prev.filter((t) => t.id !== id));
+        return;
+      }
       const snap = await getDoc(templateRef);
       if (snap.exists()) {
         const existingDoc = snap.data() as DeboningYieldTemplate;
@@ -2188,6 +2495,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           updatedAt: new Date().toISOString(),
         };
         await setDoc(templateRef, sanitizeForFirestore(deactivated), { merge: true });
+        setDeboningTemplates((prev) => prev.map((t) => (t.id === id ? deactivated : t)));
       } else {
         const localDoc = deboningTemplates.find((t) => t.id === id);
         if (localDoc) {
@@ -2197,6 +2505,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             updatedAt: new Date().toISOString(),
           };
           await setDoc(templateRef, sanitizeForFirestore(deactivated), { merge: true });
+          setDeboningTemplates((prev) => prev.map((t) => (t.id === id ? deactivated : t)));
         }
       }
     } catch (error) {
@@ -2209,6 +2518,13 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const path = `meatReceptions/${reception.id}`;
     try {
       await setDoc(doc(db, 'meatReceptions', reception.id), sanitizeForFirestore(reception));
+      setMeatReceptions((prev) => {
+        const exists = prev.some((r) => r.id === reception.id);
+        const next = exists
+          ? prev.map((r) => (r.id === reception.id ? reception : r))
+          : [reception, ...prev];
+        return next.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -2216,8 +2532,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const finalizeMeatReception = async (reception: MeatReception, operator: string) => {
     try {
-      // Idempotencia: Verificar si ya está confirmada
-      if (reception.status === 'CONFIRMADO') {
+      // Idempotencia: Verificar si ya está confirmada previamente en la base de datos
+      const alreadyConfirmedInDb = meatReceptions.some(
+        (r) => (r.id === reception.id || r.code === reception.code) && r.status === 'CONFIRMADO'
+      );
+      if (alreadyConfirmedInDb) {
         console.warn('La recepción ya fue confirmada previamente (idempotencia verificada):', reception.code);
         return;
       }
@@ -2476,6 +2795,52 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return deleteOrCancelMeatReception(receptionId, operator, reason, true);
   };
 
+  const deleteNegativeOrHangingStock = async (productCode: string, operator: string) => {
+    try {
+      const batch = writeBatch(db);
+      const stockDocs = branchStock.filter((bs) => 
+        bs.productCode === productCode || 
+        bs.productCode === 'MEDIA_RES' || 
+        bs.productCode === 'media_res' || 
+        Number(bs.currentStock) < 0
+      );
+
+      stockDocs.forEach((bs) => {
+        const bsRef = doc(db, 'branchStock', bs.id);
+        batch.delete(bsRef);
+      });
+
+      meatReceptions.forEach((r) => {
+        if (
+          r.productCode === productCode || 
+          r.productCode === 'MEDIA_RES' || 
+          r.productCode === 'media_res' ||
+          Number(r.totalWeightKg) < 0 ||
+          Number(r.totalCost) < 0 ||
+          (r.carcasses && r.carcasses.some(c => Number(c.weightKg) < 0))
+        ) {
+          const rRef = doc(db, 'meatReceptions', r.id);
+          batch.delete(rRef);
+        }
+      });
+
+      await batch.commit();
+
+      setBranchStock((prev) => prev.filter((bs) => !stockDocs.some(sd => sd.id === bs.id)));
+      setMeatReceptions((prev) => prev.filter((r) => !meatReceptions.some(mr => mr.id === r.id && (mr.productCode === productCode || mr.productCode === 'MEDIA_RES' || Number(mr.totalWeightKg) < 0))));
+    } catch (error) {
+      console.error('Error deleting negative/hanging stock:', error);
+      throw error;
+    }
+  };
+
+  const updateMeatReceptionStatus = async (receptionId: string, status: 'FINALIZADO', operator: string) => {
+    const reception = meatReceptions.find((r) => r.id === receptionId);
+    if (!reception) throw new Error('Recepcion no encontrada');
+    await saveMeatReception({ ...reception, status, operator });
+  };
+
+
   const initializeChamberStock = async (
     branchId: 'NECO 1' | 'NECO 2',
     items: Array<{ productCode: string; stock: number; minStock?: number }>,
@@ -2642,7 +3007,30 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const purgeProductsCollection = async () => {
-    console.warn("PROTECCIÓN DE DATOS: purgeProductsCollection fue bloqueado para evitar el vaciado del catálogo de productos.");
+    try {
+      // 1. Delete all products in chunks
+      const snap = await getDocs(collection(db, 'products'));
+      const delChunkSize = 450;
+      for (let i = 0; i < snap.docs.length; i += delChunkSize) {
+        const delBatch = writeBatch(db);
+        snap.docs.slice(i, i + delChunkSize).forEach((d) => delBatch.delete(d.ref));
+        await delBatch.commit();
+      }
+
+      // 2. Also delete all associated branchStock
+      const stockSnap = await getDocs(collection(db, 'branchStock'));
+      for (let i = 0; i < stockSnap.docs.length; i += delChunkSize) {
+        const delBatch = writeBatch(db);
+        stockSnap.docs.slice(i, i + delChunkSize).forEach((d) => delBatch.delete(d.ref));
+        await delBatch.commit();
+      }
+
+      setProducts([]);
+      setBranchStock([]);
+    } catch (error) {
+      console.error('Error in purgeProductsCollection:', error);
+      throw error;
+    }
   };
 
   return (
@@ -2707,11 +3095,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveMeatDeboning,
         finalizeMeatDeboning,
         deleteOrCancelMeatDeboning,
+        hardDeleteMeatDeboning,
+        purgeAllCancelledDebonings,
         meatReceptions,
         saveMeatReception,
         finalizeMeatReception,
         deleteOrCancelMeatReception,
         deleteMeatReception,
+        deleteNegativeOrHangingStock,
+        updateMeatReceptionStatus,
         initializeChamberStock,
         revertCreditNoteStock,
         updateProductMinStock,

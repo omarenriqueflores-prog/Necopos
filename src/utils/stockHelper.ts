@@ -1,5 +1,5 @@
 import { UnitType, StockTransfer, BranchConfig, ANIMAL_CATEGORIES, AnimalCategory, StockMovement, Product } from '../types/pos';
-import { isStoreUnitProduct } from './scaleParser';
+import { isStoreUnitProduct, MEAT_KEYWORDS } from './scaleParser';
 
 export { ANIMAL_CATEGORIES };
 export type { AnimalCategory };
@@ -89,6 +89,15 @@ export function isMeatCategory(category: string | undefined | null): boolean {
     'sebo',
     'picada',
     'elaborado',
+    'picana',
+    'picanha',
+    'bovino',
+    'ovino',
+    'cordero',
+    'lechon',
+    'lechón',
+    'cabrito',
+    'chivo',
   ];
 
   return positiveTerms.some((term) => cat.includes(term));
@@ -113,8 +122,28 @@ export function isMeatProduct(
 ): boolean {
   if (!p) return false;
 
-  // Todo producto de venta por unidad o detectado como artículo de almacén/bebidas/limpieza/carbón/huevos/fideos
-  // va al Stock de Almacén y Artículos Varios, NUNCA a la cámara frigorífica de carnes.
+  const desc = (p.description || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const cat = (p.category || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const rub = (p.rubro || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const hasMeatKw = MEAT_KEYWORDS.some((mk) => desc.includes(mk) || cat.includes(mk) || rub.includes(mk));
+  if (hasMeatKw || isMeatCategory(p.category) || isMeatCategory(p.rubro)) {
+    return true;
+  }
+
+  // 1. Si el producto tiene rubro o categoría explícitamente cárnica (Vaca, Carnes Vacunas, etc.) y su venta es por Kg:
+  // Es 100% Cárnico de Cámara Frigorífica (NUNCA artículo de almacén).
+  if ((isMeatCategory(p.category) || isMeatCategory(p.rubro)) && p.unitType !== 'Unid') {
+    return true;
+  }
+
+  // 2. Si se definió explícitamente como venta por Unidad y NO tiene rubro ni categoría cárnica:
+  // Va al Stock de Almacén y Artículos Varios.
+  if (p.unitType === 'Unid' && !isMeatCategory(p.category) && !isMeatCategory(p.rubro)) {
+    return false;
+  }
+
+  // 3. Verificación de artículos de almacén/bebidas/limpieza/carbón/huevos/fideos
   if (isStoreUnitProduct(p)) {
     return false;
   }
@@ -143,6 +172,11 @@ export function getStorageLocationName(branchId: 'NECO 1' | 'NECO 2', isMeat: bo
  * Sugiere el rubro/categoría específico de almacén según la descripción o categoría actual
  */
 export function getStoreRubroLabel(p: { description?: string; rubro?: string; category?: string }): string {
+  // Si ya es un artículo cárnico, devolver su rubro o categoría cárnica real
+  if (isMeatCategory(p.category) || isMeatCategory(p.rubro)) {
+    return p.rubro || p.category || 'Carnes';
+  }
+
   const norm = (s?: string) =>
     (s || '')
       .toLowerCase()
@@ -174,7 +208,7 @@ export function getStoreRubroLabel(p: { description?: string; rubro?: string; ca
   if (/\b(leche|manteca|margarina|crema|yogur|queso|lacteo)\b/.test(combined)) {
     return 'Lácteos';
   }
-  if (/\b(pan\b|lactal|galletita|panaderia|rallado|rebozador|tapa|empanada|pascualina)\b/.test(combined)) {
+  if (/\b(pan\b|lactal|galletita|panaderia|rallado|rebozador|tapas?\s*(de\s*)?(empanada|pascualina|tarta)s?|empanadas?\b|pascualinas?\b)\b/.test(combined)) {
     return 'Panadería';
   }
   if (/\b(fiambr|jamon|salame|mortadela|paleta cocida)\b/.test(combined)) {

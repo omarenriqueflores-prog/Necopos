@@ -12,6 +12,10 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         workbox: {
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
+          navigateFallback: null, // Always fetch index.html fresh from server
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MiB limit for PWA cache
         },
         manifest: {

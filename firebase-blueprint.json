@@ -77,9 +77,17 @@
         "id": { "type": "string" },
         "cuit": { "type": "string" },
         "companyName": { "type": "string" },
-        "environment": { "type": "string" }
+        "environment": { "type": "string" },
+        "alias": { "type": "string" },
+        "hasCertificate": { "type": "boolean" },
+        "hasPrivateKey": { "type": "boolean" },
+        "certificateLinked": { "type": "boolean" },
+        "certificateSubject": { "type": "string" },
+        "certificateIssuer": { "type": "string" },
+        "certificateValidTo": { "type": "string" },
+        "vaultBundle": { "type": "string" }
       },
-      "required": ["id", "cuit", "companyName", "environment"]
+      "required": ["cuit", "companyName", "environment"]
     },
     "BranchStock": {
       "title": "BranchStock",

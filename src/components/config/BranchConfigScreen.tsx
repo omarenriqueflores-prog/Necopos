@@ -7,12 +7,10 @@ import {
   Save,
   CheckCircle,
   FileSpreadsheet,
-  AlertCircle,
 } from 'lucide-react';
 import { BranchConfig } from '../../types/pos';
 import { WindowsModal } from '../common/WindowsModal';
 import { useDialog } from '../../context/DialogContext';
-import { useFirebase } from '../../context/FirebaseContext';
 
 interface BranchConfigScreenProps {
   branches: BranchConfig[];
@@ -25,8 +23,7 @@ export const BranchConfigScreen: React.FC<BranchConfigScreenProps> = ({
   currentBranch,
   onUpdateBranch,
 }) => {
-  const { showAlert, showConfirm, showAdminAuth } = useDialog();
-  const { purgeDatabase } = useFirebase();
+  const { showAlert } = useDialog();
   const [selectedBranchId, setSelectedBranchId] = useState<'NECO 1' | 'NECO 2'>(
     currentBranch.id
   );
@@ -420,54 +417,6 @@ export const BranchConfigScreen: React.FC<BranchConfigScreenProps> = ({
                 <span>
                   <strong>Protección de Fin de Jornada:</strong> Si una caja no fue cerrada manualmente por el cajero al culminar el día, el sistema ejecutará el <strong>Cierre Z Automático</strong> de la jornada anterior, asegurando la integridad fiscal y permitiendo la apertura limpia del nuevo turno.
                 </span>
-              </div>
-            </div>
-
-            {/* Section 5: Database Maintenance & Purge */}
-            <div className="border-2 border-[#aa3531] p-2.5 bg-[#fff5f5]">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-[#aa3531]" />
-                  <span className="text-[11px] font-bold uppercase text-[#aa3531]">
-                    5. Mantenimiento y Limpieza Total de la Base de Datos:
-                  </span>
-                </div>
-                <span className="bg-[#ffdad6] text-[#aa3531] px-2 py-0.5 font-bold text-[10px] border border-[#ba1a1a]">
-                  ZONA DE PELIGRO
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-2 text-[12px]">
-                <p className="text-[#181c1f]">
-                  Esta herramienta permite <strong>eliminar por completo</strong> todos los registros de ventas, movimientos de caja, clientes, productos, stock y cierres, dejando la base de datos totalmente limpia para iniciar su uso operativo real.
-                </p>
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const authorized = await showAdminAuth(
-                        'ATENCIÓN: Está a punto de borrar TODOS los datos de ventas, stock, clientes y movimientos de la base de datos.\n\nEsta acción es irreversible. ¿Desea continuar?',
-                        'AUTORIZACIÓN DE ADMINISTRADOR - LIMPIEZA TOTAL'
-                      );
-                      if (authorized) {
-                        const doubleCheck = await showConfirm(
-                          '¿CONFIRMA ABSOLUTAMENTE que desea vaciar toda la base de datos? Se perderá toda la información actual.'
-                        );
-                        if (doubleCheck) {
-                          try {
-                            await showAlert("PROTECCIÓN DE DATOS: El restablecimiento masivo de la base de datos está deshabilitado para resguardar la información comercial de NECO POS.");
-                          } catch (err: any) {
-                            await showAlert(`Error al limpiar la base de datos: ${err?.message || 'Error desconocido'}`);
-                          }
-                        }
-                      }
-                    }}
-                    className="h-[30px] px-4 bg-[#aa3531] hover:bg-[#891c1d] text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
-                  >
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    <span>LIMPIAR Y VACIAR TODA LA BASE DE DATOS</span>
-                  </button>
-                </div>
               </div>
             </div>
           </div>

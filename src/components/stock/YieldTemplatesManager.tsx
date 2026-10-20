@@ -18,6 +18,7 @@ import {
   Lock,
   ShieldAlert,
   AlertTriangle,
+  Pencil,
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
 import { useDialog } from '../../context/DialogContext';
@@ -25,6 +26,7 @@ import { WindowsModal } from '../common/WindowsModal';
 import { DeboningYieldTemplate, ANIMAL_CATEGORIES } from '../../types/pos';
 import { formatKg } from '../../utils/stockHelper';
 import { YieldTemplateDetailModal } from './YieldTemplateDetailModal';
+import { TemplateEditorModal } from './TemplateEditorModal';
 
 interface YieldTemplatesManagerProps {
   onSelectTemplateToApply?: (template: DeboningYieldTemplate) => void;
@@ -53,6 +55,8 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
 
   // Modales
   const [viewingTemplate, setViewingTemplate] = useState<DeboningYieldTemplate | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<DeboningYieldTemplate | null>(null);
 
   // Modal de duplicar
   const [templateToDuplicate, setTemplateToDuplicate] = useState<DeboningYieldTemplate | null>(null);
@@ -161,12 +165,13 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
   const handleDeleteTemplate = async (template: DeboningYieldTemplate) => {
     try {
       const authorized = await showAdminAuth(
-        `¿Desea eliminar la planilla de rendimiento "${template.name}" (v${template.version})? Esta acción la desactivará de forma segura sin borrar los datos históricos.`
+        `¿Desea eliminar definitivamente la planilla de rendimiento "${template.name}" (v${template.version})?\n\nEsta acción la borrará del sistema. Ingrese clave de administrador para confirmar.`,
+        'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR PLANILLA'
       );
 
       if (authorized) {
-        await deleteDeboningTemplate(template.id);
-        await showAlert(`La planilla "${template.name}" fue eliminada / desactivada correctamente.`, 'PLANILLA ELIMINADA');
+        await deleteDeboningTemplate(template.id, true);
+        await showAlert(`La planilla "${template.name}" fue eliminada definitivamente.`, 'PLANILLA ELIMINADA');
       }
     } catch {
       // Fallback a modal con clave directa
@@ -221,6 +226,16 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
       {/* BARRA DE HERRAMIENTAS Y FILTROS */}
       <div className="bg-white border border-gray-400 p-2 flex flex-wrap items-center justify-between gap-2 shadow-sm shrink-0">
         <div className="flex flex-wrap items-center gap-2">
+          {/* Botón Nueva Planilla */}
+          <button
+            type="button"
+            onClick={() => setShowCreateModal(true)}
+            className="px-3 py-1.5 bg-[#002046] hover:bg-blue-900 text-white font-bold flex items-center space-x-1.5 shadow-sm text-xs cursor-pointer rounded"
+          >
+            <Plus className="w-3.5 h-3.5 text-green-400" />
+            <span>NUEVA PLANILLA DE RENDIMIENTO</span>
+          </button>
+
           {/* Búsqueda */}
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2 top-2" />
@@ -386,10 +401,20 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
                           <button
                             type="button"
                             onClick={() => setViewingTemplate(template)}
-                            className="p-1 text-blue-700 hover:bg-blue-100 rounded"
+                            className="p-1 text-blue-700 hover:bg-blue-100 rounded cursor-pointer"
                             title="Ver Coeficientes y Detalle"
                           >
                             <Eye className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Editar Planilla */}
+                          <button
+                            type="button"
+                            onClick={() => setEditingTemplate(template)}
+                            className="p-1 text-emerald-700 hover:bg-emerald-100 rounded cursor-pointer"
+                            title="Editar Planilla (Nombre, Categoría, Cortes)"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
                           </button>
 
                           {/* Activar / Desactivar */}
@@ -532,13 +557,13 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
             onSubmit={async (e) => {
               e.preventDefault();
               if (passwordInput.trim() === '26635235') {
-                await deleteDeboningTemplate(templateToDelete.id);
+                await deleteDeboningTemplate(templateToDelete.id, true);
                 setPasswordModalOpen(false);
                 setTemplateToDelete(null);
                 setPasswordInput('');
                 setPasswordError('');
                 await showAlert(
-                  `La planilla "${templateToDelete.name}" fue eliminada / desactivada exitosamente.`,
+                  `La planilla "${templateToDelete.name}" fue eliminada definitivamente.`,
                   'PLANILLA ELIMINADA'
                 );
               } else {
@@ -600,6 +625,23 @@ export const YieldTemplatesManager: React.FC<YieldTemplatesManagerProps> = ({
             </div>
           </form>
         </WindowsModal>
+      )}
+
+      {/* MODAL CREAR NUEVA PLANILLA */}
+      {showCreateModal && (
+        <TemplateEditorModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+        />
+      )}
+
+      {/* MODAL EDITAR PLANILLA */}
+      {editingTemplate && (
+        <TemplateEditorModal
+          isOpen={!!editingTemplate}
+          templateToEdit={editingTemplate}
+          onClose={() => setEditingTemplate(null)}
+        />
       )}
     </div>
   );

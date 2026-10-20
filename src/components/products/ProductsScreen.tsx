@@ -159,27 +159,25 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
     }
 
     const rows = products.map((p) => ({
+      PLU: p.scalePlu || p.code,
       CODIGO: p.code,
-      CODIGO_BARRAS: p.barcode || '',
       DESCRIPCION: p.description,
       RUBRO: p.rubro || 'Carnes Vacunas',
       CATEGORIA_ESPECIE: p.category || 'Novillito',
       UNIDAD: p.unitType,
       PRECIO: p.price,
-      PLU_BALANZA: p.scalePlu || '',
       ESTADO: p.active ? 'ACTIVO' : 'INACTIVO',
     }));
 
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [
+      { wch: 12 }, // PLU
       { wch: 12 }, // CODIGO
-      { wch: 18 }, // CODIGO_BARRAS
       { wch: 35 }, // DESCRIPCION
       { wch: 20 }, // RUBRO
       { wch: 20 }, // CATEGORIA_ESPECIE
       { wch: 10 }, // UNIDAD
       { wch: 14 }, // PRECIO
-      { wch: 14 }, // PLU_BALANZA
       { wch: 12 }, // ESTADO
     ];
 
@@ -292,7 +290,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
             <button
               onClick={onPurgeProducts}
               className="h-[26px] px-2 bg-[#ffdad6] hover:bg-[#ffb4ab] border border-[#ba1a1a] text-[#410002] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-              title="Eliminar todos los artículos de la base de datos para comenzar desde cero"
+              title="Eliminar todos los artículos del catálogo (Requiere clave de Administrador)"
             >
               <Trash2 className="w-3 h-3 text-[#ba1a1a]" />
               <span>Vaciar Catálogo</span>
@@ -335,18 +333,15 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
           <table className="w-full text-left border-collapse select-none text-[12px]">
             <thead className="sticky top-0 bg-[#e5e8ec] text-[#181c1f] font-bold text-[11px] border-b border-[#74777f]">
               <tr className="h-[24px]">
-                <th className="w-[70px] px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
-                <th className="w-[140px] px-2 border-r border-[#c4c6cf] bg-[#dce5f5] text-[#002046]">
-                  CÓD. DE BARRAS (EAN)
+                <th className="w-[90px] px-2 text-center border-r border-[#c4c6cf] bg-[#dce5f5] text-[#002046]">
+                  PLU
                 </th>
+                <th className="w-[80px] px-2 border-r border-[#c4c6cf]">CÓDIGO</th>
                 <th className="px-2 border-r border-[#c4c6cf]">DESCRIPCIÓN DEL PRODUCTO</th>
-                <th className="w-[120px] px-2 border-r border-[#c4c6cf]">RUBRO</th>
-                <th className="w-[120px] px-2 border-r border-[#c4c6cf]">CATEGORÍA / ESPECIE</th>
-                <th className="w-[60px] px-1 text-center border-r border-[#c4c6cf]">UNIDAD</th>
-                <th className="w-[110px] px-2 text-right border-r border-[#c4c6cf]">PRECIO ($)</th>
-                <th className="w-[100px] px-1 text-center border-r border-[#c4c6cf] bg-[#e0e3e7]">
-                  PLU BALANZA
-                </th>
+                <th className="w-[140px] px-2 border-r border-[#c4c6cf]">RUBRO</th>
+                <th className="w-[140px] px-2 border-r border-[#c4c6cf]">CATEGORÍA / ESPECIE</th>
+                <th className="w-[70px] px-1 text-center border-r border-[#c4c6cf]">UNIDAD</th>
+                <th className="w-[120px] px-2 text-right border-r border-[#c4c6cf]">PRECIO ($)</th>
                 <th className="w-[80px] px-1 text-center">ESTADO</th>
               </tr>
             </thead>
@@ -367,27 +362,23 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                         : 'bg-[#f1f4f8] hover:bg-[#e5e8ec]'
                     }`}
                   >
+                    <td
+                      className={`text-center font-mono font-bold text-[11px] px-2 border-r border-[#c4c6cf] ${
+                        isSelected ? 'bg-[#1b365d] text-white' : 'bg-[#f5f8ff] text-[#002046]'
+                      }`}
+                    >
+                      {prod.scalePlu || prod.code}
+                    </td>
                     <td className="px-2 font-mono text-[11px] border-r border-[#c4c6cf]">
                       {prod.code}
                     </td>
-                    <td
-                      className={`px-2 font-mono text-[11px] border-r border-[#c4c6cf] ${
-                        isSelected
-                          ? 'text-[#aec7f7] font-bold'
-                          : prod.barcode
-                          ? 'text-[#002046] font-bold bg-[#f5f8ff]'
-                          : 'text-[#74777f]'
-                      }`}
-                    >
-                      {prod.barcode ? prod.barcode : '-'}
-                    </td>
-                    <td className="px-2 border-r border-[#c4c6cf] truncate max-w-[280px]">
+                    <td className="px-2 border-r border-[#c4c6cf] truncate max-w-[300px]">
                       {prod.description}
                     </td>
-                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[120px]">
+                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[140px]">
                       {prod.rubro || 'Carnes Vacunas'}
                     </td>
-                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[120px]">
+                    <td className="px-2 border-r border-[#c4c6cf] text-[11px] truncate max-w-[140px]">
                       <span className="font-bold">{prod.category || 'Novillito'}</span>
                     </td>
                     <td className="text-center font-bold text-[10px] border-r border-[#c4c6cf]">
@@ -409,13 +400,6 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                       }`}
                     >
                       {formatCurrency(prod.price)}
-                    </td>
-                    <td
-                      className={`text-center font-mono font-bold text-[11px] border-r border-[#c4c6cf] ${
-                        isSelected ? 'bg-[#1b365d] text-white' : 'bg-[#e0e3e7] text-[#002046]'
-                      }`}
-                    >
-                      {prod.scalePlu ? `PLU ${prod.scalePlu}` : '-'}
                     </td>
                     <td className="text-center px-1">
                       <span
@@ -443,11 +427,11 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
             <div className="flex items-center gap-2">
               <span className="font-bold text-[#002046]">{selectedProduct.description}</span>
               <span className="text-[#44474e]">
-                (Cód: {selectedProduct.code} | Cód. Barras:{' '}
+                (PLU:{' '}
                 <strong className="font-mono text-[#002046]">
-                  {selectedProduct.barcode || 'Sin asignar'}
+                  {selectedProduct.scalePlu || selectedProduct.code}
                 </strong>{' '}
-                | PLU Balanza: {selectedProduct.scalePlu || 'Sin PLU'})
+                | Cód: {selectedProduct.code})
               </span>
             </div>
 
@@ -622,7 +606,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                       rubro: nextRubro,
                       unitType: isUnitRubro ? 'Unid' : 'Kg',
                       category: isUnitRubro ? nextRubro : editingProduct.category === 'Almacén' ? 'Novillito' : editingProduct.category,
-                      scalePlu: isUnitRubro ? null : editingProduct.scalePlu || editingProduct.code,
+                      scalePlu: editingProduct.scalePlu || editingProduct.code,
                     });
                   }}
                   className="w-full h-[26px] px-2 bg-white border border-[#74777f] font-semibold text-[#002046]"
@@ -686,7 +670,7 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
                     <input
                       type="radio"
                       checked={editingProduct.unitType === 'Unid'}
-                      onChange={() => setEditingProduct({ ...editingProduct, unitType: 'Unid', scalePlu: null })}
+                      onChange={() => setEditingProduct({ ...editingProduct, unitType: 'Unid' })}
                     />
                     <span>Por Unidad (Stock Almacén / Varios)</span>
                   </label>

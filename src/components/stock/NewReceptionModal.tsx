@@ -269,7 +269,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
         setErrorMessage('Debe ingresar al menos una media res con peso mayor a 0 Kg.');
         return;
       }
-      const rec = buildReceptionObject(existingReception?.status === 'CONFIRMADO' ? 'CONFIRMADO' : 'CONFIRMADO');
+      const rec = buildReceptionObject(existingReception?.status === 'CONFIRMADO' ? 'CONFIRMADO' : 'PENDIENTE');
       
       if (existingReception?.status === 'CONFIRMADO') {
         await updateConfirmedMeatReception(rec, existingReception, operatorName);
@@ -758,12 +758,12 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
 
             <button
               type="button"
-              onClick={() => setShowConfirmFinalize(true)}
+              onClick={handleConfirmFinalize}
               disabled={isSubmitting || carcasses.length === 0 || totalWeightKg <= 0}
-              className="px-4 py-1 bg-[#002046] hover:bg-blue-900 disabled:opacity-50 text-white font-bold flex items-center space-x-1.5 shadow"
+              className="px-4 py-1 bg-[#002046] hover:bg-blue-900 disabled:opacity-50 text-white font-bold flex items-center space-x-1.5 shadow cursor-pointer"
             >
               <CheckCircle2 className="w-3.5 h-3.5 text-green-300" />
-              <span>CONFIRMAR INGRESO EN CÁMARA</span>
+              <span>{isSubmitting ? 'INGRESANDO A CÁMARA...' : 'CONFIRMAR INGRESO EN CÁMARA'}</span>
             </button>
           </div>
         </div>

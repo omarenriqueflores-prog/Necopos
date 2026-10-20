@@ -333,6 +333,7 @@ export const MeatReconciliationTab: React.FC = () => {
   // Exportar a Excel
   const handleExportExcel = () => {
     const data = filteredData.map((d) => ({
+      'PLU': d.product.scalePlu || d.product.code,
       'Código': d.product.code,
       'Descripción': d.product.description,
       'Categoría': d.product.category,

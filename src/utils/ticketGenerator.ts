@@ -53,8 +53,11 @@ export const generateTicketHtml = (
   branch: BranchConfig,
   format?: 'TICKET' | 'A4'
 ) => {
+  const safeBranch: Partial<BranchConfig> = branch || {};
+  const branchCuit = String(safeBranch.cuit || '20-25506516-6');
+
   // Determine format from parameter or branch preference
-  const targetFormat = format || (branch.ticketPrinter === 'A4' ? 'A4' : 'TICKET');
+  const targetFormat = format || (safeBranch.ticketPrinter === 'A4' ? 'A4' : 'TICKET');
 
   // Normalize invoice type
   const rawType = (sale.invoiceType || '').toUpperCase();
@@ -95,7 +98,7 @@ export const generateTicketHtml = (
   const ticketParts = (sale.ticketNumber || '').split('-');
   const ptoVtaStr = ticketParts.length > 1
     ? ticketParts[0].padStart(5, '0')
-    : (branch.pointOfSale || '1').toString().padStart(5, '0');
+    : (safeBranch.pointOfSale || '1').toString().padStart(5, '0');
   const nroCmpStr = ticketParts.length > 1
     ? ticketParts[1].padStart(8, '0')
     : (sale.ticketNumber || '1').toString().padStart(8, '0');
@@ -109,7 +112,7 @@ export const generateTicketHtml = (
     : new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   // QR Code URL & Base64 Payload calculation according to ARCA / AFIP standard
-  const qrCuitNum = parseInt(branch.cuit.replace(/\D/g, '') || '20255065166', 10);
+  const qrCuitNum = parseInt(branchCuit.replace(/\D/g, '') || '20255065166', 10);
   const qrPtoVta = parseInt(ptoVtaStr, 10);
   const qrNroCmp = parseInt(nroCmpStr, 10);
   const isCuitRecipient = (sale.customerDni?.replace(/\D/g, '').length === 11);
@@ -126,7 +129,7 @@ export const generateTicketHtml = (
     ptoVta: qrPtoVta,
     tipoCmp: arcaTipoCmp,
     nroCmp: qrNroCmp,
-    importe: Number(sale.total.toFixed(2)),
+    importe: Number((sale.total || 0).toFixed(2)),
     moneda: "PES",
     ctz: 1,
     tipoDocRec: qrTipoDoc,
@@ -139,11 +142,11 @@ export const generateTicketHtml = (
 
   // Header Title & Legal Name from branch configuration (no hardcoded names)
   // Prominently display Nombre de Fantasía as primary title, and Razón Social as legal titular
-  const rawFantasy = (branch.fantasyName || branch.name || '').trim();
-  const rawLegal = (branch.businessName || branch.legalName || '').trim();
+  const rawFantasy = (safeBranch.fantasyName || safeBranch.name || '').trim();
+  const rawLegal = (safeBranch.businessName || safeBranch.legalName || '').trim();
 
-  const headerTitle = (rawFantasy || rawLegal || '').toUpperCase();
-  const headerLegal = rawLegal || rawFantasy || '';
+  const headerTitle = (rawFantasy || rawLegal || 'CARNICERÍAS NECO').toUpperCase();
+  const headerLegal = rawLegal || rawFantasy || 'MOYA CARLOS HUGO';
 
   // Net and VAT amounts calculation
   const totalAmount = sale.total || 0;
@@ -378,10 +381,10 @@ export const generateTicketHtml = (
               <strong>Razón Social:</strong> ${headerLegal}
             </div>
             <div style="font-size: 10px; color: #333; margin-bottom: 2px;">
-              <strong>Domicilio Comercial:</strong> ${branch.address || ''}
+              <strong>Domicilio Comercial:</strong> ${safeBranch.address || ''}
             </div>
             <div style="font-size: 10px; color: #333; margin-bottom: 2px;">
-              <strong>Teléfono:</strong> ${branch.phone || '---'}
+              <strong>Teléfono:</strong> ${safeBranch.phone || '---'}
             </div>
             <div style="font-size: 10.5px; font-weight: bold; margin-top: 4px; color: #000;">
               Condición frente al IVA: IVA RESPONSABLE INSCRIPTO
@@ -408,9 +411,9 @@ export const generateTicketHtml = (
               <strong>Fecha de Emisión:</strong> ${dateStr}
             </div>
             <div style="border-top: 1px solid #ddd; padding-top: 3px; margin-top: 3px; font-size: 10px; line-height: 1.3;">
-              <div><strong>CUIT:</strong> <span style="font-family: monospace;">${branch.cuit}</span></div>
-              <div><strong>Ingresos Brutos:</strong> <span style="font-family: monospace;">${branch.iibb || branch.grossIncome || '---'}</span></div>
-              <div><strong>Fecha Inicio Actividades:</strong> ${branch.startActivities || '01/09/2015'}</div>
+              <div><strong>CUIT:</strong> <span style="font-family: monospace;">${branchCuit}</span></div>
+              <div><strong>Ingresos Brutos:</strong> <span style="font-family: monospace;">${safeBranch.iibb || safeBranch.grossIncome || '---'}</span></div>
+              <div><strong>Fecha Inicio Actividades:</strong> ${safeBranch.startActivities || '01/09/2015'}</div>
             </div>
           </td>
         </tr>
@@ -599,7 +602,7 @@ export const generateTicketHtml = (
   <style>
     @page {
       margin: 0;
-      size: ${branch.ticketPrinter === '58mm' ? '58mm' : '80mm'} auto;
+      size: ${safeBranch.ticketPrinter === '58mm' ? '58mm' : '80mm'} auto;
     }
     * {
       box-sizing: border-box;
@@ -608,7 +611,7 @@ export const generateTicketHtml = (
     }
     body {
       font-family: 'Arial Narrow', Arial, sans-serif;
-      width: ${branch.ticketPrinter === '58mm' ? '54mm' : '74mm'};
+      width: ${safeBranch.ticketPrinter === '58mm' ? '54mm' : '74mm'};
       padding: 4mm 2mm;
       margin: 0 auto;
       line-height: 1.2;
@@ -629,10 +632,10 @@ export const generateTicketHtml = (
     ${headerLegal && headerLegal.toUpperCase() !== headerTitle ? `
     <div style="font-size: 10px; margin-top: 1px;">${headerLegal.toUpperCase()}</div>
     ` : ''}
-    <div style="font-size: 9.5px; margin-top: 2px;">${branch.address || ''}</div>
-    <div style="font-size: 9.5px;">CUIT: ${branch.cuit} - IIBB: ${branch.iibb || branch.grossIncome || '---'}</div>
+    <div style="font-size: 9.5px; margin-top: 2px;">${safeBranch.address || ''}</div>
+    <div style="font-size: 9.5px;">CUIT: ${branchCuit} - IIBB: ${safeBranch.iibb || safeBranch.grossIncome || '---'}</div>
     <div style="font-size: 9.5px; font-weight: bold;">IVA RESPONSABLE INSCRIPTO</div>
-    <div style="font-size: 9px;">INICIO ACTIV.: ${branch.startActivities || '01/09/2015'}</div>
+    <div style="font-size: 9px;">INICIO ACTIV.: ${safeBranch.startActivities || '01/09/2015'}</div>
   </div>
 
   <div class="divider"></div>
@@ -695,9 +698,9 @@ export const generateTicketHtml = (
     </div>
   ` : ''}
 
-  ${branch.ticketFooter ? `
+  ${safeBranch.ticketFooter ? `
     <div class="divider"></div>
-    <div style="text-align: center; font-size: 9.5px; margin-top: 4px;">${branch.ticketFooter}</div>
+    <div style="text-align: center; font-size: 9.5px; margin-top: 4px;">${safeBranch.ticketFooter}</div>
   ` : ''}
 </body>
 </html>`;

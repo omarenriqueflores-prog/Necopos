@@ -369,4 +369,50 @@ describe('D. Pruebas Automatizadas Reales de Integridad Comercial, Stock y ARCA'
     expect(reconciledInvoice.cbteNro).toBe(200);
     expect(reconciledInvoice.cae).toBe('78900011122233');
   });
+
+  // D.15 Clasificación precisa de cortes cárnicos de cámara frente a almacén
+  it('15. El artículo 109 "TAPA DE PICANA - VACA" con rubro Carnes Vacunas y categoría Vaca es clasificado como Cárnico de Cámara (isMeatProduct = true)', async () => {
+    const { isMeatProduct } = await import('../src/utils/stockHelper');
+    const { isStoreUnitProduct } = await import('../src/utils/scaleParser');
+
+    const tapaPicana = {
+      code: '109',
+      description: 'TAPA DE PICANA - VACA',
+      rubro: 'Carnes Vacunas',
+      category: 'Vaca',
+      unitType: 'Kg',
+      price: 16000,
+    };
+
+    expect(isMeatProduct(tapaPicana)).toBe(true);
+    expect(isStoreUnitProduct(tapaPicana)).toBe(false);
+  });
+
+  it('16. Los cortes cárnicos que contienen la palabra "TAPA" (Tapa de Asado, Tapa de Cuadril, Tapa de Nalga) no se confunden con tapas de empanada de panadería', async () => {
+    const { isMeatProduct, getStoreRubroLabel } = await import('../src/utils/stockHelper');
+    const { isStoreUnitProduct } = await import('../src/utils/scaleParser');
+
+    const tapaAsado = {
+      code: '110',
+      description: 'TAPA DE ASADO - NOVILLITO',
+      rubro: 'Carnes Vacunas',
+      category: 'Novillito',
+      unitType: 'Kg',
+    };
+
+    const tapasEmpanada = {
+      code: '900',
+      description: 'TAPAS DE EMPANADA LA SALTEÑA 12 UNID',
+      rubro: 'Almacén',
+      category: 'Panadería',
+      unitType: 'Unid',
+    };
+
+    expect(isMeatProduct(tapaAsado)).toBe(true);
+    expect(isStoreUnitProduct(tapaAsado)).toBe(false);
+
+    expect(isMeatProduct(tapasEmpanada)).toBe(false);
+    expect(isStoreUnitProduct(tapasEmpanada)).toBe(true);
+    expect(getStoreRubroLabel(tapasEmpanada)).toBe('Panadería');
+  });
 });

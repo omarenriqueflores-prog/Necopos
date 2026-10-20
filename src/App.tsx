@@ -366,13 +366,33 @@ export default function App() {
   };
 
   const handlePurgeProducts = async () => {
-    await showAlert(
-      "PROTECCIÓN DE DATOS: El borrado masivo del catálogo está deshabilitado para preservar la integridad de los datos comerciales en producción."
+    if (products.length === 0) {
+      await showAlert('El catálogo de productos ya se encuentra vacío.');
+      return;
+    }
+
+    const authorized = await showAdminAuth(
+      `ATENCIÓN: Está a punto de VACIAR COMPLETAMENTE el catálogo de artículos (${products.length} productos registrados).\n\nEsta acción eliminará todos los artículos y sus existencias asociadas de la base de datos de manera definitiva.\n\nPor favor ingrese la clave de administrador para autorizar la operación:`,
+      'AUTORIZACIÓN DE ADMINISTRADOR - VACIAR CATÁLOGO'
     );
+    if (!authorized) return;
+
+    const doubleCheck = await showConfirm(
+      '¿CONFIRMA DEFINITIVAMENTE que desea vaciar todo el catálogo de artículos? Se borrarán todos los productos y deberá importarlos nuevamente desde la planilla Excel.'
+    );
+    if (!doubleCheck) return;
+
+    try {
+      await purgeProductsCollection();
+      setProducts([]);
+      await showAlert('El catálogo de artículos y el stock asociado han sido vaciados exitosamente.');
+    } catch (err: any) {
+      await showAlert(`Error al vaciar catálogo: ${err?.message || 'Error desconocido'}`);
+    }
   };
 
   const handleBatchImportProducts = async (imported: Product[], replaceAll: boolean) => {
-    await saveProductsBatch(imported);
+    await saveProductsBatch(imported, replaceAll);
     setProducts((prev) => {
       const map = new Map<string, Product>();
       if (!replaceAll) {

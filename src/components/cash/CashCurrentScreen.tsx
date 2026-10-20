@@ -331,31 +331,6 @@ export const CashCurrentScreen: React.FC<CashCurrentScreenProps> = ({
                 <Trash2 className="w-3.5 h-3.5 text-[#aa3531]" />
                 <span>Limpiar Turno</span>
               </button>
-              <button
-                onClick={async () => {
-                  const authorized = await showAdminAuth(
-                    'ATENCIÓN: Está a punto de BORRAR TODA LA BASE DE DATOS del sistema (productos, clientes, ventas, stock, movimientos, etc.).\n\nEsta acción es irreversible y dejará el sistema completamente en cero. ¿Desea continuar?',
-                    '⚠️ ZONA DE PELIGRO - VACIAR TODA LA BASE DE DATOS'
-                  );
-                  if (authorized) {
-                    const doubleCheck = await showConfirm(
-                      '¿CONFIRMA ABSOLUTAMENTE que desea eliminar TODO el contenido de la base de datos de Firestore?'
-                    );
-                    if (doubleCheck) {
-                      try {
-                        await showAlert("PROTECCIÓN DE DATOS: El vaciado masivo de la base de datos está deshabilitado para resguardar la información comercial de NECO POS.");
-                      } catch (err: any) {
-                        await showAlert(`Error al vaciar la base de datos: ${err?.message || 'Error desconocido'}`);
-                      }
-                    }
-                  }
-                }}
-                className="h-[26px] px-2.5 bg-[#ba1a1a] hover:bg-[#891c1d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
-                title="Vaciar absolutamente toda la base de datos de Firestore (Productos, Stock, Ventas, Clientes)"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-white" />
-                <span>LIMPIEZA TOTAL BD</span>
-              </button>
             </div>
           )}
         </div>
