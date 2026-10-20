@@ -48,16 +48,16 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
 
   const handleCleanNegativeStock = async () => {
     const authorized = await showAdminAuth(
-      '¿Desea eliminar la media res al gancho (código MEDIA_RES) u otros stocks con saldos negativos (ej. -162kg e importe negativo)? Ingrese la clave de administrador para autorizar la purga.',
-      'AUTORIZACIÓN DE ADMINISTRADOR - ELIMINAR STOCK / RES NEGATIVA'
+      '¿Desea regularizar a cero los saldos negativos de MEDIA_RES? Se conservarán las recepciones y los saldos positivos. Ingrese la clave de administrador para autorizar.',
+      'AUTORIZACIÓN DE ADMINISTRADOR - REGULARIZAR STOCK NEGATIVO'
     );
     if (!authorized) return;
 
     try {
       await deleteNegativeOrHangingStock('MEDIA_RES', operatorName);
-      await showAlert('Se ha eliminado exitosamente la media res / stock con saldo negativo de la base de datos.', 'ELIMINACIÓN COMPLETADA');
+      await showAlert('Se regularizaron los saldos negativos mediante movimientos de ajuste. Las recepciones y los saldos positivos se conservaron.', 'REGULARIZACIÓN COMPLETADA');
     } catch (err: any) {
-      await showAlert(`No se pudo eliminar el stock negativo: ${err.message}`, 'ERROR');
+      await showAlert(`No se pudo regularizar el stock negativo: ${err.message}`, 'ERROR');
     }
   };
 
@@ -78,10 +78,14 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
   const activeReceptions = useMemo(() => {
     return meatReceptions.filter(
       (r) =>
-        (selectedBranch === 'ALL' || r.branchId === selectedBranch) &&
         (r.status === 'CONFIRMADO' || r.status === 'PENDIENTE') &&
-        // Filtrar aquellas que tengan al menos una media res DISPONIBLE
-        (r.carcasses ? r.carcasses.some(c => !c.status || c.status === 'DISPONIBLE') : true)
+        (r.carcasses && r.carcasses.length > 0
+          ? r.carcasses.some(
+              (carcass) =>
+                (!carcass.status || carcass.status === 'DISPONIBLE' || carcass.status === 'PENDIENTE') &&
+                (selectedBranch === 'ALL' || (carcass.branchId || r.branchId) === selectedBranch)
+            )
+          : selectedBranch === 'ALL' || r.branchId === selectedBranch)
     );
   }, [meatReceptions, selectedBranch]);
 
@@ -572,9 +576,21 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {activeReceptions.map((rec) => {
-                  const availCount = (rec.carcasses || []).filter(
-                    (c) => !c.status || c.status === 'DISPONIBLE' || c.status === 'PENDIENTE'
-                  ).length || rec.totalQuantity;
+                  const visibleCarcasses = (rec.carcasses || []).filter(
+                    (carcass) =>
+                      (!carcass.status || carcass.status === 'DISPONIBLE' || carcass.status === 'PENDIENTE') &&
+                      (selectedBranch === 'ALL' || (carcass.branchId || rec.branchId) === selectedBranch)
+                  );
+                  const availCount = (rec.carcasses || []).length > 0 ? visibleCarcasses.length : rec.totalQuantity;
+                  const visibleWeightKg = (rec.carcasses || []).length > 0
+                    ? visibleCarcasses.reduce((sum, carcass) => sum + (Number(carcass.weightKg) || 0), 0)
+                    : Number(rec.totalWeightKg) || 0;
+                  const branchesWithCarcasses = Array.from(
+                    new Set(visibleCarcasses.map((carcass) => carcass.branchId || rec.branchId))
+                  );
+                  const displayBranch = selectedBranch === 'ALL' && branchesWithCarcasses.length > 1
+                    ? branchesWithCarcasses.join(' / ')
+                    : branchesWithCarcasses[0] || rec.branchId;
                   const isExpanded = expandedReceptionIds.includes(rec.id);
                   const hasCarcasses = (rec.carcasses || []).length > 0;
                   return (
@@ -594,7 +610,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
                         {rec.code}
                       </td>
                       <td className="p-1.5 border-r border-gray-200 text-gray-600">{rec.date} {rec.time}</td>
-                      <td className="p-1.5 border-r border-gray-200 font-bold text-gray-800">{rec.branchId} — {rec.chamber}</td>
+                      <td className="p-1.5 border-r border-gray-200 font-bold text-gray-800">{displayBranch}</td>
                       <td className="p-1.5 border-r border-gray-200 font-mono font-bold text-indigo-900">{rec.tropaNumber}</td>
                       <td className="p-1.5 border-r border-gray-200 text-gray-800">{rec.supplier}</td>
                       <td className="p-1.5 border-r border-gray-200 font-semibold text-gray-700">{rec.species} ({rec.category})</td>
@@ -602,7 +618,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
                         {availCount} / {rec.totalQuantity} un.
                       </td>
                       <td className="p-1.5 border-r border-gray-200 text-right font-mono font-bold text-red-700 bg-yellow-50/60">
-                        {formatKg(rec.totalWeightKg)}
+                        {formatKg(visibleWeightKg)}
                       </td>
                       <td className="p-1.5 border-r border-gray-200 text-right font-mono text-gray-700">
                         {formatCurrency(rec.pricePerKg)}
@@ -640,7 +656,9 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
                               </tr>
                             </thead>
                             <tbody>
-                              {(rec.carcasses || []).map((c, cIdx) => {
+                              {(rec.carcasses || [])
+                                .filter((carcass) => selectedBranch === 'ALL' || (carcass.branchId || rec.branchId) === selectedBranch)
+                                .map((c, cIdx) => {
                                 const st = c.status || 'DISPONIBLE';
                                 const stClass =
                                   st === 'DISPONIBLE'
@@ -660,7 +678,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
                                     </td>
                                   </tr>
                                 );
-                              })}
+                                })}
                             </tbody>
                           </table>
                         </td>

@@ -39,6 +39,8 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
   const [customReason, setCustomReason] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [productSearch, setProductSearch] = useState<string>('');
+  const [selectedCarcassId, setSelectedCarcassId] = useState<string | null>(null);
+  const [newUnitWeight, setNewUnitWeight] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -122,27 +124,56 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
     return products.find((p) => p.code === selectedTargetCode) || null;
   }, [products, selectedTargetCode]);
 
+  // Unidades individuales (medias reses) de la recepción seleccionada
+  const selectedCarcasses = useMemo(() => {
+    return selectedReception?.carcasses || [];
+  }, [selectedReception]);
+
+  const selectedCarcass = useMemo(() => {
+    return selectedCarcasses.find((c) => c.id === selectedCarcassId) || null;
+  }, [selectedCarcasses, selectedCarcassId]);
+
+  // Resetea la unidad elegida cuando cambia la recepción seleccionada
+  useEffect(() => {
+    setSelectedCarcassId(null);
+    setNewUnitWeight('');
+  }, [selectedTargetCode]);
+
+  useEffect(() => {
+    setNewUnitWeight('');
+  }, [selectedCarcassId]);
+
   const isSelectedMeat = useMemo(() => {
     if (selectedReception) return true;
     return isMeatProduct(selectedProduct);
   }, [selectedReception, selectedProduct]);
 
-  // Stock actual o peso actual de la media res
+  // Stock actual o peso actual de la media res (unidad individual o total de la recepción)
   const currentStockOrWeight = useMemo(() => {
+    if (selectedReception && selectedCarcass) return Number(selectedCarcass.weightKg) || 0;
     if (selectedReception) return Number(selectedReception.totalWeightKg) || 0;
     if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
       const found = branchStock.find((s) => s.branchId === branchId && s.productCode === selectedTargetCode);
       return found ? Number(found.currentStock) || 0 : 0;
     }
     return 0;
-  }, [selectedReception, selectedTargetCode, branchStock, branchId]);
+  }, [selectedReception, selectedCarcass, selectedTargetCode, branchStock, branchId]);
 
   // Cálculo de stock resultante
   const qtyNumber = Number(quantity) || 0;
   const isPositive = type === 'AJUSTE_POSITIVO' || type === 'ENTRADA';
-  const newStockCalculated = Number((isPositive ? currentStockOrWeight + qtyNumber : currentStockOrWeight - qtyNumber).toFixed(3));
+  // Modo repesaje: el usuario ingresa el peso nuevo de la unidad y el sistema calcula la diferencia
+  const isNewWeightMode = !!selectedCarcass && newUnitWeight.trim() !== '' && Number(newUnitWeight) >= 0;
+  const newWeightNumber = isNewWeightMode ? Number(Number(newUnitWeight).toFixed(3)) : 0;
+  const effectiveQty = isNewWeightMode ? Number(Math.abs(newWeightNumber - (Number(selectedCarcass!.weightKg) || 0)).toFixed(3)) : qtyNumber;
+  const effectiveIsPositive = isNewWeightMode ? newWeightNumber >= (Number(selectedCarcass!.weightKg) || 0) : isPositive;
+  const newStockCalculated = isNewWeightMode
+    ? newWeightNumber
+    : Number((isPositive ? currentStockOrWeight + qtyNumber : currentStockOrWeight - qtyNumber).toFixed(3));
 
-  const selectedItemName = selectedReception
+  const selectedItemName = selectedCarcass
+    ? `MEDIA RES ${selectedCarcass.label || ''} - Tropa #${selectedReception?.tropaNumber}${selectedCarcass.tagNumber ? ` (Caravana ${selectedCarcass.tagNumber})` : ''}`
+    : selectedReception
     ? `MEDIA RES - Tropa #${selectedReception.tropaNumber} (${selectedReception.species} ${selectedReception.category} - ${selectedReception.supplier})`
     : selectedProduct?.description || '';
 
@@ -181,8 +212,8 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
       setErrorMessage('Seleccione un artículo o media res en cámara.');
       return;
     }
-    if (qtyNumber <= 0) {
-      setErrorMessage('Ingrese una cantidad válida mayor a 0.');
+    if (effectiveQty <= 0) {
+      setErrorMessage(isNewWeightMode ? 'El peso nuevo es igual al peso actual, no hay diferencia que ajustar.' : 'Ingrese una cantidad válida mayor a 0.');
       return;
     }
 
@@ -193,6 +224,12 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
       const finalReason = reason === 'Otro motivo (especificar)' ? customReason : reason;
+      // En modo repesaje se usa el peso nuevo de la unidad; en modo manual, la cantidad ingresada
+      const effQty = isNewWeightMode ? effectiveQty : qtyNumber;
+      const effPositive = isNewWeightMode ? effectiveIsPositive : isPositive;
+      const movementQty = effQty;
+      const movementFactor = effPositive ? 1 : -1;
+      const movementType = isNewWeightMode ? (effPositive ? 'AJUSTE_POSITIVO' : 'AJUSTE_NEGATIVO') : type;
 
       const movement: StockMovement = {
         id: `SM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -205,18 +242,24 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
         productDescription: selectedItemName,
         category: selectedItemCategory,
         unitType: selectedItemUnit,
-        type,
-        quantity: qtyNumber,
-        factor: isPositive ? 1 : -1,
+        type: movementType,
+        quantity: movementQty,
+        factor: movementFactor,
         previousStock: currentStockOrWeight,
         newStock: newStockCalculated,
         unitPrice: selectedItemPrice,
-        totalValue: Number((qtyNumber * selectedItemPrice).toFixed(2)),
+        totalValue: Number((movementQty * selectedItemPrice).toFixed(2)),
         referenceDoc: selectedReception ? selectedReception.code : `AJUSTE-${Date.now().toString().slice(-6)}`,
-        idempotencyKey: `ADJ_${Date.now()}_${selectedReception ? selectedReception.code : selectedProduct!.code}`,
+        idempotencyKey: `ADJ_${Date.now()}_${selectedReception ? selectedReception.code + (selectedCarcass ? '_' + selectedCarcass.id : '') : selectedProduct!.code}`,
         operator: operatorName,
         reason: finalReason,
-        notes: notes.trim() || (selectedReception ? `Ajuste de Media Res Tropa ${selectedReception.tropaNumber} en cámara` : undefined),
+        notes:
+          notes.trim() ||
+          (selectedCarcass
+            ? `Ajuste de Media Res ${selectedCarcass.label || selectedCarcass.id} (Tropa ${selectedReception?.tropaNumber}) en cámara${isNewWeightMode ? ` — Repesaje: ${formatKg(Number(selectedCarcass.weightKg) || 0)} → ${formatKg(newWeightNumber)}` : ''}`
+            : selectedReception
+            ? `Ajuste de Media Res Tropa ${selectedReception.tropaNumber} en cámara`
+            : undefined),
       };
 
       await recordStockMovement(movement);
@@ -228,32 +271,53 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
           return;
         }
 
-        const diff = isPositive ? qtyNumber : -qtyNumber;
-        const newTotalWeight = Number(Math.max(0, selectedReception.totalWeightKg + diff).toFixed(3));
-        
+        const diff = (isNewWeightMode ? (effectiveIsPositive ? effectiveQty : -effectiveQty) : (isPositive ? qtyNumber : -qtyNumber));
+
+        // Ajuste por UNIDAD individual: se modifica solo la media res pesada en cámara
         let updatedCarcasses = selectedReception.carcasses;
-        if (updatedCarcasses && updatedCarcasses.length > 0 && selectedReception.totalWeightKg > 0) {
-          const ratio = newTotalWeight / selectedReception.totalWeightKg;
-          updatedCarcasses = updatedCarcasses.map((c) => ({
-            ...c,
-            weightKg: Number((c.weightKg * ratio).toFixed(3)),
-          }));
+        let newTotalWeight: number;
+
+        if (selectedCarcass && updatedCarcasses && updatedCarcasses.length > 0) {
+          const newUnitWeight = isNewWeightMode
+            ? newWeightNumber
+            : Number(Math.max(0, (Number(selectedCarcass.weightKg) || 0) + diff).toFixed(3));
+          updatedCarcasses = updatedCarcasses.map((c) =>
+            c.id === selectedCarcass.id
+              ? {
+                  ...c,
+                  weightKg: newUnitWeight,
+                  notes: (c.notes ? `${c.notes} | ` : '') + `Ajuste ${type} ${diff > 0 ? '+' : ''}${diff.toFixed(3)} Kg: ${finalReason}`,
+                }
+              : c
+          );
+          newTotalWeight = Number(updatedCarcasses.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0).toFixed(3));
+        } else {
+          // Ajuste global de la recepción (distribución proporcional)
+          newTotalWeight = Number(Math.max(0, selectedReception.totalWeightKg + diff).toFixed(3));
+          if (updatedCarcasses && updatedCarcasses.length > 0 && selectedReception.totalWeightKg > 0) {
+            const ratio = newTotalWeight / selectedReception.totalWeightKg;
+            updatedCarcasses = updatedCarcasses.map((c) => ({
+              ...c,
+              weightKg: Number((c.weightKg * ratio).toFixed(3)),
+            }));
+          }
         }
 
         const updatedRec = {
           ...selectedReception,
           totalWeightKg: newTotalWeight,
           carcasses: updatedCarcasses,
-          notes: (selectedReception.notes ? `${selectedReception.notes} | ` : '') + `Ajuste ${type}: ${diff > 0 ? '+' : ''}${diff.toFixed(3)} Kg (${finalReason})`,
+          notes: (selectedReception.notes ? `${selectedReception.notes} | ` : '') + `Ajuste ${type}${selectedCarcass ? ` (${selectedCarcass.label || selectedCarcass.id})` : ''}: ${diff > 0 ? '+' : ''}${diff.toFixed(3)} Kg (${finalReason})`,
         };
         await saveMeatReception(updatedRec);
       }
 
       setSuccessMessage(
-        `¡${type} registrado exitosamente! Stock de ${selectedItemName} actualizado a ${formatQuantity(newStockCalculated, selectedItemUnit)}.`
+        `¡${movementType} registrado exitosamente! Stock de ${selectedItemName} actualizado a ${formatQuantity(newStockCalculated, selectedItemUnit)}.`
       );
       setErrorMessage(null);
       setQuantity('');
+      setNewUnitWeight('');
       setNotes('');
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err: any) {
@@ -403,7 +467,7 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                 onChange={(e) => setProductSearch(e.target.value)}
               />
             </div>
-            
+
             <div className="max-h-[220px] overflow-y-auto border-2 border-gray-400 bg-white rounded shadow-inner divide-y divide-gray-200 text-xs font-mono">
               {filteredReceptions.length > 0 && (
                 <div>
@@ -514,11 +578,11 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
                 <div className="text-[10px] font-bold text-gray-700">Variación</div>
                 <div
                   className={`text-sm font-bold ${
-                    isPositive ? 'text-green-700' : 'text-red-700'
+                    effectiveIsPositive ? 'text-green-700' : 'text-red-700'
                   }`}
                 >
-                  {isPositive ? '+' : '-'}
-                  {formatQuantity(qtyNumber, selectedItemUnit)}
+                  {effectiveIsPositive ? '+' : '-'}
+                  {formatQuantity(effectiveQty, selectedItemUnit)}
                 </div>
               </div>
               <div>
@@ -536,29 +600,116 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
             </div>
           )}
 
-          {/* Cantidad */}
+          {/* LISTA DE MEDIAS RESES INDIVIDUALES (ajuste unidad por unidad) */}
+          {selectedReception && selectedCarcasses.length > 0 && (
+            <div className="border border-amber-300 rounded bg-amber-50">
+              <div className="flex items-center justify-between px-2 py-1.5 border-b border-amber-300 bg-amber-100">
+                <span className="font-bold text-[11px] text-amber-900">
+                  🥩 Medias Reses Individuales ({selectedCarcasses.length} unid.)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCarcassId(null)}
+                  className={`text-[10px] px-2 py-0.5 rounded font-bold border cursor-pointer ${
+                    !selectedCarcassId
+                      ? 'bg-[#002046] text-white border-[#002046]'
+                      : 'bg-white text-gray-700 border-gray-400 hover:bg-gray-100'
+                  }`}
+                >
+                  Toda la tropa (ajuste proporcional)
+                </button>
+              </div>
+              <div className="max-h-[180px] overflow-y-auto divide-y divide-amber-200">
+                {selectedCarcasses.map((c) => {
+                  const isSel = selectedCarcassId === c.id;
+                  const st = c.status || 'DISPONIBLE';
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => setSelectedCarcassId(isSel ? null : c.id)}
+                      className={`px-2 py-1.5 cursor-pointer flex items-center justify-between text-[11px] font-mono transition-colors ${
+                        isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-amber-100 text-black'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2">
+                        <span
+                          className={`px-1 py-0.5 rounded text-[9px] font-bold ${
+                            isSel
+                              ? 'bg-white text-[#002046]'
+                              : st === 'DISPONIBLE'
+                              ? 'bg-green-100 text-green-800'
+                              : st === 'PENDIENTE'
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : 'bg-gray-200 text-gray-700'
+                          }`}
+                        >
+                          {st}
+                        </span>
+                        <span className="font-bold">{c.label || 'MR'}</span>
+                        {c.tagNumber && <span className="text-[10px] opacity-75">Car. {c.tagNumber}</span>}
+                      </div>
+                      <div className={`font-bold ${isSel ? 'text-white' : 'text-amber-800'}`}>
+                        {formatKg(c.weightKg)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {selectedCarcass && (
+                <div className="px-2 py-1.5 bg-[#002046] text-white text-[10px] font-bold">
+                  ➜ Ajustando SOLO la unidad {selectedCarcass.label || selectedCarcass.id} — peso nuevo: {formatQuantity(newStockCalculated, 'Kg')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Cantidad / Repesaje */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block font-bold text-black mb-1">
-                Cantidad a {isPositive ? 'Sumar' : 'Descontar'}{' '}
-                {selectedProduct ? `(${selectedProduct.unitType})` : ''}:
-              </label>
-              <input
-                type="number"
-                step="0.001"
-                min="0.001"
-                className="win-input w-full p-2 text-sm font-mono font-bold text-black border border-gray-400"
-                placeholder={selectedProduct?.unitType === 'Kg' ? 'Ej: 12.500' : 'Ej: 10'}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                required
-              />
+              {selectedCarcass ? (
+                <>
+                  <label className="block font-bold text-black mb-1">
+                    Peso Nuevo en Balanza (Kg):
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    className="win-input w-full p-2 text-sm font-mono font-bold text-black border-2 border-amber-500 bg-amber-50"
+                    placeholder={`Actual: ${formatKg(selectedCarcass.weightKg)}`}
+                    value={newUnitWeight}
+                    onChange={(e) => setNewUnitWeight(e.target.value)}
+                  />
+                  {isNewWeightMode && (
+                    <div className={`mt-1 text-[11px] font-bold ${effectiveIsPositive ? 'text-green-700' : 'text-red-700'}`}>
+                      Diferencia: {effectiveIsPositive ? '+' : ''}{formatKg(effectiveQty)} ({formatKg(selectedCarcass.weightKg)} → {formatKg(newWeightNumber)})
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <label className="block font-bold text-black mb-1">
+                    Cantidad a {isPositive ? 'Sumar' : 'Descontar'}{' '}
+                    {selectedProduct ? `(${selectedProduct.unitType})` : ''}:
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0.001"
+                    className="win-input w-full p-2 text-sm font-mono font-bold text-black border border-gray-400"
+                    placeholder={selectedProduct?.unitType === 'Kg' ? 'Ej: 12.500' : 'Ej: 10'}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    required
+                  />
+                </>
+              )}
             </div>
 
             <div>
               <label className="block font-bold text-black mb-1">Valorización Comercial:</label>
               <div className="p-2 bg-gray-100 border border-gray-400 rounded font-mono font-bold text-sm text-black">
-                {formatCurrency(qtyNumber * (selectedProduct?.price || 0))}
+                {formatCurrency(effectiveQty * selectedItemPrice)}
               </div>
             </div>
           </div>
@@ -608,7 +759,7 @@ export const StockAdjustmentsTab: React.FC<StockAdjustmentsTabProps> = ({
           <div className="pt-2">
             <button
               type="submit"
-              disabled={isSubmitting || !selectedProduct || qtyNumber <= 0}
+              disabled={isSubmitting || (!selectedProduct && !selectedReception) || (isNewWeightMode ? effectiveQty <= 0 : qtyNumber <= 0)}
               className="win-button w-full py-2.5 font-bold text-white bg-[#002046] hover:bg-[#002c61] disabled:opacity-50 flex items-center justify-center space-x-2 shadow cursor-pointer"
             >
               <Save className="w-4 h-4 text-white" />

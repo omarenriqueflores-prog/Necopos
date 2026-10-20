@@ -53,13 +53,18 @@ export const MeatReceptionTab: React.FC = () => {
       if (selectedStatus !== 'ALL' && r.status !== selectedStatus) return false;
 
       // Categoría Animal
-      if (selectedCategory !== 'ALL' && r.category !== selectedCategory) return false;
+      if (
+        selectedCategory !== 'ALL' &&
+        r.category !== selectedCategory &&
+        !r.carcasses?.some((carcass) => carcass.category === selectedCategory)
+      ) return false;
 
       // Búsqueda
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchCode = r.code.toLowerCase().includes(q);
-        const matchTropa = r.tropaNumber.toLowerCase().includes(q);
+        const matchTropa = r.tropaNumber.toLowerCase().includes(q) ||
+          r.carcasses?.some((carcass) => carcass.tropaNumber?.toLowerCase().includes(q));
         const matchSupplier = r.supplier.toLowerCase().includes(q);
         const matchInvoice = r.invoiceNumber?.toLowerCase().includes(q);
         const matchRemito = r.deliveryNoteNumber?.toLowerCase().includes(q);
@@ -86,7 +91,10 @@ export const MeatReceptionTab: React.FC = () => {
         totalMRCount += Number(r.totalQuantity) || 0;
         totalKg += Number(r.totalWeightKg) || 0;
         totalCost += Number(r.totalCost) || 0;
-        if (r.tropaNumber) tropaSet.add(r.tropaNumber);
+        const receptionTropas = r.carcasses?.length
+          ? r.carcasses.map((carcass) => carcass.tropaNumber || r.tropaNumber)
+          : [r.tropaNumber];
+        receptionTropas.forEach((tropa) => tropa && tropaSet.add(tropa));
         if (r.status === 'CONFIRMADO') countConfirmed++;
       }
     });
@@ -396,15 +404,28 @@ export const MeatReceptionTab: React.FC = () => {
                     <div className="text-[9px] text-gray-500">{r.chamber}</div>
                   </td>
                   <td className="p-1.5 border-r border-gray-200 font-mono font-bold text-blue-900 text-xs">
-                    {r.tropaNumber}
+                    {(() => {
+                      const tropas = Array.from(new Set(
+                        (r.carcasses || []).map((carcass) => carcass.tropaNumber || r.tropaNumber).filter(Boolean)
+                      ));
+                      return tropas.length > 1 ? `Varias (${tropas.length})` : tropas[0] || r.tropaNumber;
+                    })()}
                   </td>
                   <td className="p-1.5 border-r border-gray-200 text-[10px] text-gray-700">
                     <div>Fac: {r.invoiceNumber || 'S/F'}</div>
                     <div className="text-gray-500">Rem: {r.deliveryNoteNumber || r.dteGuideNumber || 'S/R'}</div>
                   </td>
                   <td className="p-1.5 border-r border-gray-200 text-[10px] text-gray-800">
-                    <div className="font-bold">{r.species}</div>
-                    <div className="text-gray-500">{r.category}</div>
+                    {(() => {
+                      const speciesValues = Array.from(new Set((r.carcasses || []).map((carcass) => carcass.species || r.species)));
+                      const categoryValues = Array.from(new Set((r.carcasses || []).map((carcass) => carcass.category || r.category)));
+                      return (
+                        <>
+                          <div className="font-bold">{speciesValues.length > 1 ? `${speciesValues.length} especies` : speciesValues[0] || r.species}</div>
+                          <div className="text-gray-500">{categoryValues.length > 1 ? `${categoryValues.length} categorías` : categoryValues[0] || r.category}</div>
+                        </>
+                      );
+                    })()}
                   </td>
                   <td className="p-1.5 border-r border-gray-200 text-right font-bold text-black">
                     {r.totalQuantity}

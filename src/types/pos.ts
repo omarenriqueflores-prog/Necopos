@@ -655,6 +655,7 @@ export interface CarcassUnit {
   chamber?: string;
   tagNumber?: string; // N° de Garfa / Caravana / Precinto SENASA
   weightKg: number; // Peso real individual en balanza (Kg)
+  pricePerKg?: number; // Precio de compra individual para facturas con valores mixtos
   cost?: number; // Costo individual calculado ($)
   status?: CarcassStatus; // Estado individual de la media res
   deboningId?: string; // ID de desposte si fue procesada
@@ -674,6 +675,12 @@ export interface MeatReception {
   operator: string;
   // Origen y Proveedor
   supplier: string; // Frigorífico / Matarife
+  supplierId?: string;
+  supplierCuit?: string;
+  supplierAddress?: string;
+  supplierPhone?: string;
+  supplierEmail?: string;
+  supplierContact?: string;
   species: string; // Vacuno / Bovino, Porcino / Cerdo
   category: AnimalCategory | string; // Vaca, Ternera, Novillito, Novillo Pesado, Vaquillona, Cerdo
   tropaNumber: string; // N° Tropa SENASA
@@ -694,3 +701,14 @@ export interface MeatReception {
   updatedAt?: string;
 }
 
+export interface MeatSupplier {
+  id: string;
+  name: string;
+  cuit?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  contact?: string;
+  notes?: string;
+  updatedAt: string;
+}

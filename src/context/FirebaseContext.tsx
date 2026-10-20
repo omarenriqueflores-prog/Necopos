@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { carcassLabel } from '../utils/receptionHelper';
+import { carcassLabel, getReceptionReversibleWeight } from '../utils/receptionHelper';
 import {
   User,
   signInWithPopup,
@@ -44,6 +44,7 @@ import {
   PhysicalInventory,
   MeatDeboning,
   MeatReception,
+  MeatSupplier,
   DeboningYieldTemplate,
   CarcassStatus,
   CarcassUnit,
@@ -117,6 +118,8 @@ interface FirebaseContextType {
   physicalInventories: PhysicalInventory[];
   meatDebonings: MeatDeboning[];
   meatReceptions: MeatReception[];
+  meatSuppliers: MeatSupplier[];
+  saveMeatSupplier: (supplier: MeatSupplier) => Promise<void>;
   deboningTemplates: DeboningYieldTemplate[];
   saveDeboningTemplate: (template: DeboningYieldTemplate) => Promise<void>;
   deleteDeboningTemplate: (id: string, hardDelete?: boolean) => Promise<void>;
@@ -188,8 +191,12 @@ const FirebaseContext = createContext<FirebaseContextType | undefined>(undefined
 // Sufijo estable por ítem de traslado: permite varios ítems con el mismo código de producto
 // (p. ej. varias tropas de MEDIA_RES) sin que choquen las claves de idempotencia.
 // Los ítems sin receptionId conservan el formato histórico (solo productCode).
-const transferItemKeySuffix = (item: { productCode: string; receptionId?: string }) =>
-  item.receptionId ? `${item.productCode}_${item.receptionId}` : item.productCode;
+const transferItemKeySuffix = (item: { productCode: string; receptionId?: string; carcassId?: string }) =>
+  item.carcassId
+    ? `${item.productCode}_${item.receptionId || 'REC'}_${item.carcassId}`
+    : item.receptionId
+    ? `${item.productCode}_${item.receptionId}`
+    : item.productCode;
 
 export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -225,6 +232,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [physicalInventories, setPhysicalInventories] = useState<PhysicalInventory[]>([]);
   const [meatDebonings, setMeatDebonings] = useState<MeatDeboning[]>([]);
   const [meatReceptions, setMeatReceptions] = useState<MeatReception[]>([]);
+  const [meatSuppliers, setMeatSuppliers] = useState<MeatSupplier[]>([]);
   const [deboningTemplates, setDeboningTemplates] = useState<DeboningYieldTemplate[]>([]);
 
   // Auth Listener
@@ -891,6 +899,21 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
       (error) => {
         console.warn('Firestore MeatReceptions sync error:', error);
+      }
+    );
+    return () => unsub();
+  }, [user?.uid, localUser?.id]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'meatSuppliers'),
+      (snapshot) => {
+        const loaded = snapshot.docs.map((docItem) => docItem.data() as MeatSupplier);
+        loaded.sort((a, b) => a.name.localeCompare(b.name, 'es'));
+        setMeatSuppliers(loaded);
+      },
+      (error) => {
+        console.warn('Firestore MeatSuppliers sync error:', error);
       }
     );
     return () => unsub();
@@ -1760,6 +1783,22 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
 
+      for (const item of transfer.items) {
+        if (!item.receptionId || !item.carcassId) continue;
+        const reception = meatReceptions.find((r) => r.id === item.receptionId);
+        const carcass = reception?.carcasses?.find((c) => c.id === item.carcassId);
+        if (
+          !reception ||
+          reception.status !== 'CONFIRMADO' ||
+          !carcass ||
+          (carcass.status && carcass.status !== 'DISPONIBLE') ||
+          (carcass.branchId || reception.branchId) !== transfer.originBranch ||
+          Math.abs(Number(carcass.weightKg) - item.quantity) > 0.001
+        ) {
+          throw new Error(`La media res "${item.description}" ya no está disponible en ${transfer.originBranch} o cambió su peso.`);
+        }
+      }
+
       const now = new Date();
       const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1798,6 +1837,32 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       await recordStockMovementsBatch(movements);
+
+      const carcassItemsByReception = new Map<string, Set<string>>();
+      for (const item of transfer.items) {
+        if (!item.receptionId || !item.carcassId) continue;
+        const carcassIds = carcassItemsByReception.get(item.receptionId) || new Set<string>();
+        carcassIds.add(item.carcassId);
+        carcassItemsByReception.set(item.receptionId, carcassIds);
+      }
+      for (const [receptionId, carcassIds] of carcassItemsByReception) {
+        const reception = meatReceptions.find((r) => r.id === receptionId);
+        if (!reception) {
+          throw new Error(`No se encontró la recepción ${receptionId} asociada a las medias reses del remito.`);
+        }
+        const foundIds = new Set((reception.carcasses || []).filter((c) => carcassIds.has(c.id)).map((c) => c.id));
+        if (foundIds.size !== carcassIds.size) {
+          throw new Error(`No se encontraron todas las medias reses seleccionadas en la recepción ${reception.code}.`);
+        }
+        await saveMeatReception({
+          ...reception,
+          carcasses: reception.carcasses.map((carcass) =>
+            carcassIds.has(carcass.id)
+              ? { ...carcass, status: 'TRASLADADO', transferId: transfer.id }
+              : carcass
+          ),
+        });
+      }
 
       // Actualizar estado del remito a EN_TRANSITO en Firestore
       const updatedTransfer: StockTransfer = {
@@ -1841,6 +1906,21 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         throw new Error(`El remito ${transfer.transferNumber} se encuentra cancelado y no puede ser recibido.`);
       }
 
+      for (const item of transfer.items || []) {
+        if (!item.receptionId || !item.carcassId) continue;
+        const reception = meatReceptions.find((r) => r.id === item.receptionId);
+        const carcass = reception?.carcasses?.find((c) => c.id === item.carcassId);
+        if (
+          !reception ||
+          !carcass ||
+          carcass.status !== 'TRASLADADO' ||
+          carcass.transferId !== transfer.id ||
+          Math.abs(Number(carcass.weightKg) - item.quantity) > 0.001
+        ) {
+          throw new Error(`La media res "${item.description}" no figura como despachada en este remito.`);
+        }
+      }
+
       const now = new Date();
       const dateStr = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
       const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1875,8 +1955,50 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       await recordStockMovementsBatch(movements);
 
-      // Si se transfirió una recepción completa con referencia unívoca o coincidencia exacta única
+      const transferredCarcassesByReception = new Map<string, Set<string>>();
       for (const item of transfer.items) {
+        if (!item.receptionId || !item.carcassId) continue;
+        const carcassIds = transferredCarcassesByReception.get(item.receptionId) || new Set<string>();
+        carcassIds.add(item.carcassId);
+        transferredCarcassesByReception.set(item.receptionId, carcassIds);
+      }
+      for (const [receptionId, carcassIds] of transferredCarcassesByReception) {
+        const reception = meatReceptions.find((r) => r.id === receptionId);
+        if (!reception) {
+          throw new Error(`No se encontró la recepción ${receptionId} al recibir el traslado.`);
+        }
+        const foundIds = new Set((reception.carcasses || []).filter((c) => carcassIds.has(c.id)).map((c) => c.id));
+        if (foundIds.size !== carcassIds.size) {
+          throw new Error(`No se encontraron todas las medias reses de la recepción ${reception.code}.`);
+        }
+        const carcasses = (reception.carcasses || []).map((carcass) =>
+          carcassIds.has(carcass.id)
+            ? {
+                ...carcass,
+                branchId: transfer.destinationBranch,
+                chamber: transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+                status: 'DISPONIBLE' as CarcassStatus,
+                transferId: transfer.id,
+              }
+            : carcass
+        );
+        const hasAvailableAtOrigin = carcasses.some(
+          (carcass) =>
+            (!carcass.status || carcass.status === 'DISPONIBLE') &&
+            (carcass.branchId || reception.branchId) === transfer.originBranch
+        );
+        await saveMeatReception({
+          ...reception,
+          branchId: hasAvailableAtOrigin ? transfer.originBranch : transfer.destinationBranch,
+          chamber: hasAvailableAtOrigin
+            ? transfer.originBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2'
+            : transfer.destinationBranch === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2',
+          carcasses,
+        });
+      }
+
+      // Recepciones antiguas sin identificadores individuales conservan el traslado completo.
+      for (const item of transfer.items.filter((transferItem) => !transferItem.carcassId)) {
         if (item.productCode) {
           let matchingReceptions = meatReceptions.filter(
             (r) =>
@@ -1962,6 +2084,26 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         await recordStockMovementsBatch(movements);
+
+        const carcassItemsByReception = new Map<string, Set<string>>();
+        for (const item of transfer.items) {
+          if (!item.receptionId || !item.carcassId) continue;
+          const carcassIds = carcassItemsByReception.get(item.receptionId) || new Set<string>();
+          carcassIds.add(item.carcassId);
+          carcassItemsByReception.set(item.receptionId, carcassIds);
+        }
+        for (const [receptionId, carcassIds] of carcassItemsByReception) {
+          const reception = meatReceptions.find((r) => r.id === receptionId);
+          if (!reception) continue;
+          await saveMeatReception({
+            ...reception,
+            carcasses: (reception.carcasses || []).map((carcass) =>
+              carcassIds.has(carcass.id) && carcass.transferId === transfer.id
+                ? { ...carcass, status: 'DISPONIBLE', transferId: undefined }
+                : carcass
+            ),
+          });
+        }
       }
 
       const updatedTransfer: StockTransfer = {
@@ -2072,9 +2214,45 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         await recordStockMovementsBatch(movements);
       }
 
-      // Si la media res había cambiado de cámara por la recepción, volver a dejarla en el origen
-      if (status === 'RECIBIDA') {
+      if (status === 'EN_TRANSITO' || status === 'RECIBIDA') {
+        const carcassItemsByReception = new Map<string, Set<string>>();
         for (const item of items) {
+          if (!item.receptionId || !item.carcassId) continue;
+          const carcassIds = carcassItemsByReception.get(item.receptionId) || new Set<string>();
+          carcassIds.add(item.carcassId);
+          carcassItemsByReception.set(item.receptionId, carcassIds);
+        }
+        for (const [receptionId, carcassIds] of carcassItemsByReception) {
+          const reception = meatReceptions.find((r) => r.id === receptionId);
+          if (!reception) continue;
+          const carcasses = (reception.carcasses || []).map((carcass) =>
+            carcassIds.has(carcass.id) && carcass.transferId === current.id
+              ? {
+                  ...carcass,
+                  branchId: current.originBranch,
+                  chamber: chamberOf(current.originBranch),
+                  status: 'DISPONIBLE' as CarcassStatus,
+                  transferId: undefined,
+                }
+              : carcass
+          );
+          const hasAvailableAtOrigin = carcasses.some(
+            (carcass) =>
+              (!carcass.status || carcass.status === 'DISPONIBLE') &&
+              (carcass.branchId || reception.branchId) === current.originBranch
+          );
+          await saveMeatReception({
+            ...reception,
+            branchId: hasAvailableAtOrigin ? current.originBranch : current.destinationBranch,
+            chamber: chamberOf(hasAvailableAtOrigin ? current.originBranch : current.destinationBranch),
+            carcasses,
+          });
+        }
+      }
+
+      // Las recepciones antiguas sin media res individual mantienen la reversión completa.
+      if (status === 'RECIBIDA') {
+        for (const item of items.filter((transferItem) => !transferItem.carcassId)) {
           const matches = meatReceptions.filter(
             (r) =>
               r.branchId === current.destinationBranch &&
@@ -2675,6 +2853,23 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  const saveMeatSupplier = async (supplier: MeatSupplier) => {
+    const path = `meatSuppliers/${supplier.id}`;
+    try {
+      const normalized = { ...supplier, name: supplier.name.trim(), updatedAt: new Date().toISOString() };
+      if (!normalized.name) throw new Error('El nombre del frigorífico es obligatorio.');
+      await setDoc(doc(db, 'meatSuppliers', normalized.id), sanitizeForFirestore(normalized));
+      setMeatSuppliers((prev) => {
+        const existing = prev.some((item) => item.id === normalized.id);
+        return existing
+          ? prev.map((item) => (item.id === normalized.id ? normalized : item)).sort((a, b) => a.name.localeCompare(b.name, 'es'))
+          : [...prev, normalized].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
   const finalizeMeatReception = async (reception: MeatReception, operator: string) => {
     try {
       // Idempotencia: Verificar si ya está confirmada previamente en la base de datos
@@ -2708,10 +2903,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         label: carcassLabel(c, idx),
         id: c.id && c.id.trim() ? c.id.trim() : `${reception.code}-MR-${String(idx + 1).padStart(3, '0')}`,
         receptionId: reception.id,
-        tropaNumber: reception.tropaNumber,
+        tropaNumber: c.tropaNumber || reception.tropaNumber,
         supplier: reception.supplier,
-        species: reception.species,
-        category: reception.category,
+        species: c.species || reception.species,
+        category: c.category || reception.category,
+        pricePerKg: Number(c.pricePerKg ?? reception.pricePerKg) || 0,
+        cost: Number((Number(c.weightKg) * (Number(c.pricePerKg ?? reception.pricePerKg) || 0)).toFixed(2)),
         branchId: reception.branchId,
         chamber: reception.chamber,
         status: 'DISPONIBLE' as CarcassStatus,
@@ -2720,7 +2917,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // Si tiene código de producto vinculado, incrementar existencia de stock en la cámara elegida
       const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
       const prod = products.find((p) => p.code === targetProdCode);
-      const prodDesc = prod?.description || reception.productDescription || `Media Res ${reception.species} - Tropa ${reception.tropaNumber}`;
+      const prodDesc = prod?.description || reception.productDescription || `Media Res - Factura ${reception.invoiceNumber || reception.code}`;
       const prodCat = prod?.category || reception.category || 'Novillito';
       const unitType = prod?.unitType || 'Kg';
 
@@ -2741,12 +2938,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         factor: 1,
         previousStock: 0,
         newStock: 0,
-        unitPrice: reception.pricePerKg,
+        unitPrice: reception.totalWeightKg > 0 ? Number((reception.totalCost / reception.totalWeightKg).toFixed(2)) : 0,
         totalValue: reception.totalCost,
         referenceDoc: reception.code,
         idempotencyKey: `REC_CONFIRM_${reception.code || reception.id}`,
         operator,
-        notes: `Recepción Tropa SENASA ${reception.tropaNumber} | Proveedor: ${reception.supplier} (${reception.totalQuantity} medias reses, Fact/Rem: ${reception.invoiceNumber || reception.deliveryNoteNumber || 'S/N'})`,
+        notes: `Recepción masiva | Tropas: ${Array.from(new Set(normalizedCarcasses.map((carcass) => carcass.tropaNumber).filter(Boolean))).join(', ')} | Proveedor: ${reception.supplier} (${reception.totalQuantity} medias reses, Fact/Rem: ${reception.invoiceNumber || reception.deliveryNoteNumber || 'S/N'})`,
       };
 
       await recordStockMovementsBatch([movement]);
@@ -2880,37 +3077,43 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       // 3. Si estaba CONFIRMADO, generar movimiento inverso de reversión trazable
       if (reception.status === 'CONFIRMADO') {
-        const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
-        const prod = products.find((p) => p.code === targetProdCode);
-        const prodDesc = prod?.description || reception.productDescription || `Media Res ${reception.species} - Tropa ${reception.tropaNumber}`;
+        const reversibleWeight = getReceptionReversibleWeight(
+          reception.totalWeightKg,
+          reception.carcasses
+        );
+        if (reversibleWeight > 0) {
+          const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
+          const prod = products.find((p) => p.code === targetProdCode);
+          const prodDesc = prod?.description || reception.productDescription || `Media Res ${reception.species} - Tropa ${reception.tropaNumber}`;
 
-        const reverseMovement: StockMovement = {
-          id: `SM-REV-REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-          idempotencyKey: `REV_REC_${reception.code || reception.id}`,
-          date: new Date().toLocaleDateString('es-AR').split('/').reverse().join('-'),
-          time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          timestamp: Date.now(),
-          branchId: reception.branchId,
-          chamber: reception.chamber,
-          productId: prod?.id || prod?.docId,
-          productCode: targetProdCode,
-          productDescription: prodDesc,
-          category: reception.category || 'Novillito',
-          unitType: 'Kg',
-          type: 'AJUSTE_NEGATIVO',
-          quantity: reception.totalWeightKg,
-          factor: -1,
-          previousStock: 0,
-          newStock: 0,
-          unitPrice: reception.pricePerKg,
-          totalValue: reception.totalCost,
-          referenceDoc: `REV-${reception.code}`,
-          reversalOf: reception.code,
-          operator,
-          notes: `Reversión por ${hardDelete ? 'eliminación' : 'anulación'} de Recepción ${reception.code} Tropa ${reception.tropaNumber}: ${reason || 'Eliminación con clave de Administrador'}`,
-        };
+          const reverseMovement: StockMovement = {
+            id: `SM-REV-REC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+            idempotencyKey: `REV_REC_${reception.code || reception.id}`,
+            date: new Date().toLocaleDateString('es-AR').split('/').reverse().join('-'),
+            time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            timestamp: Date.now(),
+            branchId: reception.branchId,
+            chamber: reception.chamber,
+            productId: prod?.id || prod?.docId,
+            productCode: targetProdCode,
+            productDescription: prodDesc,
+            category: reception.category || 'Novillito',
+            unitType: 'Kg',
+            type: 'AJUSTE_NEGATIVO',
+            quantity: reversibleWeight,
+            factor: -1,
+            previousStock: 0,
+            newStock: 0,
+            unitPrice: reception.pricePerKg,
+            totalValue: Number((reversibleWeight * (reception.pricePerKg || 0)).toFixed(2)),
+            referenceDoc: `REV-${reception.code}`,
+            reversalOf: reception.code,
+            operator,
+            notes: `Reversión de ${reversibleWeight} Kg disponibles por ${hardDelete ? 'eliminación' : 'anulación'} de Recepción ${reception.code} Tropa ${reception.tropaNumber}: ${reason || 'Eliminación con clave de Administrador'}`,
+          };
 
-        await recordStockMovementsBatch([reverseMovement]);
+          await recordStockMovementsBatch([reverseMovement]);
+        }
       }
 
       if (hardDelete) {
@@ -2943,39 +3146,51 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const deleteNegativeOrHangingStock = async (productCode: string, operator: string) => {
     try {
-      const batch = writeBatch(db);
-      const stockDocs = branchStock.filter((bs) => 
-        bs.productCode === productCode || 
-        bs.productCode === 'MEDIA_RES' || 
-        bs.productCode === 'media_res' || 
-        Number(bs.currentStock) < 0
+      const normalizedCode = productCode.trim().toUpperCase();
+      const negativeStocks = branchStock.filter(
+        (stock) =>
+          stock.productCode.trim().toUpperCase() === normalizedCode &&
+          Number(stock.currentStock) < 0
       );
+      if (negativeStocks.length === 0) return;
 
-      stockDocs.forEach((bs) => {
-        const bsRef = doc(db, 'branchStock', bs.id);
-        batch.delete(bsRef);
+      const now = new Date();
+      const date = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
+      const time = now.toLocaleTimeString('es-AR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
       });
-
-      meatReceptions.forEach((r) => {
-        if (
-          r.productCode === productCode || 
-          r.productCode === 'MEDIA_RES' || 
-          r.productCode === 'media_res' ||
-          Number(r.totalWeightKg) < 0 ||
-          Number(r.totalCost) < 0 ||
-          (r.carcasses && r.carcasses.some(c => Number(c.weightKg) < 0))
-        ) {
-          const rRef = doc(db, 'meatReceptions', r.id);
-          batch.delete(rRef);
-        }
+      const movements: StockMovement[] = negativeStocks.map((stock, index) => {
+        const quantity = Math.abs(Number(stock.currentStock));
+        const product = products.find((item) => item.code === stock.productCode);
+        return {
+          id: `SM-REG-NEG-${Date.now()}-${index}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date,
+          time,
+          timestamp: Date.now() + index,
+          branchId: stock.branchId,
+          chamber: stock.chamberName,
+          productId: product?.id || product?.docId,
+          productCode: stock.productCode,
+          productDescription: product?.description || stock.productCode,
+          category: product?.category || 'Carnes Vacunas',
+          unitType: product?.unitType || 'Kg',
+          type: 'AJUSTE_POSITIVO',
+          quantity,
+          factor: 1,
+          previousStock: Number(stock.currentStock),
+          newStock: 0,
+          unitPrice: product?.costPrice || product?.price || 0,
+          totalValue: Number((quantity * (product?.costPrice || product?.price || 0)).toFixed(2)),
+          referenceDoc: `REG-NEG-${date}`,
+          operator,
+          notes: `Regularización autorizada de saldo negativo de ${stock.currentStock} Kg.`,
+        };
       });
-
-      await batch.commit();
-
-      setBranchStock((prev) => prev.filter((bs) => !stockDocs.some(sd => sd.id === bs.id)));
-      setMeatReceptions((prev) => prev.filter((r) => !meatReceptions.some(mr => mr.id === r.id && (mr.productCode === productCode || mr.productCode === 'MEDIA_RES' || Number(mr.totalWeightKg) < 0))));
+      await recordStockMovementsBatch(movements);
     } catch (error) {
-      console.error('Error deleting negative/hanging stock:', error);
+      console.error('Error regularizing negative stock:', error);
       throw error;
     }
   };
@@ -3245,6 +3460,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         hardDeleteMeatDeboning,
         purgeAllCancelledDebonings,
         meatReceptions,
+        meatSuppliers,
+        saveMeatSupplier,
         saveMeatReception,
         finalizeMeatReception,
         deleteOrCancelMeatReception,

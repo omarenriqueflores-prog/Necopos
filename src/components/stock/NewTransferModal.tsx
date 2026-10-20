@@ -20,7 +20,7 @@ interface NewTransferModalProps {
 }
 
 export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, defaultProduct }) => {
-  const { products, branchStock, saveStockTransfer, dispatchStockTransfer, localUser, user, meatReceptions, meatDebonings } = useFirebase();
+  const { products, branchStock, saveStockTransfer, dispatchStockTransfer, localUser, user, meatReceptions } = useFirebase();
 
   const [originBranch, setOriginBranch] = useState<'NECO 1' | 'NECO 2'>('NECO 1');
   const [destinationBranch, setDestinationBranch] = useState<'NECO 1' | 'NECO 2'>('NECO 2');
@@ -33,18 +33,17 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   // Recepciones disponibles (medias reses en gancho en cámara)
   const availableReceptions = useMemo(() => {
     if (!meatReceptions) return [];
-    const debonedTropas = new Set(meatDebonings?.map((d) => d.tropaNumber?.trim().toLowerCase()).filter(Boolean) || []);
-    const debonedCodes = new Set(meatDebonings?.map((d) => d.sourceProductCode?.trim()).filter(Boolean) || []);
 
     return meatReceptions.filter((r) => {
       if (r.status !== 'CONFIRMADO') return false;
-      if (r.branchId && r.branchId !== originBranch) return false;
-      const tropaLower = r.tropaNumber?.trim().toLowerCase();
-      if (tropaLower && debonedTropas.has(tropaLower)) return false;
-      if (r.productCode && debonedCodes.has(r.productCode.trim())) return false;
-      return true;
+      const hasAvailableCarcass = (r.carcasses || []).some(
+        (carcass) =>
+          (!carcass.status || carcass.status === 'DISPONIBLE') &&
+          (carcass.branchId || r.branchId) === originBranch
+      );
+      return hasAvailableCarcass;
     });
-  }, [meatReceptions, meatDebonings, originBranch]);
+  }, [meatReceptions, originBranch]);
 
   const filteredReceptions = useMemo(() => {
     if (!searchFilter.trim()) return availableReceptions;
@@ -54,20 +53,29 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
         r.tropaNumber.toLowerCase().includes(q) ||
         r.supplier.toLowerCase().includes(q) ||
         r.species.toLowerCase().includes(q) ||
-        r.category.toLowerCase().includes(q)
+        r.category.toLowerCase().includes(q) ||
+        r.carcasses?.some(
+          (carcass) =>
+            carcass.tropaNumber?.toLowerCase().includes(q) ||
+            carcass.species?.toLowerCase().includes(q) ||
+            carcass.category?.toLowerCase().includes(q)
+        )
     );
   }, [availableReceptions, searchFilter]);
 
   const filteredProducts = useMemo(() => {
-    if (!searchFilter.trim()) return products.slice(0, 100);
+    const receptionProductCodes = new Set((meatReceptions || []).map((r) => r.productCode || 'MEDIA_RES'));
+    receptionProductCodes.add('MEDIA_RES');
+    const transferableProducts = products.filter((p) => !receptionProductCodes.has(p.code));
+    if (!searchFilter.trim()) return transferableProducts.slice(0, 100);
     const q = searchFilter.toLowerCase().trim();
-    return products.filter(
+    return transferableProducts.filter(
       (p) =>
         p.code.toLowerCase().includes(q) ||
         p.description.toLowerCase().includes(q) ||
         p.category?.toLowerCase().includes(q)
     );
-  }, [products, searchFilter]);
+  }, [products, meatReceptions, searchFilter]);
 
   // Items en preparación para transferir
   const [transferItems, setTransferItems] = useState<StockTransferItem[]>([]);
@@ -86,6 +94,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
     setOriginBranch(newOrigin);
     setDestinationBranch(newOrigin === 'NECO 1' ? 'NECO 2' : 'NECO 1');
     setSelectedTargetCode('');
+    setTransferItems([]);
     setInlineNotification({
       type: 'info',
       message: `Cámara de origen cambiada a ${newOrigin}. Por favor verificá la disponibilidad de stock en el origen seleccionado.`,
@@ -100,7 +109,8 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
 
   // Identidad de un ítem del remito: las medias reses se distinguen por recepción (tropa),
   // aunque todas compartan el mismo código de producto (MEDIA_RES).
-  const itemKey = (it: { productCode: string; receptionId?: string }) => it.receptionId || it.productCode;
+  const itemKey = (it: { productCode: string; receptionId?: string; carcassId?: string }) =>
+    it.carcassId || it.receptionId || it.productCode;
 
   // Cantidad ya cargada en el remito para un código de producto (suma de todos los ítems con ese código)
   const getQtyInRemitoByCode = (code: string, excludeIndex?: number) =>
@@ -116,68 +126,78 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
   };
 
   const selectedReception = useMemo(() => {
-    if (!selectedTargetCode.startsWith('REC:')) return null;
-    const recId = selectedTargetCode.replace('REC:', '');
-    return availableReceptions.find((r) => r.id === recId) || null;
+    if (!selectedTargetCode.startsWith('CARCASS:')) return null;
+    const carcassId = selectedTargetCode.replace('CARCASS:', '');
+    return availableReceptions.find((r) => r.carcasses?.some((c) => c.id === carcassId)) || null;
   }, [availableReceptions, selectedTargetCode]);
 
+  const selectedCarcass = useMemo(() => {
+    if (!selectedReception || !selectedTargetCode.startsWith('CARCASS:')) return null;
+    const carcassId = selectedTargetCode.replace('CARCASS:', '');
+    return selectedReception.carcasses?.find((c) => c.id === carcassId) || null;
+  }, [selectedReception, selectedTargetCode]);
+
   const selectedProduct = useMemo(() => {
-    if (selectedTargetCode.startsWith('REC:')) return null;
+    if (selectedTargetCode.startsWith('CARCASS:')) return null;
+    if (
+      selectedTargetCode === 'MEDIA_RES' ||
+      meatReceptions?.some((reception) => reception.productCode === selectedTargetCode)
+    ) {
+      return null;
+    }
     return products.find((p) => p.code === selectedTargetCode) || null;
-  }, [products, selectedTargetCode]);
+  }, [products, selectedTargetCode, meatReceptions]);
 
   const currentItemStockOrWeight = useMemo(() => {
-    if (selectedReception) return Number(selectedReception.totalWeightKg) || 0;
-    if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
+    if (selectedCarcass) return Number(selectedCarcass.weightKg) || 0;
+    if (selectedProduct && selectedTargetCode && !selectedTargetCode.startsWith('CARCASS:')) {
       return getOriginStock(selectedTargetCode);
     }
     return 0;
-  }, [selectedReception, selectedTargetCode, branchStock, originBranch]);
+  }, [selectedCarcass, selectedProduct, selectedTargetCode, branchStock, originBranch]);
 
   const currentItemRemaining = useMemo(() => {
-    if (selectedReception) {
+    if (selectedReception && selectedCarcass) {
       const prodCode = selectedReception.productCode || 'MEDIA_RES';
-      const inRemitoThisReception = transferItems.find((it) => it.receptionId === selectedReception.id)?.quantity || 0;
-      const byReception = selectedReception.totalWeightKg - inRemitoThisReception;
+      const alreadyAdded = transferItems.some((it) => it.carcassId === selectedCarcass.id);
       const byStock = getOriginStock(prodCode) - getQtyInRemitoByCode(prodCode);
-      return Number(Math.max(0, Math.min(byReception, byStock)).toFixed(3));
+      return alreadyAdded ? 0 : Number(Math.max(0, Math.min(selectedCarcass.weightKg, byStock)).toFixed(3));
     }
-    if (selectedTargetCode && !selectedTargetCode.startsWith('REC:')) {
+    if (selectedProduct && selectedTargetCode && !selectedTargetCode.startsWith('CARCASS:')) {
       return getRemainingStock(selectedTargetCode);
     }
     return 0;
-  }, [selectedReception, selectedTargetCode, branchStock, originBranch, transferItems]);
+  }, [selectedReception, selectedCarcass, selectedProduct, selectedTargetCode, branchStock, originBranch, transferItems]);
 
   const handleAddItem = () => {
-    if (selectedReception) {
+    if (selectedReception && selectedCarcass) {
       const prodCode = selectedReception.productCode || 'MEDIA_RES';
-      const desc = `MEDIA RES - Tropa #${selectedReception.tropaNumber} (${selectedReception.species} ${selectedReception.category} - ${selectedReception.supplier})`;
-      const cat = selectedReception.category;
+      const carcassIndex = selectedReception.carcasses?.findIndex((c) => c.id === selectedCarcass.id) ?? -1;
+      const carcassLabel = selectedCarcass.label || `MR-${String(carcassIndex + 1).padStart(3, '0')}`;
+      const carcassTropa = selectedCarcass.tropaNumber || selectedReception.tropaNumber;
+      const carcassSpecies = selectedCarcass.species || selectedReception.species;
+      const carcassCategory = selectedCarcass.category || selectedReception.category;
+      const desc = `MEDIA RES ${carcassLabel} - Tropa #${carcassTropa} (${carcassSpecies} ${carcassCategory} - ${selectedReception.supplier})`;
+      const cat = carcassCategory;
       const unitType = 'Kg';
-      const price = selectedReception.pricePerKg;
-      const available = selectedReception.totalWeightKg;
+      const price = Number(selectedCarcass.pricePerKg ?? selectedReception.pricePerKg) || 0;
+      const available = Number(selectedCarcass.weightKg) || 0;
 
-      const qty = Number(addQuantity) || 0;
-      if (qty <= 0) {
-        setInlineNotification({ type: 'warning', message: 'La cantidad a transferir debe ser mayor a cero.' });
+      if (transferItems.some((it) => it.carcassId === selectedCarcass.id)) {
+        setInlineNotification({ type: 'warning', message: `La media res ${carcassLabel} ya está agregada al remito.` });
         return;
       }
 
-      // Cada tropa/recepción es un ítem propio del remito (se pueden agregar varias)
-      const existingIndex = transferItems.findIndex((it) => it.receptionId === selectedReception.id);
-      const currentInRemito = existingIndex >= 0 ? transferItems[existingIndex].quantity : 0;
-      const totalRequested = Number((currentInRemito + qty).toFixed(3));
-
-      if (totalRequested > available) {
+      if (available <= 0 || available > currentItemRemaining + 0.001) {
         setInlineNotification({
           type: 'error',
-          message: `⛔ Stock insuficiente para la media res Tropa #${selectedReception.tropaNumber}. Peso disponible: ${formatQuantity(available, unitType)}.`,
+          message: `⛔ Stock insuficiente para la media res ${carcassLabel}. Peso disponible: ${formatQuantity(currentItemRemaining, unitType)}.`,
         });
         return;
       }
 
       const stockForCode = getOriginStock(prodCode);
-      if (getQtyInRemitoByCode(prodCode) + qty > stockForCode + 0.001) {
+      if (getQtyInRemitoByCode(prodCode) + available > stockForCode + 0.001) {
         setInlineNotification({
           type: 'error',
           message: `⛔ Stock insuficiente en ${originBranch}: hay ${formatQuantity(stockForCode, unitType)} de media res en cámara y el remito ya lleva ${formatQuantity(getQtyInRemitoByCode(prodCode), unitType)}.`,
@@ -187,32 +207,23 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
 
       setInlineNotification({
         type: 'success',
-        message: `✓ Se agregó Tropa #${selectedReception.tropaNumber} (${formatQuantity(qty, unitType)}) al remito de traslado.`,
+        message: `✓ Se agregó ${carcassLabel} de la Tropa #${selectedReception.tropaNumber} (${formatQuantity(available, unitType)}) al remito.`,
       });
 
-      if (existingIndex >= 0) {
-        const updated = [...transferItems];
-        updated[existingIndex] = {
-          ...updated[existingIndex],
-          quantity: totalRequested,
-          totalValue: Number((totalRequested * price).toFixed(2)),
-        };
-        setTransferItems(updated);
-      } else {
-        setTransferItems([
-          ...transferItems,
-          {
-            productCode: prodCode,
-            description: desc,
-            category: cat,
-            unitType,
-            quantity: qty,
-            price,
-            totalValue: Number((qty * price).toFixed(2)),
-            receptionId: selectedReception.id,
-          },
-        ]);
-      }
+      setTransferItems([
+        ...transferItems,
+        {
+          productCode: prodCode,
+          description: desc,
+          category: cat,
+          unitType,
+          quantity: available,
+          price,
+          totalValue: Number((available * price).toFixed(2)),
+          receptionId: selectedReception.id,
+          carcassId: selectedCarcass.id,
+        },
+      ]);
 
       setSelectedTargetCode('');
       setAddQuantity('');
@@ -221,6 +232,10 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
 
     const product = products.find((p) => p.code === selectedTargetCode);
     if (!product) return;
+    if (product.code === 'MEDIA_RES' || meatReceptions?.some((reception) => reception.productCode === product.code)) {
+      setInlineNotification({ type: 'warning', message: 'Las medias reses se transfieren seleccionando cada unidad individual.' });
+      return;
+    }
 
     const available = getOriginStock(product.code);
 
@@ -534,36 +549,48 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                       <span>🥩 MEDIAS RESES / CANALES EN GANCHO (CÁMARA)</span>
                       <span className="text-[10px] bg-amber-200 px-1.5 py-0.5 rounded text-amber-900">Traslado Frigorífico</span>
                     </div>
-                    {filteredReceptions.map((r) => {
-                      const targetCode = `REC:${r.id}`;
-                      const isSel = selectedTargetCode === targetCode;
-                      const addedQty = transferItems.find((it) => it.receptionId === r.id)?.quantity || 0;
-                      return (
-                        <div
-                          key={r.id}
-                          onClick={() => {
-                            setSelectedTargetCode(targetCode);
-                            setAddQuantity(r.totalWeightKg.toString());
-                          }}
-                          className={`p-2 cursor-pointer flex items-center justify-between transition-colors ${
-                            isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-gray-100 text-black'
-                          }`}
-                        >
-                          <div>
-                            <div className="font-bold">Tropa #{r.tropaNumber} - {r.species} ({r.category})</div>
-                            <div className={`text-[10px] ${isSel ? 'text-gray-200' : 'text-gray-600'}`}>
-                              Proveedor: {r.supplier} | Fecha: {r.date}
+                    {filteredReceptions.map((r) =>
+                      (r.carcasses || [])
+                        .filter(
+                          (carcass) =>
+                            (!carcass.status || carcass.status === 'DISPONIBLE') &&
+                            (carcass.branchId || r.branchId) === originBranch
+                        )
+                        .map((carcass, index) => {
+                          const targetCode = `CARCASS:${carcass.id}`;
+                          const isSel = selectedTargetCode === targetCode;
+                          const isAdded = transferItems.some((it) => it.carcassId === carcass.id);
+                          const label = carcass.label || `MR-${String(index + 1).padStart(3, '0')}`;
+                          return (
+                            <div
+                              key={carcass.id}
+                              onClick={() => {
+                                setSelectedTargetCode(targetCode);
+                                setAddQuantity(String(carcass.weightKg));
+                              }}
+                              className={`p-2 cursor-pointer flex items-center justify-between transition-colors ${
+                                isSel ? 'bg-[#002046] text-white font-bold' : 'hover:bg-gray-100 text-black'
+                              } ${isAdded ? 'opacity-60' : ''}`}
+                            >
+                              <div>
+                                <div className="font-bold">
+                                  Tropa #{carcass.tropaNumber || r.tropaNumber} — {label} · {carcass.species || r.species} ({carcass.category || r.category})
+                                </div>
+                                <div className={`text-[10px] ${isSel ? 'text-gray-200' : 'text-gray-600'}`}>
+                                  Proveedor: {r.supplier} | Fecha: {r.date}
+                                  {carcass.tagNumber ? ` | Garfa: ${carcass.tagNumber}` : ''}
+                                </div>
+                              </div>
+                              <div className="text-right font-bold text-amber-800 font-mono">
+                                <span className={isSel ? 'text-white' : ''}>{formatKg(carcass.weightKg)}</span>
+                                {isAdded && (
+                                  <div className={`text-[10px] ${isSel ? 'text-green-200' : 'text-green-700'}`}>✓ En remito</div>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                          <div className="text-right font-bold text-amber-800 font-mono">
-                            <span className={isSel ? 'text-white' : ''}>{formatKg(r.totalWeightKg)}</span>
-                            {addedQty > 0 && (
-                              <div className={`text-[10px] ${isSel ? 'text-green-200' : 'text-green-700'}`}>✓ En remito: {formatKg(addedQty)}</div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                          );
+                        })
+                    )}
                   </div>
                 )}
 
@@ -607,7 +634,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                 <div className="md:col-span-8">
                   {selectedReception ? (
                     <div className="text-[11px] text-emerald-700 font-bold">
-                      ✓ Media res seleccionada: Tropa #{selectedReception.tropaNumber} ({selectedReception.species} {selectedReception.category}) — Peso: {formatKg(selectedReception.totalWeightKg)}
+                      ✓ Unidad seleccionada: {selectedCarcass?.label || 'Media res'} de Tropa #{selectedCarcass?.tropaNumber || selectedReception.tropaNumber} ({selectedCarcass?.species || selectedReception.species} {selectedCarcass?.category || selectedReception.category}) — Peso: {formatKg(selectedCarcass?.weightKg)}
                     </div>
                   ) : selectedProduct ? (
                     <div className="text-[11px]">
@@ -639,6 +666,7 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                     step="0.001"
                     min="0.001"
                     max={currentItemRemaining > 0 ? currentItemRemaining : undefined}
+                    readOnly={Boolean(selectedCarcass)}
                     disabled={!selectedTargetCode || currentItemRemaining <= 0}
                     className="win-input w-full p-1 text-xs font-mono font-bold disabled:bg-gray-100 disabled:text-gray-400"
                     value={addQuantity}
@@ -707,7 +735,8 @@ export const NewTransferModal: React.FC<NewTransferModalProps> = ({ onClose, def
                           type="number"
                           step="0.001"
                           min="0.001"
-                          className="win-input w-24 p-1 text-xs font-mono font-bold text-center"
+                          readOnly={Boolean(item.carcassId)}
+                          className="win-input w-24 p-1 text-xs font-mono font-bold text-center read-only:bg-gray-100"
                           value={item.quantity}
                           onChange={(e) => handleUpdateItemQty(index, Number(e.target.value))}
                         />

@@ -79,7 +79,7 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
           <div className="flex items-center space-x-2 text-white font-bold text-xs pl-1">
             <Beef className="w-4 h-4 text-amber-300" />
             <span>
-              REMISIÓN & ACTA DE RECEPCIÓN — {reception.code} (TROPA: {reception.tropaNumber})
+              REMISIÓN & ACTA DE RECEPCIÓN — {reception.code} (TROPAS POR UNIDAD)
             </span>
           </div>
           <button
@@ -134,17 +134,29 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
               <div>
                 <span className="text-gray-500 block text-[10px]">Proveedor / Frigorífico:</span>
                 <span className="font-bold text-gray-900">{reception.supplier}</span>
+                {(reception.supplierCuit || reception.supplierAddress || reception.supplierPhone) && (
+                  <span className="block text-[10px] text-gray-600">
+                    {[reception.supplierCuit, reception.supplierAddress, reception.supplierPhone].filter(Boolean).join(' · ')}
+                  </span>
+                )}
               </div>
 
               <div>
                 <span className="text-gray-500 block text-[10px]">N° Tropa SENASA:</span>
-                <span className="font-bold text-blue-900 font-mono text-sm">{reception.tropaNumber}</span>
+                <span className="font-bold text-blue-900 font-mono text-sm">
+                  {Array.from(new Set((reception.carcasses || []).map((carcass) => carcass.tropaNumber || reception.tropaNumber))).length > 1
+                    ? 'Varias (ver detalle)'
+                    : reception.tropaNumber}
+                </span>
               </div>
 
               <div>
                 <span className="text-gray-500 block text-[10px]">Especie & Categoría:</span>
                 <span className="font-bold text-gray-900">
-                  {reception.species} ({reception.category})
+                  {Array.from(new Set((reception.carcasses || []).map((carcass) => carcass.species || reception.species))).length > 1 ||
+                  Array.from(new Set((reception.carcasses || []).map((carcass) => carcass.category || reception.category))).length > 1
+                    ? 'Varias (ver detalle)'
+                    : `${reception.species} (${reception.category})`}
                 </span>
               </div>
 
@@ -161,7 +173,7 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
               </div>
 
               <div>
-                <span className="text-gray-500 block text-[10px]">Precio Compra $/Kg:</span>
+                <span className="text-gray-500 block text-[10px]">Precio Promedio $/Kg:</span>
                 <span className="font-bold text-green-800">{formatCurrency(reception.pricePerKg)}</span>
               </div>
 
@@ -184,6 +196,9 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
                 <tr>
                   <th className="p-1.5 text-center w-10 border-r border-gray-300">N°</th>
                   <th className="p-1.5 w-28 border-r border-gray-300">Identificador</th>
+                  <th className="p-1.5 w-24 border-r border-gray-300">Tropa</th>
+                  <th className="p-1.5 w-28 border-r border-gray-300">Especie</th>
+                  <th className="p-1.5 w-24 border-r border-gray-300">Categoría</th>
                   <th className="p-1.5 border-r border-gray-300">Garfa / Precinto SENASA</th>
                   <th className="p-1.5 text-right w-28 border-r border-gray-300 bg-yellow-50">Peso Real</th>
                   <th className="p-1.5 text-right w-28 border-r border-gray-300">Precio $/Kg</th>
@@ -200,15 +215,18 @@ export const ReceptionDetailModal: React.FC<ReceptionDetailModalProps> = ({
                     <td className="p-1.5 font-mono font-bold text-blue-900 border-r border-gray-200">
                       {carcassLabel(c, idx)}
                     </td>
+                    <td className="p-1.5 border-r border-gray-200">{c.tropaNumber || reception.tropaNumber}</td>
+                    <td className="p-1.5 border-r border-gray-200">{c.species || reception.species}</td>
+                    <td className="p-1.5 border-r border-gray-200">{c.category || reception.category}</td>
                     <td className="p-1.5 border-r border-gray-200">{c.tagNumber || '-'}</td>
                     <td className="p-1.5 text-right font-bold text-red-700 border-r border-gray-200 bg-yellow-50/50">
                       {formatKg(c.weightKg)}
                     </td>
                     <td className="p-1.5 text-right border-r border-gray-200 text-gray-700">
-                      {formatCurrency(reception.pricePerKg)}
+                      {formatCurrency(c.pricePerKg ?? reception.pricePerKg)}
                     </td>
                     <td className="p-1.5 text-right font-bold text-green-900 border-r border-gray-200 bg-green-50/50">
-                      {formatCurrency(c.cost)}
+                      {formatCurrency(c.cost ?? c.weightKg * (c.pricePerKg ?? reception.pricePerKg))}
                     </td>
                     <td className="p-1.5 text-gray-600 text-[11px]">{c.notes || '-'}</td>
                   </tr>

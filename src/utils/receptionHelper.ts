@@ -1,6 +1,21 @@
 import { MeatReception, CarcassUnit, BranchConfig } from '../types/pos';
 import { formatKg, formatCurrency } from './stockHelper';
 
+/** Peso que todavía debe revertirse al eliminar una recepción confirmada. */
+export function getReceptionReversibleWeight(
+  totalWeightKg: number,
+  carcasses?: CarcassUnit[]
+): number {
+  if (!carcasses?.length) return Number(Number(totalWeightKg || 0).toFixed(3));
+
+  return Number(
+    carcasses
+      .filter((carcass) => !['ANULADO', 'DESPOSTADO', 'TRASLADADO'].includes(carcass.status || ''))
+      .reduce((total, carcass) => total + (Number(carcass.weightKg) || 0), 0)
+      .toFixed(3)
+  );
+}
+
 /** Etiqueta visible de una media res. Usa la guardada o, si no existe (datos antiguos), la posición. */
 export function carcassLabel(c: { label?: string }, index: number): string {
   return c.label?.trim() || `MR-${String(index + 1).padStart(3, '0')}`;
@@ -37,10 +52,13 @@ export function generateReceptionVoucherHtml(
       <tr style="border-bottom: 1px solid #ccc; font-size: 11px;">
         <td style="padding: 4px 6px; text-align: center; font-weight: bold;">${idx + 1}</td>
         <td style="padding: 4px 6px; font-family: monospace; font-weight: bold;">${carcassLabel(c, idx)}</td>
+        <td style="padding: 4px 6px;">${c.tropaNumber || reception.tropaNumber}</td>
+        <td style="padding: 4px 6px;">${c.species || reception.species}</td>
+        <td style="padding: 4px 6px;">${c.category || reception.category}</td>
         <td style="padding: 4px 6px;">${c.tagNumber || 'S/N'}</td>
         <td style="padding: 4px 6px; text-align: right; font-weight: bold;">${formatKg(c.weightKg)}</td>
-        <td style="padding: 4px 6px; text-align: right;">${formatCurrency(reception.pricePerKg)}</td>
-        <td style="padding: 4px 6px; text-align: right; font-weight: bold;">${formatCurrency(c.cost)}</td>
+        <td style="padding: 4px 6px; text-align: right;">${formatCurrency(c.pricePerKg ?? reception.pricePerKg)}</td>
+        <td style="padding: 4px 6px; text-align: right; font-weight: bold;">${formatCurrency(c.cost ?? c.weightKg * (c.pricePerKg ?? reception.pricePerKg))}</td>
         <td style="padding: 4px 6px; font-size: 10px; color: #555;">${c.notes || '-'}</td>
       </tr>
     `
@@ -95,8 +113,10 @@ export function generateReceptionVoucherHtml(
     </div>
     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 11px;">
       <div><strong>Proveedor:</strong><br>${reception.supplier}</div>
-      <div><strong>N° Tropa SENASA:</strong><br><span style="font-family: monospace; font-weight: bold; color: #1e3a8a;">${reception.tropaNumber}</span></div>
-      <div><strong>Especie / Categoría:</strong><br>${reception.species} - ${reception.category}</div>
+      <div><strong>CUIT / Contacto:</strong><br>${reception.supplierCuit || '-'}${reception.supplierContact ? ` · ${reception.supplierContact}` : ''}</div>
+      <div><strong>Domicilio / Teléfono:</strong><br>${reception.supplierAddress || '-'}${reception.supplierPhone ? ` · ${reception.supplierPhone}` : ''}</div>
+      <div><strong>N° Tropas SENASA:</strong><br><span style="font-family: monospace; font-weight: bold; color: #1e3a8a;">Ver detalle por unidad</span></div>
+      <div><strong>Especie / Categoría:</strong><br>Ver detalle por unidad</div>
       <div><strong>Destino:</strong><br>${reception.branchId} (${reception.chamber})</div>
       <div><strong>N° Factura:</strong><br>${reception.invoiceNumber || 'S/F'}</div>
       <div><strong>N° Remito:</strong><br>${reception.deliveryNoteNumber || 'S/R'}</div>
@@ -114,6 +134,9 @@ export function generateReceptionVoucherHtml(
         <tr>
           <th style="width: 30px; text-align: center;">N°</th>
           <th style="width: 80px;">Identificador</th>
+          <th style="width: 75px;">Tropa</th>
+          <th style="width: 75px;">Especie</th>
+          <th style="width: 70px;">Categoría</th>
           <th>Garfa / Precinto SENASA</th>
           <th style="width: 90px; text-align: right;">Peso Real</th>
           <th style="width: 90px; text-align: right;">Precio $/Kg</th>
@@ -136,7 +159,7 @@ export function generateReceptionVoucherHtml(
         <strong>Peso Bruto Total al Gancho:</strong> <span style="font-size: 16px; font-weight: bold; color: #b91c1c;">${formatKg(reception.totalWeightKg)}</span>
       </div>
       <div>
-        <strong>Precio Pactado $/Kg:</strong> <span style="font-size: 14px; font-weight: bold;">${formatCurrency(reception.pricePerKg)}</span>
+        <strong>Precio Promedio $/Kg:</strong> <span style="font-size: 14px; font-weight: bold;">${formatCurrency(reception.pricePerKg)}</span>
       </div>
       <div>
         <strong>IMPORTE TOTAL:</strong> <span style="font-size: 18px; font-weight: bold; color: #15803d;">${formatCurrency(reception.totalCost)}</span>

@@ -70,6 +70,8 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     return products.filter((p) => p && p.active !== false);
   }, [products]);
 
+  const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(existingDeboning?.branchId || 'NECO 1');
+
   // Recepciones disponibles con medias reses aún no despostadas
   const availableReceptions = useMemo(() => {
     if (!meatReceptions) return [];
@@ -77,15 +79,20 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
       if (r.status !== 'CONFIRMADO') return false;
       // Si tiene lista de medias reses, verificar si tiene alguna DISPONIBLE
       if (r.carcasses && r.carcasses.length > 0) {
-        return r.carcasses.some((c) => c.status === 'DISPONIBLE' || !c.status);
+        return r.carcasses.some(
+          (carcass) =>
+            (carcass.status === 'DISPONIBLE' || !carcass.status) &&
+            (carcass.branchId || r.branchId) === branchId
+        );
       }
+      if (r.branchId !== branchId) return false;
       // Si no tiene arreglo de carcasses, verificar si no fue completamente despostada por un desposte finalizado
       const hasFinalized = meatDebonings?.some(
         (d) => d.status === 'FINALIZADO' && (d.tropaNumber === r.tropaNumber || d.sourceProductCode === r.code)
       );
       return !hasFinalized;
     });
-  }, [meatReceptions, meatDebonings]);
+  }, [meatReceptions, meatDebonings, branchId]);
 
   // Productos que son exclusivamente medias reses / canales / cuartos (excluyendo cortes ya despostados)
   const carcassProducts = useMemo(() => {
@@ -125,7 +132,6 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(existingDeboning?.yieldTemplateId || '');
   const [isEstimated, setIsEstimated] = useState<boolean>(existingDeboning?.isEstimated || false);
 
-  const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(existingDeboning?.branchId || 'NECO 1');
   const [chamber, setChamber] = useState(existingDeboning?.chamber || 'Cámara Central NECO 1');
   const [tropaNumber, setTropaNumber] = useState(existingDeboning?.tropaNumber || '');
   const [supplier, setSupplier] = useState(existingDeboning?.supplier || 'Frigorífico Rioplatense S.A.');
@@ -149,7 +155,11 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
   // Medias reses individuales disponibles en la recepción elegida
   const availableCarcassesForSelected = useMemo(() => {
     if (!selectedReceptionObj || !selectedReceptionObj.carcasses) return [];
-    return selectedReceptionObj.carcasses.filter((c) => c.status === 'DISPONIBLE' || !c.status);
+    return selectedReceptionObj.carcasses.filter(
+      (carcass) =>
+        (carcass.status === 'DISPONIBLE' || !carcass.status) &&
+        (carcass.branchId || selectedReceptionObj.branchId) === branchId
+    );
   }, [selectedReceptionObj]);
 
   // Manejador de selección de una media res individual
@@ -162,11 +172,15 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     setSelectedCarcassIds(newIds);
 
     if (selectedReceptionObj && selectedReceptionObj.carcasses) {
-      const sumWeight = selectedReceptionObj.carcasses
-        .filter((c) => newIds.includes(c.id))
-        .reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
-      
+      const selectedCarcasses = selectedReceptionObj.carcasses.filter((carcass) => newIds.includes(carcass.id));
+      const sumWeight = selectedCarcasses.reduce((sum, carcass) => sum + (Number(carcass.weightKg) || 0), 0);
+      const sumCost = selectedCarcasses.reduce(
+        (sum, carcass) => sum + (Number(carcass.cost) || (Number(carcass.weightKg) || 0) * (Number(carcass.pricePerKg) || 0)),
+        0
+      );
+
       setInitialWeightKg(Number(sumWeight.toFixed(3)));
+      setCostPerKgInitial(sumWeight > 0 ? Number((sumCost / sumWeight).toFixed(2)) : 0);
     }
   };
 
@@ -175,11 +189,18 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
     const allIds = availableCarcassesForSelected.map((c) => c.id);
     setSelectedCarcassIds(allIds);
     const sumWeight = availableCarcassesForSelected.reduce((sum, c) => sum + (Number(c.weightKg) || 0), 0);
+    const sumCost = availableCarcassesForSelected.reduce(
+      (sum, carcass) => sum + (Number(carcass.cost) || (Number(carcass.weightKg) || 0) * (Number(carcass.pricePerKg) || 0)),
+      0
+    );
     setInitialWeightKg(Number(sumWeight.toFixed(3)));
+    setCostPerKgInitial(sumWeight > 0 ? Number((sumCost / sumWeight).toFixed(2)) : 0);
   };
 
   const handleDeselectAllCarcasses = () => {
     setSelectedCarcassIds([]);
+    setInitialWeightKg(0);
+    setCostPerKgInitial(0);
   };
 
   // 2. Cortes Obtenidos en el Desposte (Inicialmente vacío o existentes cargados previamente)
@@ -670,17 +691,17 @@ export const NewDeboningModal: React.FC<NewDeboningModalProps> = ({
                       const rec = availableReceptions.find((r) => r.id === e.target.value);
                       if (rec) {
                         setSelectedReceptionId(rec.id);
-                        setSelectedCarcassIds(rec.carcasses?.map(c => c.id) || []);
+                        setSelectedCarcassIds([]);
                         setBranchId(rec.branchId);
                         setChamber(rec.chamber);
                         setTropaNumber(rec.tropaNumber);
                         setSupplier(rec.supplier);
                         setAnimalCategory(rec.category || 'Novillito');
                         setDteGuideNumber(rec.dteGuideNumber || rec.deliveryNoteNumber || '');
-                        setInitialWeightKg(rec.totalWeightKg);
-                        setCostPerKgInitial(rec.pricePerKg);
+                        setInitialWeightKg(0);
+                        setCostPerKgInitial(0);
                         if (rec.productCode) setSourceProductCode(rec.productCode);
-                        setFeedbackMessage(`Datos vinculados desde Recepción ${rec.code} (Tropa ${rec.tropaNumber}, ${formatKg(rec.totalWeightKg)}).`);
+                        setFeedbackMessage(`Datos vinculados desde Recepción ${rec.code}. Seleccioná manualmente las medias reses a despostar.`);
                       }
                     }}
                     className="bg-white border border-blue-400 px-1 py-0.5 text-[10px] font-bold text-blue-900"

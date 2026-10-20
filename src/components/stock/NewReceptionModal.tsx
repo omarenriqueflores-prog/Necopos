@@ -14,10 +14,11 @@ import {
 } from 'lucide-react';
 import { useFirebase } from '../../context/FirebaseContext';
 import { useDialog } from '../../context/DialogContext';
-import { MeatReception, CarcassUnit, CarcassStatus, Product, ANIMAL_CATEGORIES } from '../../types/pos';
+import { MeatReception, CarcassUnit, CarcassStatus, MeatSupplier, ANIMAL_CATEGORIES } from '../../types/pos';
 import { carcassLabel, nextCarcassNumber, formatCarcassLabel } from '../../utils/receptionHelper';
 import { formatKg, formatCurrency } from '../../utils/stockHelper';
 import { generateReceptionVoucherHtml } from '../../utils/receptionHelper';
+import { MeatSupplierModal } from './MeatSupplierModal';
 
 interface NewReceptionModalProps {
   onClose: () => void;
@@ -28,26 +29,38 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
   onClose,
   existingReception,
 }) => {
-  const { products, branchConfigs, localUser, user, saveMeatReception, finalizeMeatReception, updateConfirmedMeatReception, deleteOrCancelMeatReception } = useFirebase();
+  const {
+    products, branchConfigs, localUser, user, meatSuppliers, meatReceptions, saveMeatSupplier,
+    saveMeatReception, finalizeMeatReception, updateConfirmedMeatReception, deleteOrCancelMeatReception,
+  } = useFirebase();
   const { showAlert, showAdminAuth } = useDialog();
 
   const operatorName = localUser?.fullName || user?.displayName || localUser?.username || 'Encargado de Cámara';
+  const defaultSupplierName = existingReception?.supplier || 'Frigorífico Rioplatense S.A.';
+  const initialSupplierProfile = meatSuppliers.find(
+    (item) => item.name.trim().toLocaleLowerCase('es') === defaultSupplierName.trim().toLocaleLowerCase('es')
+  );
 
   // 1. Datos Generales de la Recepción
   const [branchId, setBranchId] = useState<'NECO 1' | 'NECO 2'>(existingReception?.branchId || 'NECO 1');
   const [chamber, setChamber] = useState(existingReception?.chamber || 'Cámara Central NECO 1');
-  const [supplier, setSupplier] = useState(existingReception?.supplier || 'Frigorífico Rioplatense S.A.');
-  const [species, setSpecies] = useState(existingReception?.species || 'Vacuno / Bovino');
-  const [category, setCategory] = useState(existingReception?.category || 'Novillito');
-  const [tropaNumber, setTropaNumber] = useState(existingReception?.tropaNumber || '');
+  const [supplier, setSupplier] = useState(defaultSupplierName);
+  const [supplierId, setSupplierId] = useState(existingReception?.supplierId || initialSupplierProfile?.id || '');
+  const [supplierCuit, setSupplierCuit] = useState(existingReception?.supplierCuit || initialSupplierProfile?.cuit || '');
+  const [supplierAddress, setSupplierAddress] = useState(existingReception?.supplierAddress || initialSupplierProfile?.address || '');
+  const [supplierPhone, setSupplierPhone] = useState(existingReception?.supplierPhone || initialSupplierProfile?.phone || '');
+  const [supplierEmail, setSupplierEmail] = useState(existingReception?.supplierEmail || initialSupplierProfile?.email || '');
+  const [supplierContact, setSupplierContact] = useState(existingReception?.supplierContact || initialSupplierProfile?.contact || '');
+  const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [invoiceNumber, setInvoiceNumber] = useState(existingReception?.invoiceNumber || '');
   const [deliveryNoteNumber, setDeliveryNoteNumber] = useState(existingReception?.deliveryNoteNumber || '');
   const [dteGuideNumber, setDteGuideNumber] = useState(existingReception?.dteGuideNumber || '');
-  const [pricePerKg, setPricePerKg] = useState<number>(existingReception?.pricePerKg || 4200.0);
   const [productCode, setProductCode] = useState<string>(existingReception?.productCode || '');
   const [notes, setNotes] = useState(existingReception?.notes || '');
 
   const now = new Date();
+  const defaultSpecies = 'Vacuno / Bovino';
+  const defaultCategory = 'Novillito';
   const defaultDate = now.toLocaleDateString('es-AR').split('/').reverse().join('-');
   const defaultTime = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
 
@@ -57,25 +70,15 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
   // 2. Medias Reses Individuales
   const [carcasses, setCarcasses] = useState<CarcassUnit[]>(() => {
     if (existingReception?.carcasses && existingReception.carcasses.length > 0) {
-      return existingReception.carcasses;
+      return existingReception.carcasses.map((carcass) => ({
+        ...carcass,
+        tropaNumber: carcass.tropaNumber || existingReception.tropaNumber,
+        species: carcass.species || existingReception.species,
+        category: carcass.category || existingReception.category,
+        pricePerKg: carcass.pricePerKg ?? existingReception.pricePerKg,
+      }));
     }
-    // Inicializar con dos medias reses por defecto (1 res entera)
-    return [
-      {
-        id: 'MR-001',
-        label: 'MR-001',
-        tagNumber: '',
-        weightKg: 118.5,
-        cost: Number((118.5 * (existingReception?.pricePerKg || 4200)).toFixed(2)),
-      },
-      {
-        id: 'MR-002',
-        label: 'MR-002',
-        tagNumber: '',
-        weightKg: 121.2,
-        cost: Number((121.2 * (existingReception?.pricePerKg || 4200)).toFixed(2)),
-      },
-    ];
+    return [];
   });
 
   // Estados de proceso
@@ -88,32 +91,28 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
     setChamber(branchId === 'NECO 1' ? 'Cámara Central NECO 1' : 'Cámara Frigorífica NECO 2');
   }, [branchId]);
 
-  // Actualizar costo de cada media res si cambia el precio por kilo
-  useEffect(() => {
-    setCarcasses((prev) =>
-      prev.map((c) => ({
-        ...c,
-        cost: Number((c.weightKg * pricePerKg).toFixed(2)),
-      }))
-    );
-  }, [pricePerKg]);
-
   // Totales de la recepción
   const { totalQuantity, totalWeightKg, totalCost } = useMemo(() => {
     let weightSum = 0;
+    let costSum = 0;
     carcasses.forEach((c) => {
-      weightSum += Number(c.weightKg) || 0;
+      const weight = Number(c.weightKg) || 0;
+      const unitPrice = Number(c.pricePerKg) || 0;
+      weightSum += weight;
+      costSum += weight * unitPrice;
     });
 
     const roundedWeight = Number(weightSum.toFixed(3));
-    const roundedCost = Number((roundedWeight * pricePerKg).toFixed(2));
+    const roundedCost = Number(costSum.toFixed(2));
 
     return {
       totalQuantity: carcasses.length,
       totalWeightKg: roundedWeight,
       totalCost: roundedCost,
     };
-  }, [carcasses, pricePerKg]);
+  }, [carcasses]);
+
+  const averagePricePerKg = totalWeightKg > 0 ? Number((totalCost / totalWeightKg).toFixed(2)) : 0;
 
   // Modificar peso de una media res
   const handleWeightChange = (index: number, val: string) => {
@@ -123,7 +122,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       copy[index] = {
         ...copy[index],
         weightKg: num,
-        cost: Number((num * pricePerKg).toFixed(2)),
+        cost: Number((num * (Number(copy[index].pricePerKg) || 0)).toFixed(2)),
       };
       return copy;
     });
@@ -141,6 +140,28 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
     });
   };
 
+  const handleCarcassFieldChange = (
+    index: number,
+    field: 'tropaNumber' | 'species' | 'category' | 'pricePerKg',
+    value: string
+  ) => {
+    setCarcasses((prev) => {
+      const copy = [...prev];
+      const current = copy[index];
+      if (field === 'pricePerKg') {
+        const unitPrice = Math.max(0, Number(value) || 0);
+        copy[index] = {
+          ...current,
+          pricePerKg: unitPrice,
+          cost: Number((current.weightKg * unitPrice).toFixed(2)),
+        };
+      } else {
+        copy[index] = { ...current, [field]: value };
+      }
+      return copy;
+    });
+  };
+
   // Modificar notas individuales
   const handleItemNoteChange = (index: number, val: string) => {
     setCarcasses((prev) => {
@@ -151,6 +172,32 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       };
       return copy;
     });
+  };
+
+  const applySupplierProfile = (profile: MeatSupplier) => {
+    setSupplier(profile.name);
+    setSupplierId(profile.id);
+    setSupplierCuit(profile.cuit || '');
+    setSupplierAddress(profile.address || '');
+    setSupplierPhone(profile.phone || '');
+    setSupplierEmail(profile.email || '');
+    setSupplierContact(profile.contact || '');
+  };
+
+  const handleSupplierNameChange = (name: string) => {
+    setSupplier(name);
+    const profile = meatSuppliers.find(
+      (item) => item.name.trim().toLocaleLowerCase('es') === name.trim().toLocaleLowerCase('es')
+    );
+    if (profile) applySupplierProfile(profile);
+    else {
+      setSupplierId('');
+      setSupplierCuit('');
+      setSupplierAddress('');
+      setSupplierPhone('');
+      setSupplierEmail('');
+      setSupplierContact('');
+    }
   };
 
   // Eliminar una media res
@@ -166,8 +213,12 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
         id: tempId,
         label: formatCarcassLabel(nextCarcassNumber(prev)),
         tagNumber: '',
-        weightKg: 120.0,
-        cost: Number((120.0 * pricePerKg).toFixed(2)),
+        weightKg: 0,
+        pricePerKg: undefined,
+        species: existingReception?.species || defaultSpecies,
+        category: existingReception?.category || defaultCategory,
+        tropaNumber: '',
+        cost: 0,
       };
       return [...prev, newUnit];
     });
@@ -181,15 +232,23 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       id: `TEMP-${now}-1`,
       label: '',
       tagNumber: '',
-      weightKg: 119.0,
-      cost: Number((119.0 * pricePerKg).toFixed(2)),
+      weightKg: 0,
+      pricePerKg: undefined,
+      species: existingReception?.species || defaultSpecies,
+      category: existingReception?.category || defaultCategory,
+      tropaNumber: '',
+      cost: 0,
       notes: 'Lado Izquierdo',
     };
     const item2: CarcassUnit = {
       id: `TEMP-${now}-2`,
       tagNumber: '',
-      weightKg: 120.5,
-      cost: Number((120.5 * pricePerKg).toFixed(2)),
+      weightKg: 0,
+      pricePerKg: undefined,
+      species: existingReception?.species || defaultSpecies,
+      category: existingReception?.category || defaultCategory,
+      tropaNumber: '',
+      cost: 0,
       notes: 'Lado Derecho',
     };
     setCarcasses((prev) => {
@@ -222,10 +281,12 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
         id: stableId,
         label: carcassLabel(c, idx),
         receptionId: recId,
-        tropaNumber: tropaNumber.trim() || `TR-${Date.now().toString().slice(-4)}`,
+        tropaNumber: c.tropaNumber?.trim() || '',
         supplier: supplier.trim() || 'Proveedor Frigorífico',
-        species,
-        category,
+        species: c.species || existingReception?.species || defaultSpecies,
+        category: c.category || existingReception?.category || defaultCategory,
+        pricePerKg: Number(c.pricePerKg) || 0,
+        cost: Number((Number(c.weightKg) * (Number(c.pricePerKg) || 0)).toFixed(2)),
         branchId,
         chamber,
         status: (c.status || (status === 'CONFIRMADO' ? 'DISPONIBLE' : 'PENDIENTE')) as CarcassStatus,
@@ -243,13 +304,19 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
       status,
       operator: operatorName,
       supplier: supplier.trim() || 'Proveedor Frigorífico',
-      species,
-      category,
-      tropaNumber: tropaNumber.trim() || `TR-${Date.now().toString().slice(-4)}`,
+      supplierId: supplierId || undefined,
+      supplierCuit: supplierCuit.trim() || undefined,
+      supplierAddress: supplierAddress.trim() || undefined,
+      supplierPhone: supplierPhone.trim() || undefined,
+      supplierEmail: supplierEmail.trim() || undefined,
+      supplierContact: supplierContact.trim() || undefined,
+      species: updatedCarcasses[0]?.species || defaultSpecies,
+      category: updatedCarcasses[0]?.category || defaultCategory,
+      tropaNumber: updatedCarcasses[0]?.tropaNumber || '',
       invoiceNumber: invoiceNumber.trim(),
       deliveryNoteNumber: deliveryNoteNumber.trim(),
       dteGuideNumber: dteGuideNumber.trim(),
-      pricePerKg,
+      pricePerKg: averagePricePerKg,
       totalQuantity,
       totalWeightKg,
       totalCost,
@@ -281,8 +348,23 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
     try {
       setIsSubmitting(true);
       setErrorMessage(null);
-      if (carcasses.length === 0 || totalWeightKg <= 0) {
-        setErrorMessage('Debe ingresar al menos una media res con peso mayor a 0 Kg.');
+      if (carcasses.length === 0 || totalWeightKg <= 0 || carcasses.some((carcass) => Number(carcass.weightKg) <= 0)) {
+        setErrorMessage('Cada media res debe tener un peso mayor a 0 Kg.');
+        return;
+      }
+      const incompleteCarcass = carcasses.find(
+        (carcass) =>
+          !carcass.tropaNumber?.trim() ||
+          !carcass.species?.trim() ||
+          !carcass.category?.trim() ||
+          carcass.pricePerKg === undefined ||
+          !Number.isFinite(Number(carcass.pricePerKg)) ||
+          Number(carcass.pricePerKg) <= 0
+      );
+      if (incompleteCarcass) {
+        setErrorMessage(
+          `Complete tropa, especie, categoría y un precio mayor a cero para cada media res. Revise ${carcassLabel(incompleteCarcass, carcasses.indexOf(incompleteCarcass))}.`
+        );
         return;
       }
       const rec = buildReceptionObject(existingReception?.status === 'CONFIRMADO' ? 'CONFIRMADO' : 'PENDIENTE');
@@ -383,10 +465,10 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
           <div className="bg-[#ebeef2] border border-gray-400 p-2.5 shadow-sm rounded-sm">
             <div className="font-bold text-[11px] text-[#002046] mb-2 flex items-center space-x-1.5 border-b border-gray-300 pb-1">
               <Scale className="w-3.5 h-3.5 text-blue-800" />
-              <span>1. DATOS DE ORIGEN, TROPA SENASA, COMPROBANTES Y CÁMARA DE DESTINO</span>
+              <span>1. DATOS DE FACTURA, FRIGORÍFICO Y CÁMARA DE DESTINO</span>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <div>
                 <label className="font-bold text-[10px] text-gray-700 block">Sucursal de Destino:</label>
                 <select
@@ -429,69 +511,24 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                 />
               </div>
 
-              <div className="lg:col-span-2">
+              <div className="md:col-span-2">
                 <label className="font-bold text-[10px] text-gray-700 block">Proveedor / Frigorífico:</label>
                 <input
                   type="text"
-                  placeholder="Ej: Frigorífico Rioplatense S.A."
+                  list="meat-supplier-options"
+                  placeholder="Seleccionar o ingresar frigorífico..."
                   value={supplier}
-                  onChange={(e) => setSupplier(e.target.value)}
+                  onChange={(e) => handleSupplierNameChange(e.target.value)}
                   className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs font-semibold"
                 />
+                <datalist id="meat-supplier-options">
+                  {meatSuppliers.map((item) => <option key={item.id} value={item.name} />)}
+                </datalist>
               </div>
-
-              <div>
-                <label className="font-bold text-[10px] text-gray-700 block">Especie:</label>
-                <select
-                  value={species}
-                  onChange={(e) => {
-                    const sp = e.target.value;
-                    setSpecies(sp);
-                    if (sp.includes('Cerdo') || sp.includes('Porcino')) {
-                      setCategory('Cerdo');
-                    } else if (category === 'Cerdo') {
-                      setCategory('Novillito');
-                    }
-                  }}
-                  className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs font-bold text-indigo-900"
-                >
-                  <option value="Vacuno / Bovino">Vacuno / Bovino</option>
-                  <option value="Porcino / Cerdo">Porcino / Cerdo</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="font-bold text-[10px] text-gray-700 block">Categoría Animal:</label>
-                <select
-                  value={category}
-                  onChange={(e) => {
-                    const cat = e.target.value;
-                    setCategory(cat);
-                    if (cat === 'Cerdo') {
-                      setSpecies('Porcino / Cerdo');
-                    } else {
-                      setSpecies('Vacuno / Bovino');
-                    }
-                  }}
-                  className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs font-bold text-blue-900"
-                >
-                  {ANIMAL_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="font-bold text-[10px] text-gray-700 block">N° Tropa SENASA:</label>
-                <input
-                  type="text"
-                  placeholder="Ej: 1482-B"
-                  value={tropaNumber}
-                  onChange={(e) => setTropaNumber(e.target.value)}
-                  className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs font-bold text-blue-900"
-                />
+              <div className="flex items-end">
+                <button type="button" onClick={() => setShowSupplierModal(true)} className="h-[29px] w-full border border-gray-400 bg-white hover:bg-blue-50 px-2 font-bold text-[#002046]">
+                  Datos e historial del frigorífico
+                </button>
               </div>
 
               <div>
@@ -527,40 +564,40 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="font-bold text-[10px] text-gray-700 block">Precio Compra $/Kg Gancho:</label>
-                <input
-                  type="number"
-                  step="10"
-                  min="0"
-                  value={pricePerKg}
-                  onChange={(e) => setPricePerKg(Math.max(0, Number(e.target.value) || 0))}
-                  className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs font-bold text-green-800 text-right"
-                />
-              </div>
-
-              <div className="lg:col-span-2">
-                <label className="font-bold text-[10px] text-gray-700 block">Asentar en Producto de Stock (Cámara):</label>
+              <div className="md:col-span-2">
+                <label className="font-bold text-[10px] text-gray-700 block">Producto de stock para el peso total (opcional):</label>
                 <select
                   value={productCode}
                   onChange={(e) => setProductCode(e.target.value)}
                   className="w-full bg-white border border-gray-400 px-1.5 py-1 text-xs"
                 >
-                  <option value="">-- [Automático / Media Res Vacuna] --</option>
+                  <option value="">Automático: MEDIA_RES</option>
                   {products.map((p) => (
                     <option key={p.code} value={p.code}>
                       [{p.code}] {p.description} ({p.category})
                     </option>
                   ))}
                 </select>
+                <span className="mt-0.5 block text-[9px] leading-tight text-gray-600">
+                  Registra los kilos de esta factura en un código de stock. Dejá automático para medias reses.
+                </span>
               </div>
 
-              <div className="lg:col-span-3">
+              <div className="md:col-span-2">
                 <label className="font-bold text-[10px] text-gray-700 block">Encargado de Recepción / Operador:</label>
                 <div className="bg-gray-200 border border-gray-400 px-2 py-1 text-xs font-semibold text-gray-800">
                   {operatorName}
                 </div>
               </div>
+              {(supplierCuit || supplierPhone || supplierEmail || supplierAddress || supplierContact) && (
+                <div className="md:col-span-4 mt-2 p-2 bg-white border border-gray-300 text-[10px] text-gray-700 flex flex-wrap gap-x-4 gap-y-1">
+                  {supplierCuit && <span>CUIT: <strong>{supplierCuit}</strong></span>}
+                  {supplierAddress && <span>Domicilio: <strong>{supplierAddress}</strong></span>}
+                  {supplierPhone && <span>Tel.: <strong>{supplierPhone}</strong></span>}
+                  {supplierEmail && <span>Email: <strong>{supplierEmail}</strong></span>}
+                  {supplierContact && <span>Contacto: <strong>{supplierContact}</strong></span>}
+                </div>
+              )}
             </div>
           </div>
 
@@ -601,7 +638,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
               </div>
 
               <div className="text-[11px] text-gray-600">
-                Cada media res conserva su peso individual y trazabilidad única.
+                Tropa, especie, categoría y precio se pueden definir por unidad.
               </div>
             </div>
 
@@ -612,9 +649,12 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                   <tr>
                     <th className="p-1.5 w-10 text-center border-r border-gray-300">N°</th>
                     <th className="p-1.5 w-24 border-r border-gray-300">Identificador</th>
+                    <th className="p-1.5 w-24 border-r border-gray-300">Tropa SENASA</th>
+                    <th className="p-1.5 w-32 border-r border-gray-300">Especie</th>
+                    <th className="p-1.5 w-28 border-r border-gray-300">Categoría</th>
                     <th className="p-1.5 border-r border-gray-300">Garfa / Precinto SENASA</th>
                     <th className="p-1.5 border-r border-gray-300 text-right w-28 bg-yellow-100">Peso Real (Kg)</th>
-                    <th className="p-1.5 border-r border-gray-300 text-right w-24">Precio $/Kg</th>
+                    <th className="p-1.5 border-r border-gray-300 text-right w-28">Precio $/Kg</th>
                     <th className="p-1.5 border-r border-gray-300 text-right w-28 bg-green-50">Costo Subtotal ($)</th>
                     <th className="p-1.5 border-r border-gray-300">Observaciones Individuales</th>
                     <th className="p-1.5 text-center w-8"></th>
@@ -623,7 +663,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                 <tbody className="divide-y divide-gray-200 text-[11px]">
                   {carcasses.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="p-6 text-center text-gray-500 bg-gray-50">
+                      <td colSpan={11} className="p-6 text-center text-gray-500 bg-gray-50">
                         No hay medias reses registradas en esta recepción. Haga clic en <strong>Agregar 1 Media Res</strong>.
                       </td>
                     </tr>
@@ -635,6 +675,36 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                         </td>
                         <td className="p-1.5 font-mono font-bold text-blue-900 border-r border-gray-200">
                           {carcassLabel(item, idx)}
+                        </td>
+                        <td className="p-1 border-r border-gray-200">
+                          <input
+                            type="text"
+                            placeholder="N° de tropa"
+                            value={item.tropaNumber || ''}
+                            onChange={(e) => handleCarcassFieldChange(idx, 'tropaNumber', e.target.value)}
+                            className="w-full bg-white border border-gray-300 px-1 py-0.5 text-xs"
+                          />
+                        </td>
+                        <td className="p-1 border-r border-gray-200">
+                          <select
+                            value={item.species || defaultSpecies}
+                            onChange={(e) => handleCarcassFieldChange(idx, 'species', e.target.value)}
+                            className="w-full bg-white border border-gray-300 px-1 py-0.5 text-xs"
+                          >
+                            <option value="Vacuno / Bovino">Vacuno / Bovino</option>
+                            <option value="Porcino / Cerdo">Porcino / Cerdo</option>
+                          </select>
+                        </td>
+                        <td className="p-1 border-r border-gray-200">
+                          <select
+                            value={item.category || defaultCategory}
+                            onChange={(e) => handleCarcassFieldChange(idx, 'category', e.target.value)}
+                            className="w-full bg-white border border-gray-300 px-1 py-0.5 text-xs"
+                          >
+                            {ANIMAL_CATEGORIES.map((animalCategory) => (
+                              <option key={animalCategory} value={animalCategory}>{animalCategory}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="p-1.5 border-r border-gray-200">
                           <input
@@ -655,11 +725,18 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                             className="w-24 text-right font-bold text-red-700 bg-white border border-gray-300 px-1 py-0.5 text-xs"
                           />
                         </td>
-                        <td className="p-1.5 border-r border-gray-200 text-right font-semibold text-gray-700">
-                          {formatCurrency(pricePerKg)}
+                        <td className="p-1 border-r border-gray-200 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={item.pricePerKg ?? ''}
+                            onChange={(e) => handleCarcassFieldChange(idx, 'pricePerKg', e.target.value)}
+                            className="w-24 text-right font-semibold text-green-800 bg-white border border-gray-300 px-1 py-0.5 text-xs"
+                          />
                         </td>
                         <td className="p-1.5 border-r border-gray-200 text-right font-bold text-green-900 bg-green-50/50">
-                          {formatCurrency(item.cost)}
+                          {formatCurrency(Number((item.weightKg * (Number(item.pricePerKg) || 0)).toFixed(2)))}
                         </td>
                         <td className="p-1.5 border-r border-gray-200">
                           <input
@@ -699,8 +776,8 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                   <span className="text-base font-bold text-red-700">{formatKg(totalWeightKg)}</span>
                 </div>
                 <div>
-                  <span className="text-gray-600 block text-[10px]">PRECIO $/KG PACTADO:</span>
-                  <span className="text-base font-bold text-green-800">{formatCurrency(pricePerKg)}</span>
+                  <span className="text-gray-600 block text-[10px]">PRECIO PROMEDIO $/KG:</span>
+                  <span className="text-base font-bold text-green-800">{formatCurrency(averagePricePerKg)}</span>
                 </div>
               </div>
 
@@ -727,15 +804,15 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
         </div>
 
         {/* PIE CON ACCIONES Y BOTONES */}
-        <div className="bg-[#c0c0c0] border-t border-gray-400 p-2 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
+        <div className="bg-[#c0c0c0] border-t border-gray-400 p-2">
+          <div className={`grid grid-cols-2 ${existingReception ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-2`}>
             <button
               type="button"
               onClick={handlePrint}
-              className="px-3 py-1 bg-white hover:bg-gray-100 border border-gray-400 text-black font-bold flex items-center space-x-1.5 shadow-sm"
+              className="h-10 min-w-0 px-1.5 bg-white hover:bg-gray-100 border border-gray-400 text-[11px] leading-tight text-black font-bold flex items-center justify-center gap-1.5 shadow-sm"
             >
-              <Printer className="w-3.5 h-3.5 text-gray-700" />
-              <span>Imprimir Remito Oficial</span>
+              <Printer className="w-3.5 h-3.5 shrink-0 text-gray-700" />
+              <span className="min-w-0 text-center">Imprimir remito</span>
             </button>
 
             {existingReception && (
@@ -743,21 +820,19 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                 type="button"
                 onClick={handleDeleteExisting}
                 disabled={isSubmitting}
-                className="px-3 py-1 bg-[#ba1a1a] hover:bg-red-800 disabled:opacity-50 text-white font-bold flex items-center space-x-1 shadow-sm"
+                className="h-10 min-w-0 px-1.5 bg-[#ba1a1a] hover:bg-red-800 disabled:opacity-50 text-[11px] leading-tight text-white font-bold flex items-center justify-center gap-1.5 shadow-sm"
                 title="Eliminar esta recepción de la base de datos (Requiere clave de Administrador)"
               >
-                <Trash2 className="w-3.5 h-3.5 text-white" />
-                <span>Eliminar Recepción (Clave Admin)</span>
+                <Trash2 className="w-3.5 h-3.5 shrink-0 text-white" />
+                <span className="min-w-0 text-center">Eliminar recepción</span>
               </button>
             )}
-          </div>
 
-          <div className="flex items-center space-x-2">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="px-3 py-1 bg-[#d4d0c8] hover:bg-gray-300 border border-gray-400 text-black font-semibold shadow-sm"
+              className="h-10 min-w-0 px-1.5 bg-[#d4d0c8] hover:bg-gray-300 border border-gray-400 text-[11px] leading-tight text-black font-semibold shadow-sm"
             >
               Cancelar
             </button>
@@ -766,24 +841,35 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
               type="button"
               onClick={handleSaveDraft}
               disabled={isSubmitting}
-              className="px-3 py-1 bg-white hover:bg-amber-50 border border-gray-400 text-black font-bold flex items-center space-x-1 shadow-sm"
+              className="h-10 min-w-0 px-1.5 bg-white hover:bg-amber-50 border border-gray-400 text-[11px] leading-tight text-black font-bold flex items-center justify-center gap-1.5 shadow-sm"
             >
-              <Save className="w-3.5 h-3.5 text-amber-700" />
-              <span>Guardar Pendiente</span>
+              <Save className="w-3.5 h-3.5 shrink-0 text-amber-700" />
+              <span className="min-w-0 text-center">Guardar pendiente</span>
             </button>
 
             <button
               type="button"
               onClick={handleConfirmFinalize}
               disabled={isSubmitting || carcasses.length === 0 || totalWeightKg <= 0}
-              className="px-4 py-1 bg-[#002046] hover:bg-blue-900 disabled:opacity-50 text-white font-bold flex items-center space-x-1.5 shadow cursor-pointer"
+              className="h-10 min-w-0 px-1.5 bg-[#002046] hover:bg-blue-900 disabled:opacity-50 text-[10px] leading-tight text-white font-bold flex items-center justify-center gap-1.5 shadow cursor-pointer"
             >
-              <CheckCircle2 className="w-3.5 h-3.5 text-green-300" />
-              <span>{isSubmitting ? 'INGRESANDO A CÁMARA...' : 'CONFIRMAR INGRESO EN CÁMARA'}</span>
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-green-300" />
+              <span className="min-w-0 text-center">{isSubmitting ? 'Ingresando a cámara...' : 'Confirmar ingreso en cámara'}</span>
             </button>
-          </div>
         </div>
       </div>
+      </div>
+
+      {showSupplierModal && (
+        <MeatSupplierModal
+          suppliers={meatSuppliers}
+          receptions={meatReceptions}
+          initialName={supplier}
+          onSave={saveMeatSupplier}
+          onUseSupplier={applySupplierProfile}
+          onClose={() => setShowSupplierModal(false)}
+        />
+      )}
 
       {/* MODAL DE CONFIRMACIÓN DE FINALIZACIÓN */}
       {showConfirmFinalize && (
@@ -806,7 +892,7 @@ export const NewReceptionModal: React.FC<NewReceptionModalProps> = ({
                 Proveedor: <strong>{supplier}</strong>
               </li>
               <li>
-                Tropa SENASA: <strong>{tropaNumber || 'Sin tropa'}</strong>
+                Tropas SENASA: <strong>{Array.from(new Set(carcasses.map((carcass) => carcass.tropaNumber?.trim()).filter(Boolean))).join(', ') || 'Sin completar'}</strong>
               </li>
               <li>
                 Cantidad: <strong>{totalQuantity} medias reses</strong>

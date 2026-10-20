@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { MeatReception, CarcassUnit, MeatDeboning, StockTransfer } from '../src/types/pos';
+import { getReceptionReversibleWeight } from '../src/utils/receptionHelper';
 
 export function validateReceptionIntegrity(reception: MeatReception): {
   isValidSum: boolean;
@@ -77,6 +78,22 @@ export function canCancelMeatReception(
 }
 
 describe('15.2 Auditoría de Recepción de Medias Reses y Trazabilidad por Unidad', () => {
+  it('Al revertir una recepción solo descuenta unidades aún disponibles', () => {
+    const carcasses: CarcassUnit[] = [
+      { id: 'MR-001', weightKg: 120, status: 'ANULADO' },
+      { id: 'MR-002', weightKg: 125, status: 'DISPONIBLE' },
+      { id: 'MR-003', weightKg: 130, status: 'DESPOSTADO' },
+      { id: 'MR-004', weightKg: 115, status: 'TRASLADADO' },
+    ];
+
+    expect(getReceptionReversibleWeight(490, carcasses)).toBe(125);
+  });
+
+  it('Mantiene compatibilidad con recepciones antiguas sin detalle de medias reses', () => {
+    expect(getReceptionReversibleWeight(245)).toBe(245);
+    expect(getReceptionReversibleWeight(245, [])).toBe(245);
+  });
+
   it('Recepción con diez medias reses de pesos diferentes: la suma coincide exactamente y cada una tiene ID único', () => {
     const individualWeights = [
       112.500, 118.250, 120.100, 115.800, 122.300,
