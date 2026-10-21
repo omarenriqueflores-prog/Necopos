@@ -294,6 +294,9 @@ export interface ElectronicInvoice {
   creditedAmount?: number; // Total amount already credited against this invoice
   employeeDiscountAmount?: number;
   employeeDiscountPercent?: number;
+  discountAmount?: number;
+  discountPercent?: number;
+  discountLabel?: string;
   operator: string;
   createdAt: string;
 }

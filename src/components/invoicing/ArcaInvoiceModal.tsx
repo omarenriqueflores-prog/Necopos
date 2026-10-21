@@ -42,6 +42,11 @@ interface ArcaInvoiceModalProps {
     }>;
     total: number;
     customer?: Customer | null;
+    employeeDiscountAmount?: number;
+    employeeDiscountPercent?: number;
+    discountAmount?: number;
+    discountPercent?: number;
+    discountLabel?: string;
   } | null;
   existingInvoices: ElectronicInvoice[];
   currentBranch: BranchConfig;
@@ -436,6 +441,9 @@ export const ArcaInvoiceModal: React.FC<ArcaInvoiceModalProps> = ({
         operator: currentUser.fullName,
         employeeDiscountAmount: saleData.employeeDiscountAmount || 0,
         employeeDiscountPercent: saleData.employeeDiscountPercent || 0,
+        discountAmount: saleData.discountAmount || 0,
+        discountPercent: saleData.discountPercent || 0,
+        discountLabel: saleData.discountLabel || 'Descuento',
         createdAt: new Date().toISOString(),
       };
 

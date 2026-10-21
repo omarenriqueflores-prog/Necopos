@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
 import { WindowsModal } from '../components/common/WindowsModal';
-import { AlertCircle, HelpCircle, Lock, ShieldAlert, Eye, EyeOff } from 'lucide-react';
+import { AlertCircle, HelpCircle, Lock, ShieldAlert } from 'lucide-react';
 
 interface DialogContextType {
   showAlert: (message: string, title?: string) => Promise<void>;
@@ -17,7 +17,6 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [message, setMessage] = useState('');
   const [passwordValue, setPasswordValue] = useState('');
   const [passwordError, setPasswordError] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [resolver, setResolver] = useState<{ resolve: (value: any) => void } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,7 +55,6 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setType('ADMIN_AUTH');
     setPasswordValue('');
     setPasswordError('');
-    setShowPassword(false);
     setIsOpen(true);
     return new Promise<boolean>((resolve) => {
       setResolver({ resolve });
@@ -67,7 +65,6 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsOpen(false);
     setPasswordValue('');
     setPasswordError('');
-    setShowPassword(false);
     if (resolver) {
       resolver.resolve(value);
       setResolver(null);
@@ -133,7 +130,7 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 <div className="relative flex items-center">
                   <input
                     ref={inputRef}
-                    type={showPassword ? 'text' : 'password'}
+                    type="password"
                     value={passwordValue}
                     onChange={(e) => {
                       setPasswordValue(e.target.value);
@@ -143,14 +140,6 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     className="w-full h-[32px] px-2.5 pr-8 bg-white border border-[#74777f] focus:border-[#002046] focus:outline-none text-[12px] font-mono shadow-inner"
                     autoComplete="off"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2 text-[#74777f] hover:text-[#002046] p-1"
-                    title={showPassword ? 'Ocultar clave' : 'Mostrar clave'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
                 </div>
                 {passwordError && (
                   <div className="text-[11px] font-bold text-[#ba1a1a] bg-[#ffdad6] border border-[#ba1a1a] px-2 py-1 mt-1 flex items-center gap-1">

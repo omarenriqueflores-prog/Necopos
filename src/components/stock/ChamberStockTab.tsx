@@ -95,17 +95,18 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
     let neco1Units = 0;
     let neco2Units = 0;
     let lastPricePerKg = 4200;
-    let lastCategory = 'Novillito';
+    const availableCategories = new Set<string>();
 
     meatReceptions.forEach((r) => {
       if (r.pricePerKg) lastPricePerKg = r.pricePerKg;
-      if (r.category) lastCategory = r.category;
       if (r.status === 'CONFIRMADO') {
         const carcasses = r.carcasses || [];
         if (carcasses.length > 0) {
           carcasses.forEach((c) => {
             // Solo considerar disponibles
-            if (c.status === 'DISPONIBLE') {
+            if (!c.status || c.status === 'DISPONIBLE') {
+              const category = c.category || r.category;
+              if (category) availableCategories.add(category);
               const targetBranch = c.branchId || r.branchId;
               if (targetBranch === 'NECO 2') {
                 neco2Kg += Number(c.weightKg) || 0;
@@ -117,6 +118,7 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
             }
           });
         } else {
+          if (r.category) availableCategories.add(r.category);
           if (r.branchId === 'NECO 2') {
             neco2Kg += Number(r.totalWeightKg) || 0;
             neco2Units += Number(r.totalQuantity) || 0;
@@ -136,7 +138,12 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
       neco2Units,
       totalUnits: neco1Units + neco2Units,
       lastPricePerKg,
-      lastCategory,
+      lastCategory:
+        availableCategories.size === 1
+          ? Array.from(availableCategories)[0]
+          : availableCategories.size > 1
+          ? 'Varias categorías'
+          : 'Novillito',
     };
   }, [meatReceptions]);
 
@@ -215,7 +222,13 @@ export const ChamberStockTab: React.FC<ChamberStockTabProps> = ({
       }
     });
 
-    return [...extraMeat, ...baseMeat];
+    const resolvedBaseMeat = baseMeat.map((product) =>
+      product.code === 'MEDIA_RES'
+        ? { ...product, category: availableCarcassesSummary.lastCategory }
+        : product
+    );
+
+    return [...extraMeat, ...resolvedBaseMeat];
   }, [products, branchStock, meatReceptions, stockMap, availableCarcassesSummary]);
 
   const storeProductsCount = useMemo(() => {

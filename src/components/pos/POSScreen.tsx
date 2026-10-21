@@ -107,6 +107,10 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [selectedParty, setSelectedParty] = useState<SelectedPartyData | null>(null);
   const [employeeDiscountPercent, setEmployeeDiscountPercent] = useState<number>(0);
+  const [manualDiscountPercent, setManualDiscountPercent] = useState<number>(0);
+  const [discountInput, setDiscountInput] = useState<string>('');
+  const [isDiscountModalOpen, setIsDiscountModalOpen] = useState(false);
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>('EFECTIVO');
   const [paidWith, setPaidWith] = useState<string>('');
   const [combinedMethod1, setCombinedMethod1] = useState<PaymentMethod>('EFECTIVO');
@@ -114,7 +118,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   const [combinedMethod2, setCombinedMethod2] = useState<PaymentMethod>('TARJETA');
   const [combinedAmount2, setCombinedAmount2] = useState<string>('');
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState<boolean>(false);
-  const [ticketInvoiceType, setTicketInvoiceType] = useState<'RECIBO_COMUN' | 'FACTURA_B' | 'FACTURA_A'>('RECIBO_COMUN');
+  const [ticketInvoiceType, setTicketInvoiceType] = useState<'RECIBO_COMUN' | 'FACTURA_B' | 'FACTURA_A'>('FACTURA_B');
   const [isTicketModalOpen, setIsTicketModalOpen] = useState<boolean>(false);
   const [isArcaModalOpen, setIsArcaModalOpen] = useState<boolean>(false);
   const [selectedInvoiceForPrint, setSelectedInvoiceForPrint] = useState<ElectronicInvoice | null>(null);
@@ -131,6 +135,10 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const amountInputRef = useRef<HTMLInputElement>(null);
+  const paidWithInputRef = useRef<HTMLInputElement>(null);
+  const combinedAmount1Ref = useRef<HTMLInputElement>(null);
+  const editQuantityInputRef = useRef<HTMLInputElement>(null);
+  const editPriceInputRef = useRef<HTMLInputElement>(null);
 
   const formatQuantity = useCallback((val: number, unitType: string = 'Kg') => {
     return unitType === 'Kg'
@@ -280,7 +288,31 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       ? Math.round(rawSubtotal * (employeeDiscountPercent / 100))
       : 0;
 
-  const totalAmount = Math.max(0, rawSubtotal - employeeDiscountAmount);
+  const manualDiscountAmount =
+    manualDiscountPercent > 0
+      ? Math.round((rawSubtotal - employeeDiscountAmount) * (manualDiscountPercent / 100))
+      : 0;
+  const totalDiscountAmount = employeeDiscountAmount + manualDiscountAmount;
+  const totalDiscountPercent = rawSubtotal > 0
+    ? Number(((totalDiscountAmount / rawSubtotal) * 100).toFixed(2))
+    : 0;
+  const totalAmount = Math.max(0, rawSubtotal - totalDiscountAmount);
+  const saleItemsForCheckout = useMemo(() => {
+    const discountFactor = rawSubtotal > 0 ? totalAmount / rawSubtotal : 1;
+    let amountRemaining = totalAmount;
+    return saleItems.map((item, index) => {
+      const subtotal = Number(Math.min(
+        amountRemaining,
+        index === saleItems.length - 1 ? amountRemaining : item.subtotal * discountFactor
+      ).toFixed(2));
+      amountRemaining = Number((amountRemaining - subtotal).toFixed(2));
+      return {
+        ...item,
+        discountPercent: totalDiscountPercent,
+        subtotal,
+      };
+    });
+  }, [saleItems, rawSubtotal, totalAmount, totalDiscountPercent]);
   const netAmount = Math.round(totalAmount / 1.21);
   const vatAmount = totalAmount - netAmount;
 
@@ -318,12 +350,38 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     setSelectedCustomer(null);
     setSelectedParty(null);
     setEmployeeDiscountPercent(0);
+    setManualDiscountPercent(0);
     setSelectedPayment('EFECTIVO');
+    setTicketInvoiceType('RECIBO_COMUN');
     setPaidWith('');
     setCombinedAmount1('');
     setCombinedAmount2('');
     setSelectedItemIndex(-1);
     setBarcodeInput('');
+  };
+
+  const openEditLine = (field: 'quantity' | 'price') => {
+    const item = saleItems[selectedItemIndex] || saleItems[0];
+    if (!item) return;
+
+    setSelectedItemIndex(saleItems.indexOf(item));
+    setEditQtyOrWeight(String(item.unitType === 'Kg' ? item.weight : item.quantity));
+    setEditPrice(String(item.unitPrice));
+    setIsEditModalOpen(true);
+    window.setTimeout(() => {
+      const input = field === 'quantity' ? editQuantityInputRef.current : editPriceInputRef.current;
+      input?.focus();
+      input?.select();
+    }, 50);
+  };
+
+  const handleClearSale = async () => {
+    const confirmed = await showConfirm('¿Desea limpiar toda la venta actual?');
+    if (confirmed) {
+      resetSaleToBlank();
+      showNotification('Venta limpiada. Todo en 0.');
+      barcodeInputRef.current?.focus();
+    }
   };
 
   const handleDeleteItem = (index: number) => {
@@ -415,7 +473,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // If modal is open, don't trigger global POS shortcuts
-      if (isCustomerModalOpen || isTicketModalOpen || isEditModalOpen || isAddAmountModalOpen) return;
+      if (isCustomerModalOpen || isTicketModalOpen || isEditModalOpen || isAddAmountModalOpen || isCheckoutModalOpen || isDiscountModalOpen) return;
 
       // Search dropdown keyboard navigation
       if (document.activeElement === barcodeInputRef.current && matchingProducts.length > 0) {
@@ -437,47 +495,61 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
       if (e.key === 'F1') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         resetSaleToBlank();
         showNotification('Nueva Venta iniciada. Ticket en blanco.');
         barcodeInputRef.current?.focus();
       } else if (e.key === 'F3') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setIsCustomerModalOpen(true);
       } else if (e.key === 'F4') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         barcodeInputRef.current?.focus();
         barcodeInputRef.current?.select();
         setIsSearchFocused(true);
+      } else if (e.key === 'F5') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (saleItems.length > 0) {
+          setDiscountInput(manualDiscountPercent ? String(manualDiscountPercent) : '');
+          setIsDiscountModalOpen(true);
+        }
       } else if (e.key === 'F6') {
         e.preventDefault();
-        if (saleItems[selectedItemIndex]) {
-          const item = saleItems[selectedItemIndex];
-          setEditQtyOrWeight(String(item.unitType === 'Kg' ? item.weight : item.quantity));
-          setEditPrice(String(item.unitPrice));
-          setIsEditModalOpen(true);
-        }
+        e.stopImmediatePropagation();
+        openEditLine('quantity');
+      } else if (e.key === 'F7') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        openEditLine('price');
       } else if (e.key === 'F8') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setSelectedPayment('EFECTIVO');
       } else if (e.key === 'F9') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setSelectedPayment('TARJETA');
       } else if (e.key === 'F10') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setSelectedPayment('QR');
       } else if (e.key === 'F11') {
         e.preventDefault();
-        setSelectedPayment('CUENTA_CORRIENTE');
-        setIsCustomerModalOpen(true);
+        e.stopImmediatePropagation();
+        if (saleItems.length > 0) void handleClearSale();
       } else if (e.key === 'F12') {
         e.preventDefault();
-        if (e.ctrlKey) {
-          handleFacturar('RECIBO_COMUN');
-        } else {
-          handleFacturar(
-            selectedCustomer?.vatCondition === 'Resp. Inscripto' ? 'FACTURA_A' : 'FACTURA_B'
-          );
-        }
+        e.stopImmediatePropagation();
+        if (saleItems.length === 0) return;
+        setTicketInvoiceType(
+          e.ctrlKey
+            ? 'RECIBO_COMUN'
+            : 'FACTURA_B'
+        );
+        setIsCheckoutModalOpen(true);
       } else if (e.key === 'Delete') {
         if (selectedItemIndex >= 0 && selectedItemIndex < saleItems.length) {
           e.preventDefault();
@@ -496,21 +568,26 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [
     isCustomerModalOpen,
     isTicketModalOpen,
+    isCheckoutModalOpen,
+    isDiscountModalOpen,
     isEditModalOpen,
     isArcaModalOpen,
     saleItems,
     selectedItemIndex,
+    manualDiscountPercent,
     totalAmount,
     selectedPayment,
     paidWith,
     combinedAmount1,
     combinedAmount2,
     selectedCustomer,
+    openEditLine,
+    handleClearSale,
   ]);
 
   const handleSelectParty = (party: SelectedPartyData) => {
@@ -609,8 +686,13 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       }
     }
 
+    if (type === 'FACTURA_A' && selectedParty?.type === 'EMPLEADO') {
+      await showAlert('La Factura A debe emitirse a nombre de un cliente con CUIT. Seleccione un cliente y complete sus datos en ARCA.');
+      return;
+    }
 
     setTicketInvoiceType(type);
+    setIsCheckoutModalOpen(false);
 
     if (type === 'FACTURA_A' || type === 'FACTURA_B') {
       setIsArcaModalOpen(true);
@@ -619,6 +701,86 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     }
   };
 
+  const handleApplyDiscount = () => {
+    const discount = Number(discountInput.replace(',', '.'));
+    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+      void showAlert('Ingrese un porcentaje de descuento entre 0 y 100.');
+      return;
+    }
+    setManualDiscountPercent(discount);
+    setIsDiscountModalOpen(false);
+  };
+
+  useEffect(() => {
+    if (!isCheckoutModalOpen || isCustomerModalOpen || isTicketModalOpen || isArcaModalOpen) return;
+
+    const handleCheckoutShortcuts = (event: KeyboardEvent) => {
+      const paymentMethods: Record<string, PaymentMethod> = {
+        F5: 'TRANSFERENCIA',
+        F6: 'PAGO_COMBINADO',
+        F8: 'EFECTIVO',
+        F9: 'TARJETA',
+        F10: 'QR',
+        F11: 'CUENTA_CORRIENTE',
+      };
+      const paymentMethod = paymentMethods[event.key];
+
+      if (paymentMethod) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setSelectedPayment(paymentMethod);
+        if (paymentMethod === 'PAGO_COMBINADO') {
+          setCombinedAmount1('');
+          setCombinedAmount2('');
+          window.setTimeout(() => combinedAmount1Ref.current?.focus(), 0);
+        } else if (paymentMethod === 'EFECTIVO') {
+          window.setTimeout(() => {
+            paidWithInputRef.current?.focus();
+            paidWithInputRef.current?.select();
+          }, 0);
+        } else if (paymentMethod === 'CUENTA_CORRIENTE') {
+          setIsCustomerModalOpen(true);
+        }
+        return;
+      }
+
+      if (event.key === 'F12') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void handleFacturar(ticketInvoiceType);
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void (async () => {
+          const confirmed = await showConfirm('¿Anular y cancelar la venta en curso?');
+          if (confirmed) {
+            resetSaleToBlank();
+            showNotification('Venta cancelada. Todo restablecido en 0.');
+            barcodeInputRef.current?.focus();
+          }
+        })();
+      }
+    };
+
+    window.addEventListener('keydown', handleCheckoutShortcuts, true);
+    return () => window.removeEventListener('keydown', handleCheckoutShortcuts, true);
+  }, [
+    isCheckoutModalOpen,
+    isCustomerModalOpen,
+    isTicketModalOpen,
+    isArcaModalOpen,
+    ticketInvoiceType,
+    handleFacturar,
+    combinedAmount1Ref,
+    paidWithInputRef,
+    showConfirm,
+    resetSaleToBlank,
+    showNotification,
+  ]);
+
   const handleConfirmTicket = async () => {
     const v1 = parseFloat(combinedAmount1.replace(/\./g, '').replace(',', '.')) || 0;
     const v2 = parseFloat(combinedAmount2.replace(/\./g, '').replace(',', '.')) || 0;
@@ -626,24 +788,36 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
     const nextTicket = getNextTicketNumber();
     const isEmp = selectedParty?.type === 'EMPLEADO';
-    const partyName = isEmp
-      ? `${selectedParty.name} (EMPLEADO Leg. ${selectedParty.legajo || selectedParty.code})`
-      : selectedCustomer
-      ? selectedCustomer.name
+    const partyName = selectedPayment === 'CUENTA_CORRIENTE'
+      ? isEmp
+        ? `${selectedParty.name} (EMPLEADO Leg. ${selectedParty.legajo || selectedParty.code})`
+        : selectedCustomer?.name || 'Consumidor Final'
       : 'Consumidor Final';
+    const accountCustomer =
+      selectedPayment === 'CUENTA_CORRIENTE'
+        ? selectedParty?.customer || selectedCustomer
+        : null;
+    const accountEmployee =
+      selectedPayment === 'CUENTA_CORRIENTE' ? selectedParty?.employee || null : null;
 
     const saleData = {
       id: `SALE-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
-      items: [...saleItems],
+      items: [...saleItemsForCheckout],
       subtotal: rawSubtotal,
-      employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,
+      employeeDiscountPercent: selectedParty?.type === 'EMPLEADO'
+        ? employeeDiscountPercent
+        : 0,
       employeeDiscountAmount: isEmp ? employeeDiscountAmount : 0,
+      manualDiscountPercent,
+      manualDiscountAmount,
+      discountPercent: totalDiscountPercent,
+      discountAmount: totalDiscountAmount,
       total: totalAmount,
       paymentMethod: selectedPayment,
       customerName: partyName,
-      partyType: isEmp ? 'EMPLEADO' : 'CLIENTE',
-      employee: isEmp ? selectedParty.employee : undefined,
-      customer: selectedParty?.customer || selectedCustomer,
+      partyType: accountEmployee ? 'EMPLEADO' : 'CLIENTE',
+      employee: accountEmployee || undefined,
+      customer: accountCustomer,
       invoiceType: resolvedInvoiceType,
       cashGiven: selectedPayment === 'PAGO_COMBINADO' ? v1 + v2 : paidNum,
       change: selectedPayment === 'PAGO_COMBINADO' ? Math.max(0, (v1 + v2) - totalAmount) : changeAmount,
@@ -666,13 +840,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     }
 
     onSaleComplete?.({
-      items: [...saleItems],
+      items: [...saleItemsForCheckout],
       total: totalAmount,
       paymentMethod: selectedPayment,
-      customer: selectedParty?.customer || selectedCustomer,
-      employee: selectedParty?.employee || null,
-      partyType: isEmp ? 'EMPLEADO' : 'CLIENTE',
-      employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,
+      customer: accountCustomer,
+      employee: accountEmployee,
+      partyType: accountEmployee ? 'EMPLEADO' : 'CLIENTE',
+      employeeDiscountPercent: selectedParty?.type === 'EMPLEADO'
+        ? employeeDiscountPercent
+        : 0,
       employeeDiscountAmount: isEmp ? employeeDiscountAmount : 0,
       invoiceType: resolvedInvoiceType,
       cashGiven: selectedPayment === 'PAGO_COMBINADO' ? v1 + v2 : paidNum,
@@ -684,20 +860,31 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     // Auto-print ticket
     try {
       const ticketData = {
-        items: [...saleItems],
+        items: [...saleItemsForCheckout],
         total: totalAmount,
         subtotal: rawSubtotal,
         paymentMethod: selectedPayment,
         customerName: partyName,
-        customerDni: selectedParty?.dni || selectedCustomer?.dniCuit || '--',
-        customerVatCondition: selectedParty?.customer?.vatCondition || selectedCustomer?.vatCondition || 'Consumidor Final',
+        customerDni: selectedPayment === 'CUENTA_CORRIENTE'
+          ? selectedParty?.dni || selectedCustomer?.dniCuit || '--'
+          : '--',
+        customerVatCondition: selectedPayment === 'CUENTA_CORRIENTE'
+          ? selectedParty?.customer?.vatCondition || selectedCustomer?.vatCondition || 'Consumidor Final'
+          : 'Consumidor Final',
         invoiceType: resolvedInvoiceType,
         ticketNumber: nextTicket,
         cashGiven: selectedPayment === 'PAGO_COMBINADO' ? v1 + v2 : paidNum,
         change: selectedPayment === 'PAGO_COMBINADO' ? Math.max(0, (v1 + v2) - totalAmount) : changeAmount,
         operatorName: currentUser.fullName,
         employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,
-        employeeDiscountAmount: isEmp ? employeeDiscountAmount : 0,
+        employeeDiscountAmount: employeeDiscountAmount,
+        discountPercent: totalDiscountPercent,
+        discountAmount: totalDiscountAmount,
+        discountLabel: isEmp && manualDiscountPercent > 0
+          ? 'Descuento empleado y adicional'
+          : isEmp
+          ? 'Descuento empleado'
+          : 'Descuento',
         combinedPayments: selectedPayment === 'PAGO_COMBINADO' ? [
           { method: combinedMethod1, amount: v1 },
           { method: combinedMethod2, amount: v2 },
@@ -714,6 +901,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
     setSelectedCustomer(null);
     setSelectedParty(null);
     setEmployeeDiscountPercent(0);
+    setManualDiscountPercent(0);
     setPaidWith('');
     setCombinedAmount1('');
     setCombinedAmount2('');
@@ -755,8 +943,15 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                        inv.cbteTipo === 8 ? 'NOTA_CREDITO_B' : 
                        inv.cbteTipo === 11 ? 'FACTURA_C' : 'FACTURA_B',
           operatorName: currentUser.fullName,
-          employeeDiscountAmount: selectedParty?.type === 'EMPLEADO' ? employeeDiscountAmount : 0,
-          employeeDiscountPercent: selectedParty?.type === 'EMPLEADO' ? employeeDiscountPercent : 0,
+          employeeDiscountAmount: employeeDiscountAmount,
+          employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,
+          discountAmount: totalDiscountAmount,
+          discountPercent: totalDiscountPercent,
+          discountLabel: selectedParty?.type === 'EMPLEADO' && manualDiscountPercent > 0
+            ? 'Descuento empleado y adicional'
+            : selectedParty?.type === 'EMPLEADO'
+            ? 'Descuento empleado'
+            : 'Descuento',
           cae: inv.cae,
           caeVto: inv.caeVto,
           qrUrl: inv.qrUrl
@@ -782,10 +977,14 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       });
 
       await addSaleRecord({
-        items: [...saleItems],
+        items: [...saleItemsForCheckout],
         subtotal: rawSubtotal,
         employeeDiscountPercent: isEmp ? employeeDiscountPercent : 0,
         employeeDiscountAmount: isEmp ? employeeDiscountAmount : 0,
+        manualDiscountPercent,
+        manualDiscountAmount,
+        discountPercent: totalDiscountPercent,
+        discountAmount: totalDiscountAmount,
         total: totalAmount,
         paymentMethod: selectedPayment,
         customerName: inv.customer.name,
@@ -810,7 +1009,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       });
 
       onSaleComplete?.({
-        items: [...saleItems],
+        items: [...saleItemsForCheckout],
         total: totalAmount,
         paymentMethod: selectedPayment,
         customer: selectedParty?.customer || selectedCustomer,
@@ -830,6 +1029,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       setSelectedCustomer(null);
       setSelectedParty(null);
       setEmployeeDiscountPercent(0);
+      setManualDiscountPercent(0);
       setPaidWith('');
       setCombinedAmount1('');
       setCombinedAmount2('');
@@ -1273,7 +1473,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                             isSelected ? 'text-[#d4e3ff]' : 'text-[#74777f]'
                           }`}
                         >
-                          {item.discountPercent > 0 ? `${item.discountPercent}%` : '0,00'}
+                          {totalDiscountPercent > 0 ? `${totalDiscountPercent}%` : '0,00'}
                         </td>
                         <td
                           className={`text-right font-mono font-bold text-[12px] px-2 border-r border-[#c4c6cf] ${
@@ -1326,14 +1526,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
             <div className="flex items-center gap-1">
               <button
                 disabled={saleItems.length === 0}
-                onClick={() => {
-                  if (saleItems[selectedItemIndex]) {
-                    const item = saleItems[selectedItemIndex];
-                    setEditQtyOrWeight(String(item.unitType === 'Kg' ? item.weight : item.quantity));
-                    setEditPrice(String(item.unitPrice));
-                    setIsEditModalOpen(true);
-                  }
-                }}
+                onClick={() => openEditLine('quantity')}
                 className="h-[24px] px-2 bg-[#ebeef2] hover:bg-white border border-[#74777f] text-[#002046] flex items-center gap-1 cursor-pointer disabled:opacity-40"
               >
                 <span className="bg-[#1b365d] text-white px-1 font-mono text-[9px] font-bold">F6</span>
@@ -1341,14 +1534,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
               </button>
               <button
                 disabled={saleItems.length === 0}
-                onClick={() => {
-                  if (saleItems[selectedItemIndex]) {
-                    const item = saleItems[selectedItemIndex];
-                    setEditQtyOrWeight(String(item.unitType === 'Kg' ? item.weight : item.quantity));
-                    setEditPrice(String(item.unitPrice));
-                    setIsEditModalOpen(true);
-                  }
-                }}
+                onClick={() => openEditLine('price')}
                 className="h-[24px] px-2 bg-[#ebeef2] hover:bg-white border border-[#74777f] text-[#002046] flex items-center gap-1 cursor-pointer disabled:opacity-40"
               >
                 <span className="bg-[#1b365d] text-white px-1 font-mono text-[9px] font-bold">F7</span>
@@ -1364,14 +1550,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
               </button>
               <button
                 disabled={saleItems.length === 0}
-                onClick={async () => {
-                  const confirmed = await showConfirm('¿Desea limpiar toda la venta actual?');
-                  if (confirmed) {
-                    resetSaleToBlank();
-                    showNotification('Venta limpiada. Todo en 0.');
-                    barcodeInputRef.current?.focus();
-                  }
-                }}
+                onClick={() => void handleClearSale()}
                 className="h-[24px] px-2 bg-[#ebeef2] hover:bg-[#ffdad6] border border-[#74777f] text-[#aa3531] flex items-center gap-1 cursor-pointer disabled:opacity-40"
               >
                 <span className="bg-[#aa3531] text-white px-1 font-mono text-[9px] font-bold">F11</span>
@@ -1412,16 +1591,16 @@ export const POSScreen: React.FC<POSScreenProps> = ({
 
             {/* BIG PROMINENT POS TOTAL DISPLAY */}
             <div className="bg-[#002046] text-white p-2 flex flex-col justify-center items-end mt-1 border border-[#001b3d]">
-              {employeeDiscountPercent > 0 && selectedParty?.type === 'EMPLEADO' ? (
+              {totalDiscountAmount > 0 ? (
                 <div className="w-full flex items-center justify-between text-[11px] font-mono text-[#d4e3ff] pb-1 mb-1 border-b border-white/20">
                   <span>SUBTOTAL: {formatCurrency(rawSubtotal)}</span>
                   <span className="bg-[#00522c] text-[#74dc9e] font-bold px-1 py-0.2 text-[10px]">
-                    DESC. EMPLEADO {employeeDiscountPercent}% (-{formatCurrency(employeeDiscountAmount)})
+                    DESCUENTO {totalDiscountPercent}% (-{formatCurrency(totalDiscountAmount)})
                   </span>
                 </div>
               ) : null}
               <span className="text-[11px] font-mono text-[#d4e3ff] font-bold self-start uppercase">
-                {employeeDiscountPercent > 0 && selectedParty?.type === 'EMPLEADO'
+                {totalDiscountAmount > 0
                   ? 'TOTAL CON DESCUENTO A PAGAR:'
                   : 'TOTAL A PAGAR:'}
               </span>
@@ -1429,8 +1608,49 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                 {formatCurrency(totalAmount)}
               </div>
             </div>
+            {manualDiscountPercent > 0 && (
+              <div className="flex justify-between text-[11px] font-bold text-[#aa3531]">
+                <span>DESCUENTO ADICIONAL ({manualDiscountPercent}%)</span>
+                <span>-{formatCurrency(manualDiscountAmount)}</span>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-1 mt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setDiscountInput(manualDiscountPercent ? String(manualDiscountPercent) : '');
+                  setIsDiscountModalOpen(true);
+                }}
+                disabled={saleItems.length === 0}
+                className="h-[32px] border border-[#74777f] bg-[#ebeef2] hover:bg-[#e0e3e7] text-[#002046] text-[11px] font-bold disabled:opacity-40"
+              >
+                <Percent className="inline w-3.5 h-3.5 mr-1" />
+                {manualDiscountPercent ? `Descuento ${manualDiscountPercent}%` : 'Aplicar descuento'} [F5]
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (saleItems.length === 0) return;
+                  setTicketInvoiceType('FACTURA_B');
+                  setIsCheckoutModalOpen(true);
+                }}
+                disabled={saleItems.length === 0}
+                className="h-[32px] bg-[#00522c] hover:bg-[#003822] text-white text-[12px] font-bold flex items-center justify-center gap-1 disabled:opacity-40"
+              >
+                <Banknote className="w-4 h-4" />
+                COBRAR [F12]
+              </button>
+            </div>
           </div>
 
+          {isCheckoutModalOpen && (
+            <div className="fixed inset-0 z-[80] bg-black/60 flex items-center justify-center p-3">
+              <div className="win-panel bg-[#d4d0c8] max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl border-2 border-white">
+                <div className="win-titlebar p-2 bg-[#002046] text-white flex items-center justify-between">
+                  <span className="font-bold text-xs">COBRANZA — MEDIO DE PAGO Y COMPROBANTE</span>
+                  <button type="button" onClick={() => setIsCheckoutModalOpen(false)} className="bg-[#c0c0c0] text-black px-2">X</button>
+                </div>
+                <div className="p-2 overflow-y-auto flex flex-col gap-2">
           {/* PAYMENT METHOD SELECTORS WITH HOTKEYS */}
           <div className="bg-white p-2 border border-[#c4c6cf] shadow-sm flex flex-col gap-1">
             <div className="text-[10px] font-bold uppercase text-[#44474e] flex items-center justify-between">
@@ -1523,7 +1743,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     : 'bg-[#ebeef2] text-[#181c1f] border-[#c4c6cf] hover:bg-[#e0e3e7]'
                 }`}
               >
-                <span>TRANSFER.</span>
+                <span className="flex items-center gap-1"><kbd className="px-1 text-[8px] bg-[#1b365d] text-white">F5</kbd> TRANSFER.</span>
                 <ArrowLeftRight className="w-3.5 h-3.5 mt-0.5" />
               </button>
 
@@ -1541,7 +1761,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     : 'bg-[#ebeef2] text-[#181c1f] border-[#c4c6cf] hover:bg-[#e0e3e7]'
                 }`}
               >
-                <span>COMBINADO</span>
+                <span className="flex items-center gap-1"><kbd className="px-1 text-[8px] bg-[#1b365d] text-white">F6</kbd> COMBINADO</span>
                 <Split className="w-3.5 h-3.5 mt-0.5" />
               </button>
 
@@ -1592,6 +1812,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                     )}
                   </div>
                   <input
+                    ref={paidWithInputRef}
                     type="text"
                     value={paidWith}
                     onChange={(e) => setPaidWith(e.target.value)}
@@ -1748,6 +1969,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                         </button>
                       )}
                       <input
+                        ref={combinedAmount1Ref}
                         type="text"
                         value={combinedAmount1}
                         onChange={(e) => setCombinedAmount1(e.target.value)}
@@ -1893,52 +2115,33 @@ export const POSScreen: React.FC<POSScreenProps> = ({
           </div>
 
           {/* FINAL EMISSION ACTIONS */}
-          <div className="bg-white p-2 border border-[#c4c6cf] shadow-sm flex flex-col gap-1 mt-auto">
-            {/* PRIMARY: FACTURAR FISCAL ARCA */}
+          <div className="bg-white p-2 border border-[#c4c6cf] shadow-sm flex flex-col gap-2 mt-auto">
+            <label className="text-[11px] font-bold text-[#002046]">
+              TIPO DE COMPROBANTE
+              <select
+                value={ticketInvoiceType}
+                onChange={(event) => setTicketInvoiceType(event.target.value as 'RECIBO_COMUN' | 'FACTURA_B' | 'FACTURA_A')}
+                className="mt-1 h-[32px] w-full border border-[#74777f] bg-white px-2 text-[12px]"
+              >
+                <option value="RECIBO_COMUN">Ticket común — Consumidor Final</option>
+                <option value="FACTURA_B">Factura B — Consumidor Final</option>
+                <option value="FACTURA_A">Factura A — Cliente con CUIT</option>
+              </select>
+            </label>
+            {ticketInvoiceType === 'FACTURA_A' && (
+              <div className="text-[10px] text-[#44474e]">
+                Se solicitarán o podrán elegirse los datos fiscales del cliente antes de emitir.
+              </div>
+            )}
             <button
               type="button"
-              onClick={() =>
-                handleFacturar(
-                  selectedCustomer?.vatCondition === 'Resp. Inscripto' ? 'FACTURA_A' : 'FACTURA_B'
-                )
-              }
-              className={`w-full h-[42px] text-white flex items-center justify-between px-3 text-[12px] font-bold cursor-pointer transition-all shadow-sm ${
-                !isPaymentCovered && totalAmount > 0
-                  ? 'bg-[#ba504d] hover:bg-[#aa3531] opacity-90'
-                  : 'bg-[#aa3531] hover:bg-[#891c1d]'
-              }`}
+              onClick={() => handleFacturar(ticketInvoiceType)}
+              className="w-full h-[38px] bg-[#aa3531] hover:bg-[#891c1d] text-white font-bold flex items-center justify-center gap-2"
             >
-              <div className="flex items-center gap-2">
-                <span className="bg-white text-[#aa3531] px-1.5 py-0.5 font-mono text-[11px] font-black">
-                  F12
-                </span>
-                <div className="flex flex-col text-left leading-tight">
-                  <span className="tracking-wide">FACTURAR TICKET FISCAL (ARCA)</span>
-                  <span className="text-[10px] font-normal text-[#ffdad6] truncate max-w-[200px]" title={`Impresión ${currentBranch.ticketPrinter || currentBranch.printerModel || 'Térmica 80mm'} & CAE`}>
-                    Impresión {currentBranch.ticketPrinter || currentBranch.printerModel || 'Térmica 80mm'} & CAE
-                  </span>
-                </div>
-              </div>
-              <Receipt className="w-5 h-5" />
-            </button>
-
-            {/* RECIBO COMÚN / TICKET INTERNO */}
-            <button
-              type="button"
-              onClick={() => handleFacturar('RECIBO_COMUN')}
-              className={`w-full h-[28px] text-[#181c1f] border border-[#74777f] flex items-center justify-between px-2 text-[11px] font-semibold cursor-pointer transition-colors ${
-                !isPaymentCovered && totalAmount > 0
-                  ? 'bg-[#f1f4f8] hover:bg-[#e0e3e7] text-[#74777f]'
-                  : 'bg-[#ebeef2] hover:bg-[#e0e3e7]'
-              }`}
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="bg-[#1b365d] text-white px-1 font-mono text-[9px] font-bold">
-                  Ctrl+F12
-                </span>
-                <span>RECIBO COMÚN / COMANDA INTERNA</span>
-              </div>
-              <Printer className="w-3.5 h-3.5 text-[#44474e]" />
+              <Receipt className="w-4 h-4" />
+              {ticketInvoiceType === 'RECIBO_COMUN'
+                ? 'Confirmar cobro e imprimir ticket [F12]'
+                : `Continuar con ${ticketInvoiceType === 'FACTURA_A' ? 'Factura A' : 'Factura B'} en ARCA [F12]`}
             </button>
 
             {/* CANCELAR VENTA */}
@@ -1958,8 +2161,76 @@ export const POSScreen: React.FC<POSScreenProps> = ({
               <span>CANCELAR / ANULAR VENTA ACTUAL</span>
             </button>
           </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      <WindowsModal
+        isOpen={isDiscountModalOpen}
+        onClose={() => setIsDiscountModalOpen(false)}
+        title="APLICAR DESCUENTO A LA VENTA"
+        icon={<Percent className="w-4 h-4 text-[#aec7f7]" />}
+        maxWidth="max-w-sm"
+      >
+        <div className="flex flex-col gap-3 p-2 text-[12px]">
+          <label className="font-bold text-[#002046]">
+            Porcentaje de descuento (0 a 100):
+            <div className="flex items-center gap-2 mt-1">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={discountInput}
+                onChange={(event) => setDiscountInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleApplyDiscount();
+                  }
+                }}
+                className="h-[34px] w-full border border-[#74777f] px-2 text-right font-mono text-[16px]"
+                autoFocus
+              />
+              <span className="font-bold">%</span>
+            </div>
+          </label>
+          <div className="flex justify-between border-t border-[#c4c6cf] pt-2">
+            <span>Descuento calculado:</span>
+            <strong className="text-[#aa3531]">
+              {formatCurrency(
+                Math.round(
+                  (rawSubtotal - employeeDiscountAmount) *
+                    ((Number(discountInput.replace(',', '.')) || 0) / 100)
+                )
+              )}
+            </strong>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-[#c4c6cf] pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setManualDiscountPercent(0);
+                setDiscountInput('');
+                setIsDiscountModalOpen(false);
+              }}
+              className="h-[28px] px-3 border border-[#74777f] bg-[#ebeef2]"
+            >
+              Quitar descuento
+            </button>
+            <button
+              type="button"
+              onClick={handleApplyDiscount}
+              className="h-[28px] px-4 bg-[#002046] text-white font-bold"
+            >
+              Aplicar [Enter]
+            </button>
+          </div>
+        </div>
+      </WindowsModal>
 
       {/* MODAL 1: Real-time customer/employee search for Cuenta Corriente */}
       <CustomerSelectModal
@@ -2132,7 +2403,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
       <WindowsModal
         isOpen={isEditModalOpen}
         onClose={() => setIsEditModalOpen(false)}
-        title="MODIFICAR LÍNEA DE VENTA SELECCIONADA - [F6]"
+        title="MODIFICAR LÍNEA: CANTIDAD [F6] / PRECIO [F7]"
         maxWidth="max-w-md"
       >
         {saleItems[selectedItemIndex] && (() => {
@@ -2177,6 +2448,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                   </span>
                 </label>
                 <input
+                  ref={editQuantityInputRef}
                   type="number"
                   step={current.unitType === 'Kg' ? '0.005' : '1'}
                   value={editQtyOrWeight}
@@ -2194,6 +2466,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                   )}
                 </label>
                 <input
+                  ref={editPriceInputRef}
                   type="number"
                   disabled={!(currentUser?.role === 'SUPERADMIN' || currentUser?.role === 'ADMIN' || currentUser?.permissions?.canModifyPrices !== false)}
                   value={editPrice}
@@ -2255,7 +2528,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
           <div className="bg-white border border-[#74777f] shadow-inner overflow-hidden flex flex-col h-[520px]">
             <iframe
               srcDoc={generateTicketHtml({
-                items: saleItems.map(item => ({
+                items: saleItemsForCheckout.map(item => ({
                   code: item.code || '---',
                   description: item.description,
                   quantity: item.unitType === 'Kg' ? (item.weight || 0) : (item.quantity || 0),
@@ -2269,15 +2542,32 @@ export const POSScreen: React.FC<POSScreenProps> = ({
                 paymentMethod: selectedPayment as any,
                 ticketNumber: currentNextTicketNumber,
                 customerName: selectedParty?.type === 'EMPLEADO' 
-                  ? `${selectedParty.name} (EMPLEADO Leg. ${selectedParty.legajo || selectedParty.code})` 
-                  : (selectedCustomer ? selectedCustomer.name : 'CONSUMIDOR FINAL'),
-                customerDni: selectedCustomer ? (selectedCustomer.dniCuit || '--') : '--',
-                customerVatCondition: selectedCustomer?.vatCondition || 'Consumidor Final',
+                  ? selectedPayment === 'CUENTA_CORRIENTE'
+                    ? `${selectedParty.name} (EMPLEADO Leg. ${selectedParty.legajo || selectedParty.code})`
+                    : 'CONSUMIDOR FINAL'
+                  : selectedPayment === 'CUENTA_CORRIENTE'
+                    ? (selectedCustomer?.name || 'CONSUMIDOR FINAL')
+                    : 'CONSUMIDOR FINAL',
+                customerDni: selectedPayment === 'CUENTA_CORRIENTE'
+                  ? selectedCustomer?.dniCuit || '--'
+                  : '--',
+                customerVatCondition: selectedPayment === 'CUENTA_CORRIENTE'
+                  ? selectedCustomer?.vatCondition || 'Consumidor Final'
+                  : 'Consumidor Final',
                 invoiceType: ticketInvoiceType as any,
                 operatorName: currentUser.fullName,
                 createdAt: new Date().toISOString(),
-                employeeDiscountPercent: selectedParty?.type === 'EMPLEADO' ? employeeDiscountPercent : 0,
-                employeeDiscountAmount: selectedParty?.type === 'EMPLEADO' ? employeeDiscountAmount : 0,
+                employeeDiscountPercent: selectedParty?.type === 'EMPLEADO'
+                  ? employeeDiscountPercent
+                  : 0,
+                employeeDiscountAmount: employeeDiscountAmount,
+                discountAmount: totalDiscountAmount,
+                discountPercent: totalDiscountPercent,
+                discountLabel: selectedParty?.type === 'EMPLEADO' && manualDiscountPercent > 0
+                  ? 'Descuento empleado y adicional'
+                  : selectedParty?.type === 'EMPLEADO'
+                  ? 'Descuento empleado'
+                  : 'Descuento',
                 cashGiven: selectedPayment === 'PAGO_COMBINADO' 
                   ? (parseFloat(combinedAmount1.replace(/\./g, '').replace(',', '.')) || 0) + (parseFloat(combinedAmount2.replace(/\./g, '').replace(',', '.')) || 0)
                   : paidNum,
@@ -2348,7 +2638,7 @@ export const POSScreen: React.FC<POSScreenProps> = ({
         isOpen={isArcaModalOpen}
         onClose={() => setIsArcaModalOpen(false)}
         saleData={{
-          items: saleItems.map((i) => ({
+          items: saleItemsForCheckout.map((i) => ({
             code: i.code,
             description: i.description,
             unitType: i.unitType,
@@ -2359,9 +2649,16 @@ export const POSScreen: React.FC<POSScreenProps> = ({
             vatRate: 21,
           })),
           total: totalAmount,
-          employeeDiscountAmount: selectedParty?.type === 'EMPLEADO' ? employeeDiscountAmount : 0,
-          employeeDiscountPercent: selectedParty?.type === 'EMPLEADO' ? employeeDiscountPercent : 0,
-          customer: selectedCustomer,
+          employeeDiscountAmount: employeeDiscountAmount,
+          employeeDiscountPercent: isEmployeeSelected ? employeeDiscountPercent : 0,
+          discountAmount: totalDiscountAmount,
+          discountPercent: totalDiscountPercent,
+          discountLabel: isEmployeeSelected && manualDiscountPercent > 0
+            ? 'Descuento empleado y adicional'
+            : isEmployeeSelected
+            ? 'Descuento empleado'
+            : 'Descuento',
+          customer: ticketInvoiceType === 'FACTURA_B' ? null : selectedCustomer,
         }}
         existingInvoices={electronicInvoices}
         currentBranch={currentBranch}

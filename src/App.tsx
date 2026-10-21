@@ -73,9 +73,10 @@ export default function App() {
     saveProduct,
     saveProductsBatch,
     deleteProduct,
-    purgeProductsCollection,
     saveCustomer,
+    deleteCustomer,
     saveEmployee,
+    deleteEmployee,
     saveBranchConfig,
     saveUserAccount,
     deleteUserAccount,
@@ -310,7 +311,9 @@ export default function App() {
           break;
         case 'F7':
           e.preventDefault();
-          handleNavigateScreen('CAJA_ACTUAL');
+          if (activeScreen !== 'POS') {
+            handleNavigateScreen('CAJA_ACTUAL');
+          }
           break;
         case 'F8':
           e.preventDefault();
@@ -362,32 +365,6 @@ export default function App() {
       setProducts((prev) => prev.filter((p) => p.code !== code && (!docId || p.docId !== docId)));
       await deleteProduct(code, docId);
       await showAlert(`El artículo "${description}" ha sido eliminado de la base de datos.`);
-    }
-  };
-
-  const handlePurgeProducts = async () => {
-    if (products.length === 0) {
-      await showAlert('El catálogo de productos ya se encuentra vacío.');
-      return;
-    }
-
-    const authorized = await showAdminAuth(
-      `ATENCIÓN: Está a punto de VACIAR COMPLETAMENTE el catálogo de artículos (${products.length} productos registrados).\n\nEsta acción eliminará todos los artículos y sus existencias asociadas de la base de datos de manera definitiva.\n\nPor favor ingrese la clave de administrador para autorizar la operación:`,
-      'AUTORIZACIÓN DE ADMINISTRADOR - VACIAR CATÁLOGO'
-    );
-    if (!authorized) return;
-
-    const doubleCheck = await showConfirm(
-      '¿CONFIRMA DEFINITIVAMENTE que desea vaciar todo el catálogo de artículos? Se borrarán todos los productos y deberá importarlos nuevamente desde la planilla Excel.'
-    );
-    if (!doubleCheck) return;
-
-    try {
-      await purgeProductsCollection();
-      setProducts([]);
-      await showAlert('El catálogo de artículos y el stock asociado han sido vaciados exitosamente.');
-    } catch (err: any) {
-      await showAlert(`Error al vaciar catálogo: ${err?.message || 'Error desconocido'}`);
     }
   };
 
@@ -488,7 +465,9 @@ export default function App() {
       ticketNumber: saleData.ticketNumber,
       branchId: saleData.branchId,
     };
-    await addCashMovement(saleMov);
+    if (saleData.paymentMethod !== 'CUENTA_CORRIENTE') {
+      await addCashMovement(saleMov);
+    }
 
     // 2. Record Account movement if Current Account (Cta Cte)
     if (saleData.paymentMethod === 'CUENTA_CORRIENTE') {
@@ -682,7 +661,6 @@ export default function App() {
             onUpdateProduct={handleUpdateProduct}
             onAddProduct={handleAddProduct}
             onDeleteProduct={handleDeleteProduct}
-            onPurgeProducts={handlePurgeProducts}
             onBatchImportProducts={handleBatchImportProducts}
             onGoToPOS={() => handleNavigateScreen('POS')}
           />
@@ -693,6 +671,7 @@ export default function App() {
             customers={customers}
             onUpdateCustomer={handleUpdateCustomer}
             onAddCustomer={handleAddCustomer}
+            onDeleteCustomer={deleteCustomer}
             onViewAccount={(c) => {
               setSelectedAccountCustomer(c);
               handleNavigateScreen('CUENTAS_CORRIENTES');
@@ -723,6 +702,7 @@ export default function App() {
             employees={employees}
             onUpdateEmployee={handleUpdateEmployee}
             onAddEmployee={handleAddEmployee}
+            onDeleteEmployee={deleteEmployee}
             onViewAccount={(emp) => {
               handleNavigateScreen('CUENTAS_CORRIENTES');
             }}
@@ -866,15 +846,15 @@ export default function App() {
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F5</strong> :
-                Stock y Cámaras Frigoríficas
+                Descuento en POS / Stock fuera del POS
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F6</strong> :
-                Facturación Fiscal ARCA A/B
+                Cantidad/Peso en POS / Facturación fuera del POS
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F7</strong> :
-                Caja Actual / Arqueo en Vivo
+                Precio en POS / Caja Actual fuera del POS
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F8</strong> :
@@ -886,7 +866,7 @@ export default function App() {
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F11</strong> :
-                Historial de Cierres Z
+                Limpiar venta en POS / Historial de Cierres fuera del POS
               </div>
               <div>
                 <strong className="font-mono bg-[#ebeef2] px-1 border border-[#c4c6cf]">F12</strong> :

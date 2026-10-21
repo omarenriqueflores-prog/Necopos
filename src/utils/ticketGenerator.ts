@@ -21,6 +21,9 @@ export interface TicketData {
   createdAt?: string;
   employeeDiscountPercent?: number;
   employeeDiscountAmount?: number;
+  discountPercent?: number;
+  discountAmount?: number;
+  discountLabel?: string;
   combinedPayments?: any[];
   cae?: string;
   caeVto?: string;
@@ -53,6 +56,8 @@ export const generateTicketHtml = (
   branch: BranchConfig,
   format?: 'TICKET' | 'A4'
 ) => {
+  const discountAmount = sale.discountAmount ?? sale.employeeDiscountAmount ?? 0;
+  const discountPercent = sale.discountPercent ?? sale.employeeDiscountPercent ?? 0;
   const safeBranch: Partial<BranchConfig> = branch || {};
   const branchCuit = String(safeBranch.cuit || '20-25506516-6');
 
@@ -507,14 +512,14 @@ export const generateTicketHtml = (
               `}
             </td>
             <td style="width: 40%; text-align: right;">
-              ${sale.employeeDiscountAmount ? `
+              ${discountAmount ? `
                 <div style="font-size: 10px; margin-bottom: 2px;">
                   <span>Subtotal:</span>
-                  <span style="font-family: monospace; margin-left: 6px;">${formatCurrency(totalAmount + sale.employeeDiscountAmount)}</span>
+                  <span style="font-family: monospace; margin-left: 6px;">${formatCurrency(totalAmount + discountAmount)}</span>
                 </div>
                 <div style="font-size: 10px; margin-bottom: 2px; color: #b91c1c;">
-                  <span>Desc. Empleado (${sale.employeeDiscountPercent}%):</span>
-                  <span style="font-family: monospace; margin-left: 6px;">- ${formatCurrency(sale.employeeDiscountAmount)}</span>
+                  <span>${sale.discountLabel || 'Descuento'} (${discountPercent}%):</span>
+                  <span style="font-family: monospace; margin-left: 6px;">- ${formatCurrency(discountAmount)}</span>
                 </div>
               ` : ''}
               <div style="font-size: 15px; font-weight: 900; border-top: 1px solid #000; padding-top: 3px; margin-top: 2px;">
@@ -674,9 +679,9 @@ export const generateTicketHtml = (
       <div style="display: flex; justify-content: space-between;"><span>NETO GRAV.:</span><span style="font-family: monospace;">${formatCurrency(netAmount)}</span></div>
       <div style="display: flex; justify-content: space-between;"><span>IVA 21%:</span><span style="font-family: monospace;">${formatCurrency(vatAmount)}</span></div>
     ` : ''}
-    ${sale.employeeDiscountAmount ? `
-      <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span><span style="font-family: monospace;">${formatCurrency(totalAmount + sale.employeeDiscountAmount)}</span></div>
-      <div style="display: flex; justify-content: space-between; color: #b91c1c;"><span>Desc. Empl:</span><span style="font-family: monospace;">- ${formatCurrency(sale.employeeDiscountAmount)}</span></div>
+    ${discountAmount ? `
+      <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span><span style="font-family: monospace;">${formatCurrency(totalAmount + discountAmount)}</span></div>
+      <div style="display: flex; justify-content: space-between; color: #b91c1c;"><span>${sale.discountLabel || 'Descuento'} (${discountPercent}%):</span><span style="font-family: monospace;">- ${formatCurrency(discountAmount)}</span></div>
     ` : ''}
     <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: 900; margin-top: 3px; border-top: 1px solid #000; padding-top: 3px;">
       <span>TOTAL:</span>

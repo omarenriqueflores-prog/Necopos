@@ -18,6 +18,7 @@ interface EmployeesScreenProps {
   employees: Employee[];
   onUpdateEmployee: (emp: Employee) => void;
   onAddEmployee: (emp: Employee) => void;
+  onDeleteEmployee: (code: string) => Promise<void>;
   onViewAccount: (emp: Employee) => void;
 }
 
@@ -25,9 +26,10 @@ export const EmployeesScreen: React.FC<EmployeesScreenProps> = ({
   employees,
   onUpdateEmployee,
   onAddEmployee,
+  onDeleteEmployee,
   onViewAccount,
 }) => {
-  const { showAlert } = useDialog();
+  const { showAlert, showConfirm, showAdminAuth } = useDialog();
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [branchFilter, setBranchFilter] = useState<string>('TODAS');
   const [selectedEmployeeCode, setSelectedEmployeeCode] = useState<string>(
@@ -91,6 +93,29 @@ export const EmployeesScreen: React.FC<EmployeesScreenProps> = ({
     setIsModalOpen(false);
   };
 
+  const handleDeleteEmployee = async (employee: Employee) => {
+    const confirmed = await showConfirm(
+      `¿Desea eliminar al empleado "${employee.name}" (${employee.code})?`,
+      'CONFIRMAR ELIMINACIÓN DE EMPLEADO'
+    );
+    if (!confirmed) return;
+
+    const authorized = await showAdminAuth(
+      `Para eliminar al empleado "${employee.name}" se requiere autorización de administrador.`,
+      'AUTORIZACIÓN - ELIMINAR EMPLEADO'
+    );
+    if (!authorized) return;
+
+    try {
+      await onDeleteEmployee(employee.code);
+      await showAlert(`El empleado "${employee.name}" fue eliminado.`);
+    } catch (error) {
+      console.error('Error al eliminar empleado:', error);
+      const detail = error instanceof Error ? error.message : String(error);
+      await showAlert(`No se pudo eliminar al empleado "${employee.name}": ${detail}`);
+    }
+  };
+
   const handleConfirmAdvance = async () => {
     const amt = parseFloat(advanceAmount) || 0;
     if (amt <= 0 || !selectedEmployee) return;
@@ -149,6 +174,15 @@ export const EmployeesScreen: React.FC<EmployeesScreenProps> = ({
           >
             <Edit2 className="w-3 h-3 text-[#002046]" />
             <span>Editar</span>
+          </button>
+          <button
+            disabled={!selectedEmployee}
+            onClick={() => selectedEmployee && handleDeleteEmployee(selectedEmployee)}
+            className="h-[26px] px-2.5 bg-[#aa3531] hover:bg-[#891c1d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            title="Eliminar empleado (requiere clave de administrador)"
+          >
+            <Trash2 className="w-3 h-3" />
+            <span>Eliminar</span>
           </button>
           <button
             disabled={!selectedEmployee}

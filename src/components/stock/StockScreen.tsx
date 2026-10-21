@@ -12,6 +12,7 @@ import {
   Beef,
   FileCheck,
   Store,
+  Building2,
 } from 'lucide-react';
 import { ChamberStockTab } from './ChamberStockTab';
 import { StoreStockTab } from './StoreStockTab';
@@ -23,6 +24,7 @@ import { StockValorizationTab } from './StockValorizationTab';
 import { MeatDeboningTab } from './MeatDeboningTab';
 import { MeatReconciliationTab } from './MeatReconciliationTab';
 import { MeatReceptionTab } from './MeatReceptionTab';
+import { MeatSuppliersTab } from './MeatSuppliersTab';
 import { NewTransferModal } from './NewTransferModal';
 import { ChamberInitModal } from './ChamberInitModal';
 import { StoreInitModal } from './StoreInitModal';
@@ -40,7 +42,8 @@ type StockSubTab =
   | 'TRANSFERENCIAS'
   | 'AJUSTES_MERMAS'
   | 'INVENTARIO_FISICO'
-  | 'VALORIZACION';
+  | 'VALORIZACION'
+  | 'PROVEEDORES';
 
 export const StockScreen: React.FC = () => {
   const { branchConfigs } = useFirebase();
@@ -206,6 +209,18 @@ export const StockScreen: React.FC = () => {
           <DollarSign className="w-3.5 h-3.5 text-green-700" />
           <span>Valorización Comercial Cárnica</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('PROVEEDORES')}
+          className={`px-3 py-1.5 font-bold flex items-center space-x-1.5 border-t border-l border-r rounded-t ${
+            activeTab === 'PROVEEDORES'
+              ? 'bg-white text-blue-900 border-gray-400 -mb-px pb-2 shadow-sm'
+              : 'bg-[#c0c0c0] text-black border-gray-400 hover:bg-gray-100'
+          }`}
+        >
+          <Building2 className="w-3.5 h-3.5 text-blue-700" />
+          <span>Proveedores</span>
+        </button>
       </div>
 
       {/* CONTENIDO DE LA PESTAÑA ACTIVA */}
@@ -252,6 +267,8 @@ export const StockScreen: React.FC = () => {
         {activeTab === 'INVENTARIO_FISICO' && <PhysicalInventoryTab />}
 
         {activeTab === 'VALORIZACION' && <StockValorizationTab />}
+
+        {activeTab === 'PROVEEDORES' && <MeatSuppliersTab />}
       </div>
 
       {/* MODAL NUEVA TRANSFERENCIA */}

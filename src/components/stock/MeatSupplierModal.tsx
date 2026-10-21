@@ -9,8 +9,9 @@ interface MeatSupplierModalProps {
   receptions: MeatReception[];
   initialName: string;
   onSave: (supplier: MeatSupplier) => Promise<void>;
-  onUseSupplier: (supplier: MeatSupplier) => void;
+  onUseSupplier?: (supplier: MeatSupplier) => void;
   onClose: () => void;
+  standalone?: boolean;
 }
 
 const makeSupplierId = (name: string) =>
@@ -24,6 +25,7 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
   onSave,
   onUseSupplier,
   onClose,
+  standalone = false,
 }) => {
   const initialSupplier = suppliers.find((supplier) =>
     supplier.name.toLocaleLowerCase('es') === initialName.trim().toLocaleLowerCase('es')
@@ -59,6 +61,20 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
     amount: supplierHistory.reduce((sum, reception) => sum + (Number(reception.totalCost) || 0), 0),
   }), [supplierHistory]);
 
+  const supplierSummaries = useMemo(() => suppliers.map((supplier) => {
+    const history = receptions.filter((reception) =>
+      reception.supplierId === supplier.id ||
+      reception.supplier.trim().toLocaleLowerCase('es') === supplier.name.trim().toLocaleLowerCase('es')
+    );
+    return {
+      supplier,
+      receptionCount: history.length,
+      invoiceCount: new Set(history.map((reception) => reception.invoiceNumber).filter(Boolean)).size,
+      kilos: history.reduce((sum, reception) => sum + (Number(reception.totalWeightKg) || 0), 0),
+      amount: history.reduce((sum, reception) => sum + (Number(reception.totalCost) || 0), 0),
+    };
+  }), [suppliers, receptions]);
+
   const selectSupplier = (id: string) => {
     setSelectedId(id);
     const supplier = suppliers.find((item) => item.id === id);
@@ -79,7 +95,7 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
     setEmail(supplier.email || '');
     setContact(supplier.contact || '');
     setNotes(supplier.notes || '');
-    onUseSupplier(supplier);
+    onUseSupplier?.(supplier);
   };
 
   const saveSupplier = async () => {
@@ -105,8 +121,9 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
       setSaving(true);
       setError('');
       await onSave(supplier);
-      onUseSupplier(supplier);
-      onClose();
+      onUseSupplier?.(supplier);
+      if (standalone) setSelectedId(supplier.id);
+      else onClose();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'No se pudo guardar el frigorífico.');
     } finally {
@@ -115,19 +132,19 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-3">
-      <div className="win-panel bg-[#d4d0c8] max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border-2 border-white">
+    <div className={standalone ? 'h-full min-h-0 overflow-auto p-2' : 'fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-3'}>
+      <div className={`win-panel bg-[#d4d0c8] w-full flex flex-col shadow-2xl border-2 border-white ${standalone ? 'min-h-full' : 'max-w-5xl max-h-[92vh]'}`}>
         <div className="win-titlebar flex items-center justify-between p-1 bg-[#002046] text-white">
           <div className="flex items-center space-x-2 text-xs font-bold">
             <Building2 className="w-4 h-4 text-amber-300" />
-            <span>FRIGORÍFICO — DATOS E HISTORIAL DE RECEPCIONES</span>
+            <span>{standalone ? 'PADRÓN DE PROVEEDORES — FRIGORÍFICOS Y RECEPCIONES' : 'FRIGORÍFICO — DATOS E HISTORIAL DE RECEPCIONES'}</span>
           </div>
-          <button onClick={onClose} className="px-1.5 py-0.5 bg-[#c0c0c0] text-black border border-gray-400"><X className="w-3.5 h-3.5" /></button>
+          {!standalone && <button onClick={onClose} className="px-1.5 py-0.5 bg-[#c0c0c0] text-black border border-gray-400"><X className="w-3.5 h-3.5" /></button>}
         </div>
         <div className="p-3 overflow-y-auto space-y-3 text-xs">
           {error && <div className="p-2 bg-red-100 border border-red-300 text-red-800">{error}</div>}
           <section className="p-3 bg-white border border-gray-400 space-y-2">
-            <div className="font-bold text-[#002046] border-b pb-1">FICHA DEL FRIGORÍFICO</div>
+            <div className="font-bold text-[#002046] border-b pb-1">FICHA DEL PROVEEDOR</div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               <div className="md:col-span-2">
                 <label className="block font-bold mb-1">Frigorífico guardado</label>
@@ -163,6 +180,50 @@ export const MeatSupplierModal: React.FC<MeatSupplierModalProps> = ({
               </button>
             </div>
           </section>
+
+          {standalone && (
+            <section className="bg-white border border-gray-400">
+              <div className="p-2 bg-[#002046] text-white font-bold">
+                PROVEEDORES REGISTRADOS — {suppliers.length}
+              </div>
+              {suppliers.length === 0 ? (
+                <div className="p-4 text-center text-gray-500">Todavía no hay proveedores registrados.</div>
+              ) : (
+                <div className="max-h-[30vh] overflow-auto">
+                  <table className="w-full border-collapse text-left text-[11px]">
+                    <thead className="bg-gray-100 sticky top-0">
+                      <tr>
+                        <th className="p-2">Razón social</th>
+                        <th className="p-2">CUIT</th>
+                        <th className="p-2">Teléfono</th>
+                        <th className="p-2 text-right">Recepciones</th>
+                        <th className="p-2 text-right">Facturas</th>
+                        <th className="p-2 text-right">Kilos recibidos</th>
+                        <th className="p-2 text-right">Importe acumulado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {supplierSummaries.map(({ supplier, receptionCount, invoiceCount, kilos, amount }) => (
+                        <tr
+                          key={supplier.id}
+                          onClick={() => selectSupplier(supplier.id)}
+                          className={`cursor-pointer hover:bg-blue-50 ${selectedId === supplier.id ? 'bg-blue-100' : ''}`}
+                        >
+                          <td className="p-2 font-bold text-[#002046]">{supplier.name}</td>
+                          <td className="p-2">{supplier.cuit || '-'}</td>
+                          <td className="p-2">{supplier.phone || '-'}</td>
+                          <td className="p-2 text-right">{receptionCount}</td>
+                          <td className="p-2 text-right">{invoiceCount}</td>
+                          <td className="p-2 text-right">{formatKg(kilos)}</td>
+                          <td className="p-2 text-right font-bold">{formatCurrency(amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="bg-white border border-gray-400">
             <div className="p-2 bg-[#002046] text-white font-bold flex flex-wrap justify-between gap-2">

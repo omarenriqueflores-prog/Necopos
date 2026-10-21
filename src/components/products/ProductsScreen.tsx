@@ -27,7 +27,6 @@ interface ProductsScreenProps {
   onUpdateProduct: (product: Product) => void;
   onAddProduct: (product: Product) => void;
   onDeleteProduct: (code: string) => void;
-  onPurgeProducts?: () => void;
   onBatchImportProducts?: (products: Product[], replaceAll: boolean) => Promise<void>;
   currentBranch: BranchConfig;
   currentUser?: UserAccount;
@@ -38,7 +37,6 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
   onUpdateProduct,
   onAddProduct,
   onDeleteProduct,
-  onPurgeProducts,
   onBatchImportProducts,
   currentBranch,
   currentUser,
@@ -286,16 +284,6 @@ export const ProductsScreen: React.FC<ProductsScreenProps> = ({
             <Trash2 className="w-3 h-3 text-white" />
             <span>Eliminar</span>
           </button>
-          {onPurgeProducts && (
-            <button
-              onClick={onPurgeProducts}
-              className="h-[26px] px-2 bg-[#ffdad6] hover:bg-[#ffb4ab] border border-[#ba1a1a] text-[#410002] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-              title="Eliminar todos los artículos del catálogo (Requiere clave de Administrador)"
-            >
-              <Trash2 className="w-3 h-3 text-[#ba1a1a]" />
-              <span>Vaciar Catálogo</span>
-            </button>
-          )}
           <button
             onClick={handleExportExcel}
             className="h-[26px] px-2 bg-[#ebeef2] hover:bg-[#e0e3e7] border border-[#74777f] text-[#002046] text-[11px] font-bold flex items-center gap-1 cursor-pointer shadow-xs"

@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   Save,
   CheckCircle,
+  Trash2,
 } from 'lucide-react';
 import { Customer } from '../../types/pos';
 import { formatCurrency } from '../../utils/scaleParser';
@@ -20,6 +21,7 @@ interface CustomersScreenProps {
   customers: Customer[];
   onUpdateCustomer: (customer: Customer) => void;
   onAddCustomer: (customer: Customer) => void;
+  onDeleteCustomer: (code: string) => Promise<void>;
   onViewAccount: (customer: Customer) => void;
   onRegisterPayment: (customer: Customer) => void;
 }
@@ -28,10 +30,11 @@ export const CustomersScreen: React.FC<CustomersScreenProps> = ({
   customers,
   onUpdateCustomer,
   onAddCustomer,
+  onDeleteCustomer,
   onViewAccount,
   onRegisterPayment,
 }) => {
-  const { showAlert } = useDialog();
+  const { showAlert, showConfirm, showAdminAuth } = useDialog();
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('TODOS');
   const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>(customers[0]?.code || '');
@@ -90,6 +93,29 @@ export const CustomersScreen: React.FC<CustomersScreenProps> = ({
     setIsModalOpen(false);
   };
 
+  const handleDeleteCustomer = async (customer: Customer) => {
+    const confirmed = await showConfirm(
+      `¿Desea eliminar al cliente "${customer.name}" (${customer.code})?`,
+      'CONFIRMAR ELIMINACIÓN DE CLIENTE'
+    );
+    if (!confirmed) return;
+
+    const authorized = await showAdminAuth(
+      `Para eliminar al cliente "${customer.name}" se requiere autorización de administrador.`,
+      'AUTORIZACIÓN - ELIMINAR CLIENTE'
+    );
+    if (!authorized) return;
+
+    try {
+      await onDeleteCustomer(customer.code);
+      await showAlert(`El cliente "${customer.name}" fue eliminado.`);
+    } catch (error) {
+      console.error('Error al eliminar cliente:', error);
+      const detail = error instanceof Error ? error.message : String(error);
+      await showAlert(`No se pudo eliminar al cliente "${customer.name}": ${detail}`);
+    }
+  };
+
   const totalDebt = customers.reduce((sum, c) => sum + Math.max(0, c.currentBalance), 0);
 
   return (
@@ -145,6 +171,15 @@ export const CustomersScreen: React.FC<CustomersScreenProps> = ({
           >
             <Edit2 className="w-3 h-3 text-[#002046]" />
             <span>Editar</span>
+          </button>
+          <button
+            disabled={!selectedCustomer}
+            onClick={() => selectedCustomer && handleDeleteCustomer(selectedCustomer)}
+            className="h-[26px] px-2.5 bg-[#aa3531] hover:bg-[#891c1d] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            title="Eliminar cliente (requiere clave de administrador)"
+          >
+            <Trash2 className="w-3 h-3" />
+            <span>Eliminar</span>
           </button>
           <button
             disabled={!selectedCustomer}

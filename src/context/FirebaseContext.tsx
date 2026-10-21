@@ -127,7 +127,9 @@ interface FirebaseContextType {
   saveProductsBatch: (items: Product[], replaceAll?: boolean) => Promise<void>;
   deleteProduct: (code: string, docId?: string) => Promise<void>;
   saveCustomer: (c: Customer) => Promise<void>;
+  deleteCustomer: (code: string) => Promise<void>;
   saveEmployee: (e: Employee) => Promise<void>;
+  deleteEmployee: (code: string) => Promise<void>;
   saveBranchConfig: (b: BranchConfig) => Promise<void>;
   saveUserAccount: (u: UserAccount) => Promise<void>;
   deleteUserAccount: (id: string) => Promise<void>;
@@ -182,7 +184,6 @@ interface FirebaseContextType {
     minStock: number
   ) => Promise<void>;
   purgeDatabase: () => Promise<void>;
-  purgeProductsCollection: () => Promise<void>;
   purgeInventoryTransactions: () => Promise<void>;
 }
 
@@ -1157,12 +1158,30 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  const deleteCustomer = async (code: string) => {
+    const path = `customers/${code}`;
+    try {
+      await deleteDoc(doc(db, 'customers', code));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
   const saveEmployee = async (e: Employee) => {
     const path = `employees/${e.code}`;
     try {
       await setDoc(doc(db, 'employees', e.code), sanitizeForFirestore(e));
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
+  const deleteEmployee = async (code: string) => {
+    const path = `employees/${code}`;
+    try {
+      await deleteDoc(doc(db, 'employees', code));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
     }
   };
 
@@ -2918,7 +2937,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const targetProdCode = reception.productCode?.trim() || 'MEDIA_RES';
       const prod = products.find((p) => p.code === targetProdCode);
       const prodDesc = prod?.description || reception.productDescription || `Media Res - Factura ${reception.invoiceNumber || reception.code}`;
-      const prodCat = prod?.category || reception.category || 'Novillito';
+      const prodCat = reception.carcasses?.[0]?.category || reception.category || prod?.category || 'Novillito';
       const unitType = prod?.unitType || 'Kg';
 
       const movement: StockMovement = {
@@ -2975,7 +2994,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const targetProdCode = updatedReception.productCode?.trim() || 'MEDIA_RES';
         const prod = products.find((p) => p.code === targetProdCode);
         const prodDesc = prod?.description || updatedReception.productDescription || `Media Res ${updatedReception.species} - Tropa ${updatedReception.tropaNumber}`;
-        const prodCat = prod?.category || updatedReception.category || 'Novillito';
+        const prodCat = updatedReception.carcasses?.[0]?.category || updatedReception.category || prod?.category || 'Novillito';
         const unitType = prod?.unitType || 'Kg';
 
         const movement: StockMovement = {
@@ -3367,33 +3386,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     console.warn("PROTECCIÓN DE DATOS: purgeInventoryTransactions fue bloqueado para evitar la pérdida de transacciones de inventario.");
   };
 
-  const purgeProductsCollection = async () => {
-    try {
-      // 1. Delete all products in chunks
-      const snap = await getDocs(collection(db, 'products'));
-      const delChunkSize = 450;
-      for (let i = 0; i < snap.docs.length; i += delChunkSize) {
-        const delBatch = writeBatch(db);
-        snap.docs.slice(i, i + delChunkSize).forEach((d) => delBatch.delete(d.ref));
-        await delBatch.commit();
-      }
-
-      // 2. Also delete all associated branchStock
-      const stockSnap = await getDocs(collection(db, 'branchStock'));
-      for (let i = 0; i < stockSnap.docs.length; i += delChunkSize) {
-        const delBatch = writeBatch(db);
-        stockSnap.docs.slice(i, i + delChunkSize).forEach((d) => delBatch.delete(d.ref));
-        await delBatch.commit();
-      }
-
-      setProducts([]);
-      setBranchStock([]);
-    } catch (error) {
-      console.error('Error in purgeProductsCollection:', error);
-      throw error;
-    }
-  };
-
   return (
     <FirebaseContext.Provider
       value={{
@@ -3427,7 +3419,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveProductsBatch,
         deleteProduct,
         saveCustomer,
+        deleteCustomer,
         saveEmployee,
+        deleteEmployee,
         saveBranchConfig,
         saveUserAccount,
         deleteUserAccount,
@@ -3472,7 +3466,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         revertCreditNoteStock,
         updateProductMinStock,
         purgeDatabase,
-        purgeProductsCollection,
         purgeInventoryTransactions,
       }}
     >
